@@ -8,6 +8,17 @@
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import { ChatOpenAI } from "@langchain/openai"
 
+/** What a provider returns when a login flow is initiated. The actual token
+ *  exchange completes in the background; poll `ready()` / the status route. */
+export interface LoginInitiation {
+  /** URL the user opens (device verification page, or a browser authorize URL). */
+  url: string
+  /** Short device code to type on the verification page (device-code flow only). */
+  userCode?: string
+  /** Human-readable next step. */
+  instructions: string
+}
+
 export interface ProviderDef {
   id: string
   label: string
@@ -15,6 +26,8 @@ export interface ProviderDef {
   ready: () => boolean
   /** Build a ready-to-use chat model with auth/token injection already applied. */
   buildModel: () => BaseChatModel
+  /** Initiate a login flow (OAuth providers only). Optional method: "device" | "browser". */
+  login?: (method?: string) => Promise<LoginInitiation>
 }
 
 function requireEnv(name: string): string {
@@ -47,9 +60,24 @@ export function listProviders(): ProviderDef[] {
   return Object.values(providers)
 }
 
-/** The currently selected provider id (MC_PROVIDER env, default "zen"). */
+/** Look up a single provider by id (undefined if unregistered). */
+export function getProvider(id: string): ProviderDef | undefined {
+  return providers[id]
+}
+
+// Runtime override for the active provider, set by the /select route. Takes
+// precedence over MC_PROVIDER so a user can switch providers without a restart.
+let activeOverride: string | undefined
+
+/** The currently selected provider id (runtime override, else MC_PROVIDER env, else "zen"). */
 export function activeProviderId(): string {
-  return process.env.MC_PROVIDER || "zen"
+  return activeOverride || process.env.MC_PROVIDER || "zen"
+}
+
+/** Select the active provider for subsequently-built models. */
+export function setActiveProviderId(id: string): void {
+  if (!providers[id]) throw new Error(`unknown provider "${id}"`)
+  activeOverride = id
 }
 
 /** Build the chat model for the active (or named) provider. */
@@ -58,3 +86,11 @@ export function resolveModel(id: string = activeProviderId()): BaseChatModel {
   if (!p) throw new Error(`unknown provider "${id}"`)
   return p.buildModel()
 }
+
+// OAuth providers self-register on import. Kept at the bottom so the registry's
+// functions/types above are fully initialized before these modules load them.
+// (grok/codex import only *types* from this file, so the cycle is erased at runtime.)
+import { grokProvider } from "./grok.ts"
+import { codexProvider } from "./codex.ts"
+registerProvider(grokProvider)
+registerProvider(codexProvider)

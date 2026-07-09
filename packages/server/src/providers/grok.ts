@@ -50,7 +50,7 @@ const REDIRECT_URI = `http://${OAUTH_HOST}:${OAUTH_PORT}${OAUTH_REDIRECT_PATH}`
 // Refresh a little before expiry so a long tool call doesn't hit a mid-flight 401.
 const ACCESS_TOKEN_REFRESH_SKEW_MS = 120_000
 
-const USER_AGENT = "multicode-cli/0.0.0"
+const USER_AGENT = "chunky-cli/0.0.0"
 
 interface PkceCodes {
   verifier: string
@@ -129,7 +129,7 @@ function buildAuthorizeUrl(pkce: PkceCodes, state: string, nonce: string): strin
     state,
     nonce,
     plan: "generic",
-    referrer: "multicode",
+    referrer: "chunky",
   })
   return `${AUTHORIZE_URL}?${params.toString()}`
 }
@@ -357,7 +357,7 @@ async function startBrowserLogin(): Promise<LoginInitiation> {
         return
       }
       res.writeHead(200, { "Content-Type": "text/html" })
-      res.end("<h1>Authorization successful</h1><p>You can close this window and return to MultiCode.</p>")
+      res.end("<h1>Authorization successful</h1><p>You can close this window and return to Chunky.</p>")
       exchangeCodeForTokens(code, pkce)
         .then((tokens) => {
           persist(tokens)

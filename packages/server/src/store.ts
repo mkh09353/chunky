@@ -2,9 +2,9 @@
 // Makes transcripts survive a server restart, so reconnecting to a sessionId
 // replays the full prior run — i.e. "resume". Kept deliberately tiny.
 import { Database } from "bun:sqlite"
-import type { AgentEvent, SessionSummary } from "@mc/protocol"
+import type { AgentEvent, SessionSummary } from "@chunky/protocol"
 
-const DB_PATH = process.env.MC_DB || "multicode.db"
+const DB_PATH = process.env.CHUNKY_DB || "chunky.db"
 const db = new Database(DB_PATH)
 db.exec("PRAGMA journal_mode = WAL;")
 db.exec(`

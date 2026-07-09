@@ -10,7 +10,7 @@
 // codexResponsesBody) is for Codex's *non-standard deviations* from the public
 // Responses API, which no SDK knows about: it forbids system messages (moved to
 // top-level `instructions`) and rejects LangChain's `strict:null` on tools.
-// These are empirical (from the endpoint's 400 messages); set MC_DEBUG_CODEX=1
+// These are empirical (from the endpoint's 400 messages); set CHUNKY_DEBUG_CODEX=1
 // to log the request/response if the private backend changes its rules.
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import { ChatOpenAI } from "@langchain/openai"
@@ -34,7 +34,7 @@ const DEFAULT_MODEL = process.env.CODEX_MODEL || "gpt-5.5"
 // (gpt-5.3-codex, gpt-5.2-codex, …) return "not supported when using Codex with
 // a ChatGPT account", so they're deliberately excluded. Enriched from models.dev.
 const CODEX_MODELS = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"]
-const USER_AGENT = "multicode-cli/0.0.0"
+const USER_AGENT = "chunky-cli/0.0.0"
 // Per-process session id sent on the `session-id` header (matches codex CLI).
 const CODEX_SESSION_ID = crypto.randomUUID()
 
@@ -119,7 +119,7 @@ function buildAuthorizeUrl(pkce: PkceCodes, state: string): string {
     id_token_add_organizations: "true",
     codex_cli_simplified_flow: "true",
     state,
-    originator: "multicode",
+    originator: "chunky",
   })
   return `${ISSUER}/oauth/authorize?${params.toString()}`
 }
@@ -253,7 +253,7 @@ async function injectingFetch(input: RequestInfo | URL, init?: RequestInit): Pro
   }
   headers.set("authorization", `Bearer ${auth.access}`)
   headers.set("User-Agent", USER_AGENT)
-  headers.set("originator", "multicode")
+  headers.set("originator", "chunky")
   headers.set("session-id", CODEX_SESSION_ID) // codex CLI sends one; helps attribution
   if (auth.accountId) headers.set("ChatGPT-Account-Id", auth.accountId)
 
@@ -272,7 +272,7 @@ async function injectingFetch(input: RequestInfo | URL, init?: RequestInit): Pro
   }
 
   const res = await fetch(target, { ...init, headers })
-  if (process.env.MC_DEBUG_CODEX && !res.ok) {
+  if (process.env.CHUNKY_DEBUG_CODEX && !res.ok) {
     const reqBody = typeof init?.body === "string" ? init.body.slice(0, 700) : "(non-string body)"
     const resBody = await res
       .clone()
@@ -379,7 +379,7 @@ async function startBrowserLogin(): Promise<LoginInitiation> {
         return
       }
       res.writeHead(200, { "Content-Type": "text/html" })
-      res.end("<h1>Authorization successful</h1><p>You can close this window and return to MultiCode.</p>")
+      res.end("<h1>Authorization successful</h1><p>You can close this window and return to Chunky.</p>")
       exchangeCodeForTokens(code, pkce)
         .then((tokens) => {
           persist(tokens)

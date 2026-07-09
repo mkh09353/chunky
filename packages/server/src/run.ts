@@ -5,7 +5,7 @@
 // SAME logic drives the main session run AND every spawned child thread (see
 // threads.ts). Events are tagged with `threadId` for children; the main thread
 // omits it (so the wire is identical to the pre-threads prototype).
-import type { AgentEvent } from "@mc/protocol"
+import type { AgentEvent } from "@chunky/protocol"
 import { getAgent } from "./agent.ts"
 import { ThreadManager } from "./threads.ts"
 

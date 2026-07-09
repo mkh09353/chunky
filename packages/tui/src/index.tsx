@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 import React from "react"
 import { render } from "ink"
-import { DEFAULT_PORT } from "@mc/protocol"
+import { DEFAULT_PORT } from "@chunky/protocol"
 import { App } from "./App.js"
 
 const argv = process.argv.slice(2)
@@ -10,7 +10,7 @@ const wantLive = argv.includes("--live")
 // --threads drives the nested-thread mock demo (implies --mock).
 const wantThreads = argv.includes("--threads")
 
-const port = process.env.MC_PORT ?? String(DEFAULT_PORT)
+const port = process.env.CHUNKY_PORT ?? String(DEFAULT_PORT)
 const baseUrl = `http://localhost:${port}`
 
 async function serverIsUp(): Promise<boolean> {

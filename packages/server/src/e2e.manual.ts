@@ -2,11 +2,11 @@
 // that asks the agent to use spawn_thread, and print every event — highlighting
 // thread.* and threadId-tagged child events flowing over the SINGLE session SSE.
 //
-// Assumes the server is already listening on MC_PORT/4599.
+// Assumes the server is already listening on CHUNKY_PORT/4599.
 // Run:  bun run packages/server/src/e2e.manual.ts
-import { DEFAULT_PORT, ROUTES, readSSE, type AgentEvent } from "@mc/protocol"
+import { DEFAULT_PORT, ROUTES, readSSE, type AgentEvent } from "@chunky/protocol"
 
-const base = `http://localhost:${process.env.MC_PORT || DEFAULT_PORT}`
+const base = `http://localhost:${process.env.CHUNKY_PORT || DEFAULT_PORT}`
 
 const res = await fetch(base + ROUTES.createSession, { method: "POST" })
 const { sessionId } = (await res.json()) as { sessionId: string }

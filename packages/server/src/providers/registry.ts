@@ -110,12 +110,12 @@ export function listModelsFor(id: string): Promise<ModelInfo[]> {
 // ---- Active provider + per-provider selection (persisted) ----
 
 // Runtime override for the active provider. Falls back to the persisted value,
-// then MC_PROVIDER, then "zen". Setting it also persists so it survives restart.
+// then CHUNKY_PROVIDER, then "zen". Setting it also persists so it survives restart.
 let activeOverride: string | undefined
 
 /** The currently selected provider id. */
 export function activeProviderId(): string {
-  return activeOverride || persistedProvider() || process.env.MC_PROVIDER || "zen"
+  return activeOverride || persistedProvider() || process.env.CHUNKY_PROVIDER || "zen"
 }
 
 /** Select the active provider for subsequently-built models (persisted). */

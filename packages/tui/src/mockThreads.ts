@@ -4,7 +4,7 @@
 // tagged message/tool events, i.e. the exact wire the real ThreadManager emits.
 //
 // Lives in the TUI package (NOT protocol/mock.ts) per the build contract.
-import type { AgentEvent } from "@mc/protocol"
+import type { AgentEvent } from "@chunky/protocol"
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 

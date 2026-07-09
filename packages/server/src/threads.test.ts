@@ -4,7 +4,7 @@
 //   child's threadId -> thread.status idle, and returns the child's final text.
 //
 // Run:  bun run packages/server/src/threads.test.ts
-import type { AgentEvent } from "@mc/protocol"
+import type { AgentEvent } from "@chunky/protocol"
 import { ThreadManager } from "./threads.ts"
 
 const events: AgentEvent[] = []

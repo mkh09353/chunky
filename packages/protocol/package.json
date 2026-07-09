@@ -1,5 +1,5 @@
 {
-  "name": "@mc/protocol",
+  "name": "@chunky/protocol",
   "version": "0.0.0",
   "type": "module",
   "main": "src/index.ts",

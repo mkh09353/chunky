@@ -8,7 +8,7 @@
 // session SSE — no new routes.
 import { randomUUID } from "node:crypto"
 import { AsyncLocalStorageProviderSingleton } from "@langchain/core/singletons"
-import type { AgentEvent } from "@mc/protocol"
+import type { AgentEvent } from "@chunky/protocol"
 import { translateStream, type Emit } from "./run.ts"
 import { getAgent } from "./agent.ts"
 import { registerThread, unregisterThread, type ThreadSpawner } from "./thread-context.ts"

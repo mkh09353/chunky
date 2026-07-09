@@ -20,7 +20,7 @@ export function WelcomeBanner({ mode, cwd }: { mode: "mock" | "live"; cwd: strin
     <Box width="100%" marginBottom={1} borderStyle="round" borderColor="gray" flexDirection="row">
       {/* left column: greeting + logo + model/cwd, centered */}
       <Box flexDirection="column" width="46%" alignItems="center" paddingY={1} paddingX={1}>
-        <Text bold>Welcome to MultiCode</Text>
+        <Text bold>Welcome to Chunky</Text>
         <Box marginY={1}>
           <Text color={ACCENT} bold>
             {SPARKLE} {SPARKLE} {SPARKLE}

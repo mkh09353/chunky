@@ -3,7 +3,7 @@
 // spawned child thread is keyed by its own threadId and linked to its parent
 // (parentId === MAIN for a direct child of the main thread). message/tool/error
 // events carry an optional `threadId` that routes them to the owning thread.
-import type { AgentEvent } from "@mc/protocol"
+import type { AgentEvent } from "@chunky/protocol"
 
 /** Synthetic id for the main (root) session thread — events omit threadId for it. */
 export const MAIN = "main"

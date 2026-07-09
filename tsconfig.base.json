@@ -12,8 +12,8 @@
     "noEmit": true,
     "types": ["node", "bun"],
     "paths": {
-      "@mc/protocol": ["./packages/protocol/src/index.ts"],
-      "@mc/protocol/mock": ["./packages/protocol/src/mock.ts"]
+      "@chunky/protocol": ["./packages/protocol/src/index.ts"],
+      "@chunky/protocol/mock": ["./packages/protocol/src/mock.ts"]
     },
     "baseUrl": "."
   }

@@ -1,7 +1,7 @@
-// MultiCode CLI server: Bun.serve HTTP + SSE. Model via the provider registry;
+// Chunky CLI server: Bun.serve HTTP + SSE. Model via the provider registry;
 // sessions + event history persisted to sqlite so reconnecting resumes.
 import { randomUUID } from "node:crypto"
-import { DEFAULT_PORT, ROUTES, sse, type AgentEvent } from "@mc/protocol"
+import { DEFAULT_PORT, ROUTES, sse, type AgentEvent } from "@chunky/protocol"
 import { runAgent } from "./run.ts"
 import { Store } from "./store.ts"
 import { invalidateAgent } from "./agent.ts"
@@ -59,7 +59,7 @@ function json(body: unknown, status = 200): Response {
   })
 }
 
-const port = Number(process.env.MC_PORT) || DEFAULT_PORT
+const port = Number(process.env.CHUNKY_PORT) || DEFAULT_PORT
 
 const server = Bun.serve({
   port,
@@ -250,5 +250,5 @@ const server = Bun.serve({
 })
 
 console.log(
-  `[@mc/server] listening on http://localhost:${server.port} (provider=${activeProviderId()})`,
+  `[@chunky/server] listening on http://localhost:${server.port} (provider=${activeProviderId()})`,
 )

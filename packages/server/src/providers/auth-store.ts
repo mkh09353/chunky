@@ -4,7 +4,7 @@
 // { type:"oauth", access, refresh, expires, accountId? } — the exact shape
 // opencode persists so the login flows here can round-trip identically.
 //
-// Path: process.env.MC_AUTH || "auth.json" (relative to the server cwd = repo root).
+// Path: process.env.CHUNKY_AUTH || "auth.json" (relative to the server cwd = repo root).
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs"
 
 export interface OAuthInfo {
@@ -20,7 +20,7 @@ export interface OAuthInfo {
 export type AuthInfo = OAuthInfo
 
 function authPath(): string {
-  return process.env.MC_AUTH || "auth.json"
+  return process.env.CHUNKY_AUTH || "auth.json"
 }
 
 /** Read the whole store. Missing/corrupt file → empty object (never throws). */

@@ -59,10 +59,10 @@ const spawnThread = tool(
 function makeCheckpointer() {
   try {
     const { BunSqliteSaver } = require("./bun-sqlite-saver.ts")
-    return BunSqliteSaver.fromConnString(process.env.MC_GRAPH_DB || "multicode-graph.db")
+    return BunSqliteSaver.fromConnString(process.env.CHUNKY_GRAPH_DB || "chunky-graph.db")
   } catch (err) {
     const { MemorySaver } = require("@langchain/langgraph")
-    console.warn(`[@mc/server] durable checkpointer unavailable (${(err as Error).message}); using in-memory`)
+    console.warn(`[@chunky/server] durable checkpointer unavailable (${(err as Error).message}); using in-memory`)
     return new MemorySaver()
   }
 }

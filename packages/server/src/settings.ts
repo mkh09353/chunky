@@ -1,6 +1,6 @@
 // Persisted model-picker selection — survives a server restart.
 //
-// One JSON file (MC_SETTINGS || "settings.json", relative to the server cwd =
+// One JSON file (CHUNKY_SETTINGS || "settings.json", relative to the server cwd =
 // repo root). It records the active provider plus, per provider, the chosen
 // model id and its reasoning options {effort, speed}. Keeping the selection
 // per-provider means switching provider and back restores that provider's last
@@ -25,7 +25,7 @@ export interface Settings {
 }
 
 function settingsPath(): string {
-  return process.env.MC_SETTINGS || "settings.json"
+  return process.env.CHUNKY_SETTINGS || "settings.json"
 }
 
 let cache: Settings | undefined
@@ -51,7 +51,7 @@ function save(next: Settings): void {
   try {
     writeFileSync(settingsPath(), JSON.stringify(next, null, 2))
   } catch (err) {
-    console.warn(`[@mc/server] could not persist settings: ${(err as Error).message}`)
+    console.warn(`[@chunky/server] could not persist settings: ${(err as Error).message}`)
   }
 }
 

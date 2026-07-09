@@ -1,4 +1,4 @@
-// @mc/protocol — the single contract shared by the server and the TUI.
+// @chunky/protocol — the single contract shared by the server and the TUI.
 // Both packages import ONLY from here for wire types. Do not fork these shapes.
 
 export const DEFAULT_PORT = 4599

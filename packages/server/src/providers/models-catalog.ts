@@ -8,7 +8,7 @@
 // the TUI uses to decide whether to offer an effort sub-picker.
 //
 // The models.dev fetch is cached in-memory for the process AND written to a
-// small on-disk file (MC_MODELS_CACHE || "models-dev-cache.json") with a TTL so
+// small on-disk file (CHUNKY_MODELS_CACHE || "models-dev-cache.json") with a TTL so
 // repeated runs don't re-hit the network. If the fetch fails and no cache
 // exists, enrichment degrades gracefully: reasoning=false, name=id.
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
@@ -39,7 +39,7 @@ interface DevProvider {
 type DevCatalog = Record<string, DevProvider>
 
 function cachePath(): string {
-  return process.env.MC_MODELS_CACHE || "models-dev-cache.json"
+  return process.env.CHUNKY_MODELS_CACHE || "models-dev-cache.json"
 }
 
 // Process-lifetime memo of the in-flight/complete fetch so concurrent callers
@@ -74,13 +74,13 @@ export function loadModelsDev(): Promise<DevCatalog> {
     const disk = readDiskCache()
     if (disk) return disk
     try {
-      const res = await fetch(MODELS_DEV_URL, { headers: { "User-Agent": "multicode-cli/0.0.0" } })
+      const res = await fetch(MODELS_DEV_URL, { headers: { "User-Agent": "chunky-cli/0.0.0" } })
       if (!res.ok) throw new Error(`models.dev returned ${res.status}`)
       const catalog = (await res.json()) as DevCatalog
       writeDiskCache(catalog)
       return catalog
     } catch (err) {
-      console.warn(`[@mc/server] models.dev fetch failed (${(err as Error).message}); metadata will degrade`)
+      console.warn(`[@chunky/server] models.dev fetch failed (${(err as Error).message}); metadata will degrade`)
       return {} as DevCatalog
     }
   })()

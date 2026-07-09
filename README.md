@@ -33,7 +33,9 @@ bun run tui -- --mock     # demo the UI against a fake stream
 Verified: typing a question in `--live` streams the real GLM-5.2 answer back into the Claude-Code UI.
 
 ## Status / next
-- ✅ End-to-end pipe (TUI → SSE → DeepAgents → Zen → GLM-5.2) working.
-- ⬜ Real nested threads (protocol already carries `thread.*`; server emits flat events for now).
-- ⬜ More providers via OAuth (Codex/Grok flows lift from `~/Downloads/opencode`); Claude via Agent SDK.
-- ⬜ Multi-thread TUI view (the genuinely novel UI: a tree of concurrent live threads).
+- ✅ End-to-end pipe (TUI → SSE → DeepAgents → Zen → GLM-5.2).
+- ✅ **Persistence + resume**: sqlite session/event store; reconnecting to a sessionId replays the transcript, survives a server restart. `GET /api/sessions` is the resume picker.
+- ✅ **Provider registry + OAuth**: `zen` (API key) plus `grok`/`codex` OAuth providers (ported from opencode) with `auth.json` token storage and LangChain custom-fetch token injection. `/login` + `/model` in the TUI; `GET /api/providers`. Live browser login needs a real subscription.
+- ✅ **Real nested threads**: `spawn_thread` launches a full independent child agent run on its own LangGraph `thread_id`, streaming events tagged with the child's `threadId` over the session SSE; children can spawn children. The TUI renders the tree (run `--threads`, ctrl+t to expand/collapse).
+- ⬜ Durable agent memory across restart (needs a `bun:sqlite` checkpointer — `better-sqlite3` isn't Bun-compatible, so the checkpointer falls back to in-memory today; transcripts are already durable).
+- ⬜ Concurrent (not just sequential) thread spawns; interrupt/steer mid-run; tool-approval (HITL); Claude via Agent SDK; packaging to a binary.

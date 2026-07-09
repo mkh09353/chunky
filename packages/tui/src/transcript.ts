@@ -1,5 +1,12 @@
-// Reduce a stream of AgentEvents into flat, renderable transcript items.
+// Reduce a stream of AgentEvents into a TREE of threads, each with its own
+// renderable transcript items. The main session thread is keyed by MAIN; every
+// spawned child thread is keyed by its own threadId and linked to its parent
+// (parentId === MAIN for a direct child of the main thread). message/tool/error
+// events carry an optional `threadId` that routes them to the owning thread.
 import type { AgentEvent } from "@mc/protocol"
+
+/** Synthetic id for the main (root) session thread — events omit threadId for it. */
+export const MAIN = "main"
 
 export type Item =
   | { kind: "user"; text: string }
@@ -7,76 +14,166 @@ export type Item =
   | { kind: "tool"; id: string; name: string; input: unknown; done: boolean; ok?: boolean; output?: string }
   | { kind: "error"; text: string }
 
-export interface TranscriptState {
+export interface ThreadNode {
+  id: string
+  parentId: string | null
+  title: string
+  status: "idle" | "running"
   items: Item[]
+}
+
+export interface TranscriptState {
+  /** Every thread by id, including MAIN. */
+  threads: Record<string, ThreadNode>
+  /** Thread ids in first-seen order (MAIN first) so render order is stable. */
+  order: string[]
+  /** Session-level status (drives the top-level spinner). */
   status: "idle" | "running"
 }
 
-export const initialState: TranscriptState = { items: [], status: "idle" }
+export const initialState: TranscriptState = {
+  threads: { [MAIN]: { id: MAIN, parentId: null, title: "main", status: "idle", items: [] } },
+  order: [MAIN],
+  status: "idle",
+}
 
-/** Pure reducer: fold one AgentEvent into the transcript. Tolerates thread.* events. */
-export function reduce(state: TranscriptState, ev: AgentEvent): TranscriptState {
+/** Fold one item-level event into a thread's item list (the classic flat reducer). */
+function reduceItems(items: Item[], ev: AgentEvent): Item[] {
   switch (ev.type) {
-    case "session.status":
-      return { ...state, status: ev.status }
-
     case "message.start":
-      return { ...state, items: [...state.items, { kind: "assistant", text: "", streaming: true }] }
+      return [...items, { kind: "assistant", text: "", streaming: true }]
 
     case "message.delta": {
-      const items = [...state.items]
-      // Append to the last streaming assistant item, or open one if the
-      // server streamed deltas without an explicit message.start.
-      for (let i = items.length - 1; i >= 0; i--) {
-        const it = items[i]!
+      const next = [...items]
+      for (let i = next.length - 1; i >= 0; i--) {
+        const it = next[i]!
         if (it.kind === "assistant" && it.streaming) {
-          items[i] = { ...it, text: it.text + ev.text }
-          return { ...state, items }
+          next[i] = { ...it, text: it.text + ev.text }
+          return next
         }
       }
-      return { ...state, items: [...items, { kind: "assistant", text: ev.text, streaming: true }] }
+      // Deltas without an explicit message.start still open a block.
+      return [...next, { kind: "assistant", text: ev.text, streaming: true }]
     }
 
     case "message.end": {
-      const items = [...state.items]
-      for (let i = items.length - 1; i >= 0; i--) {
-        const it = items[i]!
+      const next = [...items]
+      for (let i = next.length - 1; i >= 0; i--) {
+        const it = next[i]!
         if (it.kind === "assistant" && it.streaming) {
-          items[i] = { ...it, streaming: false }
+          next[i] = { ...it, streaming: false }
           break
         }
       }
-      return { ...state, items }
+      return next
     }
 
     case "tool.start": {
-      // Close any open assistant block so text streamed after the tool
-      // interleaves *below* it, the way Claude Code renders turns.
-      const items = state.items.map((it) =>
+      // Close any open assistant block so text after the tool renders below it.
+      const closed = items.map((it) =>
         it.kind === "assistant" && it.streaming ? { ...it, streaming: false } : it,
       )
+      return [...closed, { kind: "tool", id: ev.id, name: ev.name, input: ev.input, done: false }]
+    }
+
+    case "tool.end":
+      return items.map((it) =>
+        it.kind === "tool" && it.id === ev.id
+          ? { ...it, done: true, ok: ev.ok, output: ev.output }
+          : it,
+      )
+
+    case "error":
+      return [...items, { kind: "error", text: ev.message }]
+
+    default:
+      return items
+  }
+}
+
+/** Return a copy of state with `threadId`'s items replaced by `fn(items)`. */
+function updateThreadItems(
+  state: TranscriptState,
+  threadId: string,
+  fn: (items: Item[]) => Item[],
+): TranscriptState {
+  const thread = state.threads[threadId] ?? {
+    id: threadId,
+    parentId: MAIN,
+    title: threadId,
+    status: "running" as const,
+    items: [],
+  }
+  const order = state.threads[threadId] ? state.order : [...state.order, threadId]
+  return {
+    ...state,
+    order,
+    threads: { ...state.threads, [threadId]: { ...thread, items: fn(thread.items) } },
+  }
+}
+
+/** Pure reducer: fold one AgentEvent into the thread tree. */
+export function reduce(state: TranscriptState, ev: AgentEvent): TranscriptState {
+  switch (ev.type) {
+    case "session.status": {
+      const main = state.threads[MAIN]!
       return {
         ...state,
-        items: [...items, { kind: "tool", id: ev.id, name: ev.name, input: ev.input, done: false }],
+        status: ev.status,
+        threads: { ...state.threads, [MAIN]: { ...main, status: ev.status } },
       }
     }
 
-    case "tool.end": {
-      const items = state.items.map((it) =>
-        it.kind === "tool" && it.id === ev.id ? { ...it, done: true, ok: ev.ok, output: ev.output } : it,
-      )
-      return { ...state, items }
+    case "thread.spawn": {
+      const parentId = ev.parentThreadId ?? MAIN
+      const existing = state.threads[ev.threadId]
+      const node: ThreadNode = {
+        id: ev.threadId,
+        parentId,
+        title: ev.title,
+        status: "running",
+        items: existing?.items ?? [],
+      }
+      return {
+        ...state,
+        order: existing ? state.order : [...state.order, ev.threadId],
+        threads: { ...state.threads, [ev.threadId]: node },
+      }
     }
 
-    case "error":
-      return { ...state, items: [...state.items, { kind: "error", text: ev.message }] }
+    case "thread.status": {
+      const existing = state.threads[ev.threadId]
+      const node: ThreadNode = existing
+        ? { ...existing, status: ev.status, title: ev.title ?? existing.title }
+        : {
+            id: ev.threadId,
+            parentId: MAIN,
+            title: ev.title ?? ev.threadId,
+            status: ev.status,
+            items: [],
+          }
+      return {
+        ...state,
+        order: existing ? state.order : [...state.order, ev.threadId],
+        threads: { ...state.threads, [ev.threadId]: node },
+      }
+    }
 
-    // thread.* — tolerated, ignored for the v0 single-thread prototype.
+    case "message.start":
+    case "message.delta":
+    case "message.end":
+    case "tool.start":
+    case "tool.end":
+    case "error": {
+      const threadId = ("threadId" in ev && ev.threadId) || MAIN
+      return updateThreadItems(state, threadId, (items) => reduceItems(items, ev))
+    }
+
     default:
       return state
   }
 }
 
 export function pushUser(state: TranscriptState, text: string): TranscriptState {
-  return { ...state, items: [...state.items, { kind: "user", text }] }
+  return updateThreadItems(state, MAIN, (items) => [...items, { kind: "user", text }])
 }

@@ -23,7 +23,7 @@ async function main() {
     callerThreadId: ROOT,
     title: "List the current directory",
     instructions:
-      "Use the list_dir tool to list the current directory, then reply with a one-sentence summary of what you found.",
+      "Use the ls tool to list the current directory, then reply with a one-sentence summary of what you found.",
   })
   mgr.dispose()
 

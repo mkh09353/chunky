@@ -8,6 +8,7 @@ import { WelcomeBanner } from "./components/WelcomeBanner.js"
 import { Transcript } from "./components/Transcript.js"
 import { StatusLine } from "./components/StatusLine.js"
 import { PromptInput } from "./components/PromptInput.js"
+import { LoginPicker, type ProviderRow } from "./components/LoginPicker.js"
 import { ACCENT } from "./theme.js"
 
 interface Props {
@@ -25,6 +26,9 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   const [state, setState] = useState<TranscriptState>(initialState)
   const [startedAt, setStartedAt] = useState<number | null>(null)
   const [threadsCollapsed, setThreadsCollapsed] = useState(false)
+  // When set, the /login provider picker is open; PromptInput is disabled and
+  // arrow/enter/esc drive the picker instead.
+  const [loginPicker, setLoginPicker] = useState<{ providers: ProviderRow[]; selected: number } | null>(null)
   const sessionIdRef = useRef<string | null>(null)
   const rawSupported = Boolean(useStdin().isRawModeSupported)
 
@@ -32,6 +36,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   // spawned threads' contents fold to their header lines).
   useInput(
     (input, key) => {
+      if (loginPicker) return // picker owns the keys while open
       if (key.ctrl && (input === "t" || input === "T")) setThreadsCollapsed((v) => !v)
     },
     { isActive: rawSupported },
@@ -102,13 +107,6 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     [apply],
   )
 
-  interface ProviderRow {
-    id: string
-    label: string
-    ready: boolean
-    active: boolean
-  }
-
   // GET /api/providers (live only). Returns [] on any failure.
   const fetchProviders = useCallback(async (): Promise<ProviderRow[]> => {
     try {
@@ -120,7 +118,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     }
   }, [baseUrl])
 
-  // /login — list providers and initiate a login for the first not-yet-ready one.
+  // /login — open an arrow-navigable picker so you choose WHICH provider to log in to.
   const doLogin = useCallback(async () => {
     if (mode !== "live") {
       printLine("/login needs the live server (run the server, then the TUI with --live).")
@@ -131,34 +129,62 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       printLine("No providers available (is the server running?).")
       return
     }
-    const list = providers
-      .map((p) => `  ${p.active ? "●" : "○"} ${p.id} — ${p.label} ${p.ready ? "[ready]" : "[login needed]"}`)
-      .join("\n")
-    const target = providers.find((p) => !p.ready) ?? providers.find((p) => p.id !== "zen")
-    if (!target) {
-      printLine(`Providers:\n${list}\n\nAll providers are already logged in.`)
-      return
-    }
-    try {
-      const res = await fetch(baseUrl + `/api/auth/${target.id}/login`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ method: "device" }),
-      })
-      const body = (await res.json()) as { url?: string; userCode?: string; instructions?: string; error?: string }
-      if (body.error) {
-        printLine(`Providers:\n${list}\n\nLogin for ${target.id} failed: ${body.error}`)
+    const firstNeedsLogin = providers.findIndex((p) => !p.ready)
+    setLoginPicker({ providers, selected: firstNeedsLogin >= 0 ? firstNeedsLogin : 0 })
+  }, [mode, fetchProviders, printLine])
+
+  // Initiate the actual login for the chosen provider (called on enter in the picker).
+  const initiateLogin = useCallback(
+    async (p: ProviderRow) => {
+      setLoginPicker(null)
+      if (p.ready) {
+        printLine(`${p.id} is already logged in. Use /model to select it.`)
         return
       }
-      const codeLine = body.userCode ? `\n  Code: ${body.userCode}` : ""
-      printLine(
-        `Providers:\n${list}\n\nLogging in to ${target.id}:\n  ${body.instructions ?? body.url ?? ""}` +
-          `${codeLine}\n  URL: ${body.url ?? ""}\n\nAfter authorizing, run /model to select it.`,
-      )
-    } catch (err) {
-      printLine(`Login request failed: ${String(err)}`)
-    }
-  }, [mode, baseUrl, fetchProviders, printLine])
+      try {
+        const res = await fetch(baseUrl + `/api/auth/${p.id}/login`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ method: "device" }),
+        })
+        const body = (await res.json()) as { url?: string; userCode?: string; instructions?: string; error?: string }
+        if (body.error) {
+          printLine(`Login for ${p.id} failed: ${body.error}`)
+          return
+        }
+        const codeLine = body.userCode ? `\n  Code: ${body.userCode}` : ""
+        printLine(
+          `Logging in to ${p.id}:\n  ${body.instructions ?? body.url ?? ""}${codeLine}\n  URL: ${body.url ?? ""}\n\n` +
+            `Authorize in your browser; the server polls and stores the token. Then run /model to select it.`,
+        )
+      } catch (err) {
+        printLine(`Login request failed: ${String(err)}`)
+      }
+    },
+    [baseUrl, printLine],
+  )
+
+  // Picker navigation: ↑/↓ move, enter selects, esc cancels. Active only while open.
+  useInput(
+    (_input, key) => {
+      if (!loginPicker) return
+      if (key.upArrow) {
+        setLoginPicker((s) => (s ? { ...s, selected: (s.selected - 1 + s.providers.length) % s.providers.length } : s))
+        return
+      }
+      if (key.downArrow) {
+        setLoginPicker((s) => (s ? { ...s, selected: (s.selected + 1) % s.providers.length } : s))
+        return
+      }
+      if (key.return) {
+        const p = loginPicker.providers[loginPicker.selected]
+        if (p) void initiateLogin(p)
+        return
+      }
+      if (key.escape) setLoginPicker(null)
+    },
+    { isActive: rawSupported && loginPicker != null },
+  )
 
   // /model — cycle the active provider to the next registered one and select it.
   const doModel = useCallback(async () => {
@@ -243,12 +269,13 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       <Transcript state={state} collapsed={threadsCollapsed} />
       {running && startedAt != null && <StatusLine startedAt={startedAt} />}
       <Box flexDirection="column" width="100%" marginTop={1}>
+        {loginPicker && <LoginPicker providers={loginPicker.providers} selected={loginPicker.selected} />}
         <Box width="100%" justifyContent="flex-end">
           <Text dimColor>
             <Text color={ACCENT}>●</Text> {mode === "live" ? "glm-5.2" : "mock"} · /model
           </Text>
         </Box>
-        <PromptInput disabled={running} onSubmit={submit} onCommand={onCommand} />
+        <PromptInput disabled={running || loginPicker != null} onSubmit={submit} onCommand={onCommand} />
         <Text dimColor>
           {"  ? for shortcuts · / for commands · ctrl+c to quit"}
           {hasThreads ? "  ·  ctrl+t to " + (threadsCollapsed ? "expand" : "collapse") + " threads" : ""}

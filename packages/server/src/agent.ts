@@ -11,7 +11,7 @@
 // all unchanged — only the agent-construction call differs.
 import { tool } from "@langchain/core/tools"
 import { z } from "zod"
-import { createAgent } from "langchain"
+import { createAgent, summarizationMiddleware } from "langchain"
 import { activeProviderId, resolveModel, selectionOf, selectionSignature } from "./providers/registry.ts"
 import { threadContextFor } from "./thread-context.ts"
 import { buildSystemPrompt, type EditToolName } from "./prompt.ts"
@@ -109,15 +109,31 @@ export function editToolNameForModel(modelId: string | undefined, providerId: st
 export function buildAgent(_opts: BuildAgentOpts = {}) {
   const providerId = activeProviderId()
   const modelId = selectionOf(providerId).model
+  const model = resolveModel()
   // TODO: prompt-caching middleware. langchain exports anthropicPromptCachingMiddleware,
   // but every current provider builds an OpenAI-compatible ChatOpenAI (zen/grok/codex),
   // not ChatAnthropic, so it would be a no-op here. Wire it in if/when an Anthropic
   // provider lands.
   return createAgent({
-    model: resolveModel(),
+    model,
     tools: [read, bash, write, spawnThread, ...editToolsForModel(modelId, providerId)],
     systemPrompt: buildSystemPrompt(editToolNameForModel(modelId, providerId)),
     checkpointer: makeCheckpointer(),
+    // Auto-compaction — the context-management half of Pi's efficiency win (a
+    // "tighter working set" so long sessions don't grow unbounded, which is what we
+    // lost by dropping createDeepAgent's SummarizationMiddleware). Once history grows
+    // past ~100k tokens, older messages are summarized while the most recent 20 are
+    // kept verbatim; the active model writes the summary. A token trigger (not a
+    // context-window fraction) keeps this provider-agnostic — Zen/Codex ChatOpenAI
+    // instances don't reliably report a context size. Move to { fraction } once model
+    // profiles carry context windows.
+    middleware: [
+      summarizationMiddleware({
+        model,
+        trigger: { tokens: 100_000 },
+        keep: { messages: 20 },
+      }),
+    ],
   })
 }
 

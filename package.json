@@ -1,0 +1,15 @@
+{
+  "name": "multicode-cli",
+  "private": true,
+  "type": "module",
+  "workspaces": ["packages/*"],
+  "scripts": {
+    "server": "bun run packages/server/src/index.ts",
+    "tui": "bun run packages/tui/src/index.tsx",
+    "typecheck": "tsc -b"
+  },
+  "devDependencies": {
+    "typescript": "^5.7.0",
+    "@types/node": "^22.10.0"
+  }
+}

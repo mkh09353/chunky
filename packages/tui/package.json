@@ -1,0 +1,24 @@
+{
+  "name": "@mc/tui",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "main": "src/index.tsx",
+  "scripts": {
+    "start": "bun run src/index.tsx",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@mc/protocol": "workspace:*",
+    "chalk": "^5.3.0",
+    "cli-boxes": "^4.0.1",
+    "figures": "^6.1.0",
+    "ink": "^5.1.0",
+    "react": "^18.3.1",
+    "wrap-ansi": "^9.0.0"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.14",
+    "@types/react": "^18.3.12"
+  }
+}

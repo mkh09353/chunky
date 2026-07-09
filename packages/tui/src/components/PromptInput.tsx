@@ -97,7 +97,7 @@ export function PromptInput({ disabled, onSubmit, onCommand }: Props) {
         borderRight={false}
         flexShrink={0}
       >
-        <Text color={ACCENT}>{"> "}</Text>
+        <Text color={ACCENT}>{"❯ "}</Text>
         <CursorText value={value} cursor={cursor} showCursor={rawSupported && !disabled} />
       </Box>
     </Box>
@@ -107,7 +107,7 @@ export function PromptInput({ disabled, onSubmit, onCommand }: Props) {
 /** Render the line with an inverse-block cursor, like Claude Code's input. */
 function CursorText({ value, cursor, showCursor }: { value: string; cursor: number; showCursor: boolean }) {
   if (value.length === 0) {
-    return showCursor ? <Text inverse> </Text> : <Text dimColor>Type your message…</Text>
+    return <Text dimColor>Try &quot;fix lint errors&quot;</Text>
   }
   const before = value.slice(0, cursor)
   const at = value.slice(cursor, cursor + 1) || " "

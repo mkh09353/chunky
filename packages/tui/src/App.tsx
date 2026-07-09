@@ -7,6 +7,7 @@ import { WelcomeBanner } from "./components/WelcomeBanner.js"
 import { Transcript } from "./components/Transcript.js"
 import { StatusLine } from "./components/StatusLine.js"
 import { PromptInput } from "./components/PromptInput.js"
+import { ACCENT } from "./theme.js"
 
 interface Props {
   mode: "mock" | "live"
@@ -120,11 +121,13 @@ export function App({ mode, baseUrl, cwd, autoDemo = true }: Props) {
       <Transcript items={state.items} />
       {running && startedAt != null && <StatusLine startedAt={startedAt} />}
       <Box flexDirection="column" width="100%" marginTop={1}>
-        <PromptInput disabled={running} onSubmit={submit} onCommand={onCommand} />
-        <Box justifyContent="space-between" width="100%">
-          <Text dimColor> ? for shortcuts</Text>
-          <Text dimColor>{mode === "live" ? "live · glm-5.2" : "mock"}</Text>
+        <Box width="100%" justifyContent="flex-end">
+          <Text dimColor>
+            <Text color={ACCENT}>●</Text> {mode === "live" ? "glm-5.2" : "mock"} · /model
+          </Text>
         </Box>
+        <PromptInput disabled={running} onSubmit={submit} onCommand={onCommand} />
+        <Text dimColor>{"  ? for shortcuts · / for commands · ctrl+c to quit"}</Text>
       </Box>
     </Box>
   )

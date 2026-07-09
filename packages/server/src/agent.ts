@@ -68,15 +68,15 @@ const spawnThread = tool(
 )
 
 /**
- * Durable checkpointer so agent memory survives a restart. Uses a SEPARATE
- * sqlite file from the session store to avoid cross-library write contention.
- * Falls back to in-memory if the sqlite saver can't load in this runtime.
+ * Durable checkpointer so agent memory survives a restart, backed by bun:sqlite
+ * (the official saver uses better-sqlite3, which Bun can't load). Uses a SEPARATE
+ * sqlite file from the session store to avoid cross-connection write contention.
+ * Falls back to in-memory only if the bun:sqlite saver can't initialize.
  */
 function makeCheckpointer() {
   try {
-    // Lazy require so a load failure degrades gracefully instead of crashing boot.
-    const { SqliteSaver } = require("@langchain/langgraph-checkpoint-sqlite")
-    return SqliteSaver.fromConnString(process.env.MC_GRAPH_DB || "multicode-graph.db")
+    const { BunSqliteSaver } = require("./bun-sqlite-saver.ts")
+    return BunSqliteSaver.fromConnString(process.env.MC_GRAPH_DB || "multicode-graph.db")
   } catch (err) {
     const { MemorySaver } = require("@langchain/langgraph")
     console.warn(`[@mc/server] durable checkpointer unavailable (${(err as Error).message}); using in-memory`)

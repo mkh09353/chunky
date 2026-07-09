@@ -7,7 +7,6 @@ import { WelcomeBanner } from "./components/WelcomeBanner.js"
 import { Transcript } from "./components/Transcript.js"
 import { StatusLine } from "./components/StatusLine.js"
 import { PromptInput } from "./components/PromptInput.js"
-import { ACCENT } from "./theme.js"
 
 interface Props {
   mode: "mock" | "live"
@@ -116,20 +115,17 @@ export function App({ mode, baseUrl, cwd, autoDemo = true }: Props) {
   const running = state.status === "running"
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" width="100%">
       <WelcomeBanner mode={mode} cwd={cwd} />
       <Transcript items={state.items} />
       {running && startedAt != null && <StatusLine startedAt={startedAt} />}
-      <Box marginTop={1}>
+      <Box flexDirection="column" width="100%" marginTop={1}>
         <PromptInput disabled={running} onSubmit={submit} onCommand={onCommand} />
-      </Box>
-      {running && (
-        <Box paddingX={1}>
-          <Text color={ACCENT} dimColor>
-            agent is working…
-          </Text>
+        <Box justifyContent="space-between" width="100%">
+          <Text dimColor> ? for shortcuts</Text>
+          <Text dimColor>{mode === "live" ? "live · glm-5.2" : "mock"}</Text>
         </Box>
-      )}
+      </Box>
     </Box>
   )
 }

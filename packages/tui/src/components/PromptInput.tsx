@@ -10,14 +10,13 @@ interface Props {
 }
 
 /**
- * The signature Claude Code element: a single rounded-border box with a dim
- * gray border, a terracotta `>` marker, an inline cursor, and — when the line
- * starts with `/` — a CustomSelect-style slash-command popup floating above it.
+ * The signature Claude Code input: a full-width band delimited by a horizontal
+ * rule above and below, a terracotta `>` marker, and an inline block cursor.
+ * When the line starts with `/`, a slash-command popup floats above the band.
  */
 export function PromptInput({ disabled, onSubmit, onCommand }: Props) {
-  // isRawModeSupported is stdin.isTTY, which is `undefined` (not false) in a
-  // non-TTY. Ink's useInput only bails on a strict === false, so coerce it to a
-  // real boolean — otherwise it would try (and fail) to enable raw mode in CI.
+  // isRawModeSupported is stdin.isTTY, `undefined` (not false) in a non-TTY.
+  // Ink's useInput only bails on a strict === false, so coerce to a real bool.
   const rawSupported = Boolean(useStdin().isRawModeSupported)
   const [value, setValue] = useState("")
   const [cursor, setCursor] = useState(0)
@@ -34,16 +33,9 @@ export function PromptInput({ disabled, onSubmit, onCommand }: Props) {
     (input, key) => {
       if (disabled) return
 
-      // Slash-menu navigation
       if (slashActive && matches.length > 0) {
-        if (key.upArrow) {
-          setSelected((s) => clampSel(s - 1))
-          return
-        }
-        if (key.downArrow) {
-          setSelected((s) => clampSel(s + 1))
-          return
-        }
+        if (key.upArrow) return setSelected((s) => clampSel(s - 1))
+        if (key.downArrow) return setSelected((s) => clampSel(s + 1))
         if (key.tab) {
           const name = matches[clampSel(selected)]!.name
           setValue(name)
@@ -66,15 +58,8 @@ export function PromptInput({ disabled, onSubmit, onCommand }: Props) {
         onSubmit(text)
         return
       }
-
-      if (key.leftArrow) {
-        setCursor((c) => Math.max(0, c - 1))
-        return
-      }
-      if (key.rightArrow) {
-        setCursor((c) => Math.min(value.length, c + 1))
-        return
-      }
+      if (key.leftArrow) return setCursor((c) => Math.max(0, c - 1))
+      if (key.rightArrow) return setCursor((c) => Math.min(value.length, c + 1))
       if (key.backspace || key.delete) {
         if (cursor > 0) {
           setValue((v) => v.slice(0, cursor - 1) + v.slice(cursor))
@@ -84,7 +69,6 @@ export function PromptInput({ disabled, onSubmit, onCommand }: Props) {
         return
       }
       if (key.ctrl || key.meta || key.escape) return
-
       if (input) {
         setValue((v) => v.slice(0, cursor) + input + v.slice(cursor))
         setCursor((c) => c + input.length)
@@ -101,9 +85,18 @@ export function PromptInput({ disabled, onSubmit, onCommand }: Props) {
   }
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" width="100%">
       {matches.length > 0 && <SlashMenu commands={matches} selected={clampSel(selected)} />}
-      <Box borderStyle="round" borderColor={BORDER} paddingX={1}>
+      <Box
+        width="100%"
+        borderStyle="single"
+        borderColor={BORDER}
+        borderTop
+        borderBottom
+        borderLeft={false}
+        borderRight={false}
+        flexShrink={0}
+      >
         <Text color={ACCENT}>{"> "}</Text>
         <CursorText value={value} cursor={cursor} showCursor={rawSupported && !disabled} />
       </Box>

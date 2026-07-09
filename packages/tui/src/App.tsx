@@ -9,6 +9,7 @@ import { Transcript } from "./components/Transcript.js"
 import { StatusLine } from "./components/StatusLine.js"
 import { PromptInput } from "./components/PromptInput.js"
 import { LoginPicker, type ProviderRow } from "./components/LoginPicker.js"
+import { openBrowser } from "./openBrowser.js"
 import { ACCENT } from "./theme.js"
 
 interface Props {
@@ -133,7 +134,9 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     setLoginPicker({ providers, selected: firstNeedsLogin >= 0 ? firstNeedsLogin : 0 })
   }, [mode, fetchProviders, printLine])
 
-  // Initiate the actual login for the chosen provider (called on enter in the picker).
+  // Initiate login for the chosen provider (called on enter in the picker).
+  // Uses the browser loopback flow and OPENS the browser for you; the server's
+  // callback captures the token automatically. Then we poll status until ready.
   const initiateLogin = useCallback(
     async (p: ProviderRow) => {
       setLoginPicker(null)
@@ -145,18 +148,35 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         const res = await fetch(baseUrl + `/api/auth/${p.id}/login`, {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ method: "device" }),
+          body: JSON.stringify({ method: "browser" }),
         })
-        const body = (await res.json()) as { url?: string; userCode?: string; instructions?: string; error?: string }
-        if (body.error) {
-          printLine(`Login for ${p.id} failed: ${body.error}`)
+        const body = (await res.json()) as { url?: string; userCode?: string; error?: string }
+        if (body.error || !body.url) {
+          printLine(`Login for ${p.id} failed: ${body.error ?? "no authorize URL returned"}`)
           return
         }
-        const codeLine = body.userCode ? `\n  Code: ${body.userCode}` : ""
+        const opened = openBrowser(body.url)
         printLine(
-          `Logging in to ${p.id}:\n  ${body.instructions ?? body.url ?? ""}${codeLine}\n  URL: ${body.url ?? ""}\n\n` +
-            `Authorize in your browser; the server polls and stores the token. Then run /model to select it.`,
+          opened
+            ? `Opening your browser to sign in to ${p.id}… complete the login there; it finishes automatically.`
+            : `Couldn't open a browser automatically. Open this URL to sign in to ${p.id}:\n  ${body.url}`,
         )
+        // Poll until the server has stored a token (loopback callback fired).
+        const deadline = Date.now() + 150_000
+        while (Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 2000))
+          try {
+            const s = await fetch(baseUrl + `/api/auth/${p.id}/status`)
+            const sb = (await s.json()) as { ready?: boolean }
+            if (sb.ready) {
+              printLine(`✓ Logged in to ${p.id}. Run /model to switch to it.`)
+              return
+            }
+          } catch {
+            /* keep waiting */
+          }
+        }
+        printLine(`Still waiting on ${p.id} login. Finish in the browser, then run /model.`)
       } catch (err) {
         printLine(`Login request failed: ${String(err)}`)
       }

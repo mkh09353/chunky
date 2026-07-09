@@ -1,7 +1,8 @@
 import React, { useCallback, useEffect, useRef, useState } from "react"
-import { Box, Text, useApp } from "ink"
+import { Box, Text, useApp, useInput, useStdin } from "ink"
 import { ROUTES, readSSE, type AgentEvent, type CreateSessionResponse } from "@mc/protocol"
 import { mockRun } from "@mc/protocol/mock"
+import { mockThreadsRun } from "./mockThreads.js"
 import { initialState, pushUser, reduce, type TranscriptState } from "./transcript.js"
 import { WelcomeBanner } from "./components/WelcomeBanner.js"
 import { Transcript } from "./components/Transcript.js"
@@ -15,13 +16,26 @@ interface Props {
   cwd: string
   /** In mock mode, auto-run one demo turn on mount (lets the UI stream with no TTY). */
   autoDemo?: boolean
+  /** Which mock generator the auto-demo drives ("threads" shows the nested-thread view). */
+  demo?: "basic" | "threads"
 }
 
-export function App({ mode, baseUrl, cwd, autoDemo = true }: Props) {
+export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Props) {
   const { exit } = useApp()
   const [state, setState] = useState<TranscriptState>(initialState)
   const [startedAt, setStartedAt] = useState<number | null>(null)
+  const [threadsCollapsed, setThreadsCollapsed] = useState(false)
   const sessionIdRef = useRef<string | null>(null)
+  const rawSupported = Boolean(useStdin().isRawModeSupported)
+
+  // Ctrl+T collapses/expands child-thread bodies (the tree view stays; only
+  // spawned threads' contents fold to their header lines).
+  useInput(
+    (input, key) => {
+      if (key.ctrl && (input === "t" || input === "T")) setThreadsCollapsed((v) => !v)
+    },
+    { isActive: rawSupported },
+  )
 
   const apply = useCallback((ev: AgentEvent) => {
     setState((s) => reduce(s, ev))
@@ -56,7 +70,8 @@ export function App({ mode, baseUrl, cwd, autoDemo = true }: Props) {
       setState((s) => pushUser(s, text))
       setStartedAt(Date.now())
       if (mode === "mock") {
-        for await (const ev of mockRun(text)) apply(ev)
+        const gen = demo === "threads" ? mockThreadsRun(text) : mockRun(text)
+        for await (const ev of gen) apply(ev)
         return
       }
       const id = sessionIdRef.current
@@ -74,7 +89,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true }: Props) {
         apply({ type: "error", message: `send failed: ${String(err)}` })
       }
     },
-    [mode, baseUrl, apply],
+    [mode, baseUrl, apply, demo],
   )
 
   // Print a one-shot assistant line into the transcript (used by slash commands).
@@ -209,17 +224,23 @@ export function App({ mode, baseUrl, cwd, autoDemo = true }: Props) {
   // Mock demo turn so the transcript streams even without a TTY.
   useEffect(() => {
     if (mode === "mock" && autoDemo) {
-      const t = setTimeout(() => void submit("scaffold a Claude Code style TUI"), 300)
+      const prompt =
+        demo === "threads"
+          ? "explore the project using a child thread, then summarize"
+          : "scaffold a Claude Code style TUI"
+      const t = setTimeout(() => void submit(prompt), 300)
       return () => clearTimeout(t)
     }
-  }, [mode, autoDemo, submit])
+  }, [mode, autoDemo, submit, demo])
 
   const running = state.status === "running"
+  // More than just the main thread means child threads exist -> show the toggle hint.
+  const hasThreads = state.order.length > 1
 
   return (
     <Box flexDirection="column" width="100%">
       <WelcomeBanner mode={mode} cwd={cwd} />
-      <Transcript items={state.items} />
+      <Transcript state={state} collapsed={threadsCollapsed} />
       {running && startedAt != null && <StatusLine startedAt={startedAt} />}
       <Box flexDirection="column" width="100%" marginTop={1}>
         <Box width="100%" justifyContent="flex-end">
@@ -228,7 +249,10 @@ export function App({ mode, baseUrl, cwd, autoDemo = true }: Props) {
           </Text>
         </Box>
         <PromptInput disabled={running} onSubmit={submit} onCommand={onCommand} />
-        <Text dimColor>{"  ? for shortcuts · / for commands · ctrl+c to quit"}</Text>
+        <Text dimColor>
+          {"  ? for shortcuts · / for commands · ctrl+c to quit"}
+          {hasThreads ? "  ·  ctrl+t to " + (threadsCollapsed ? "expand" : "collapse") + " threads" : ""}
+        </Text>
       </Box>
     </Box>
   )

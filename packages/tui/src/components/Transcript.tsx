@@ -1,19 +1,124 @@
-import React from "react"
+import React, { useEffect, useState } from "react"
 import { Box, Text } from "ink"
-import type { Item } from "../transcript.js"
-import { ACCENT, DOT, ERROR, SUCCESS } from "../theme.js"
+import type { Item, ThreadNode, TranscriptState } from "../transcript.js"
+import { MAIN } from "../transcript.js"
+import { ACCENT, ACCENT_DEEP, BORDER, DOT, ERROR, SPINNER_FRAMES, SUCCESS } from "../theme.js"
 
-export function Transcript({ items }: { items: Item[] }) {
+/**
+ * The transcript is a TREE of threads. The main session thread renders inline
+ * (no frame); every spawned child thread renders as an indented block under its
+ * parent — a coloured left rail, a header with its title + live status, and its
+ * own streamed items. Child threads can nest (a child of a child indents again),
+ * so concurrent delegated work is legible at a glance. Net-new vs Claude Code.
+ */
+export function Transcript({
+  state,
+  collapsed = false,
+}: {
+  state: TranscriptState
+  collapsed?: boolean
+}) {
+  const main = state.threads[MAIN]
+  if (!main) return null
   return (
     <Box flexDirection="column">
-      {items.map((it, i) => (
+      {main.items.map((it, i) => (
         <ItemView key={i} item={it} />
       ))}
+      <ThreadChildren parentId={MAIN} state={state} depth={0} collapsed={collapsed} />
     </Box>
   )
 }
 
-function ItemView({ item }: { item: Item }) {
+/** Render every thread whose parent is `parentId`, recursively. */
+function ThreadChildren({
+  parentId,
+  state,
+  depth,
+  collapsed,
+}: {
+  parentId: string
+  state: TranscriptState
+  depth: number
+  collapsed: boolean
+}) {
+  const children = state.order
+    .map((id) => state.threads[id]!)
+    .filter((t) => t.parentId === parentId)
+  if (children.length === 0) return null
+  return (
+    <>
+      {children.map((thread) => (
+        <ThreadBlock key={thread.id} thread={thread} state={state} depth={depth} collapsed={collapsed} />
+      ))}
+    </>
+  )
+}
+
+/** One child thread: header (title + status) and, unless collapsed, its body. */
+function ThreadBlock({
+  thread,
+  state,
+  depth,
+  collapsed,
+}: {
+  thread: ThreadNode
+  state: TranscriptState
+  depth: number
+  collapsed: boolean
+}) {
+  const running = thread.status === "running"
+  const rail = depth % 2 === 0 ? ACCENT : ACCENT_DEEP
+  const childCount = state.order.filter((id) => state.threads[id]!.parentId === thread.id).length
+  return (
+    <Box flexDirection="column" marginTop={1} marginLeft={depth === 0 ? 0 : 2}>
+      {/* header */}
+      <Box>
+        <Text color={rail}>{"├─ "}</Text>
+        {running ? <Spinner color={rail} /> : <Text color={SUCCESS}>{DOT}</Text>}
+        <Text bold color={rail}>
+          {" "}
+          thread: {thread.title}
+        </Text>
+        <Text dimColor>{running ? "  (running…)" : "  (done)"}</Text>
+        {collapsed && (thread.items.length > 0 || childCount > 0) && (
+          <Text dimColor>
+            {"  "}
+            {thread.items.length} item{thread.items.length === 1 ? "" : "s"}
+            {childCount > 0 ? `, ${childCount} sub` : ""}
+          </Text>
+        )}
+      </Box>
+
+      {/* body: left rail + items, then nested children */}
+      {!collapsed && (
+        <Box flexDirection="row">
+          <Box flexDirection="column" marginRight={1}>
+            <Text color={rail}>{"│"}</Text>
+          </Box>
+          <Box flexDirection="column" flexGrow={1}>
+            {thread.items.map((it, i) => (
+              <ItemView key={i} item={it} />
+            ))}
+            <ThreadChildren parentId={thread.id} state={state} depth={depth + 1} collapsed={collapsed} />
+          </Box>
+        </Box>
+      )}
+    </Box>
+  )
+}
+
+/** A compact one-cell spinner reused from the status line frames. */
+function Spinner({ color }: { color: string }) {
+  const [frame, setFrame] = useState(0)
+  useEffect(() => {
+    const t = setInterval(() => setFrame((f) => (f + 1) % SPINNER_FRAMES.length), 90)
+    return () => clearInterval(t)
+  }, [])
+  return <Text color={color}>{SPINNER_FRAMES[frame]}</Text>
+}
+
+export function ItemView({ item }: { item: Item }) {
   switch (item.kind) {
     case "user":
       return (

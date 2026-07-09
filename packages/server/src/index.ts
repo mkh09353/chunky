@@ -1,26 +1,36 @@
-// MultiCode CLI server: Bun.serve HTTP + SSE, one model via DeepAgents/Zen.
+// MultiCode CLI server: Bun.serve HTTP + SSE. Model via the provider registry;
+// sessions + event history persisted to sqlite so reconnecting resumes.
 import { randomUUID } from "node:crypto"
 import { DEFAULT_PORT, ROUTES, sse, type AgentEvent } from "@mc/protocol"
 import { runAgent } from "./run.ts"
+import { Store } from "./store.ts"
+import { activeProviderId } from "./providers/registry.ts"
 
 type Subscriber = ReadableStreamDefaultController<Uint8Array>
 
-interface Session {
-  subscribers: Set<Subscriber>
-  history: AgentEvent[]
-}
-
-const sessions = new Map<string, Session>()
+// In-memory fan-out only. Durable history lives in the Store, so this is just
+// the set of currently-connected SSE clients per session.
+const live = new Map<string, Set<Subscriber>>()
 const encoder = new TextEncoder()
 
-function emitTo(session: Session, ev: AgentEvent): void {
-  session.history.push(ev)
+function subscribers(sessionId: string): Set<Subscriber> {
+  let set = live.get(sessionId)
+  if (!set) {
+    set = new Set()
+    live.set(sessionId, set)
+  }
+  return set
+}
+
+/** Persist an event, then push it to every connected subscriber of the session. */
+function emitTo(sessionId: string, ev: AgentEvent): void {
+  Store.appendEvent(sessionId, ev)
   const frame = encoder.encode(sse(ev))
-  for (const controller of session.subscribers) {
+  for (const controller of subscribers(sessionId)) {
     try {
       controller.enqueue(frame)
     } catch {
-      // subscriber gone; it will be cleaned up on cancel
+      // subscriber gone; cleaned up on cancel
     }
   }
 }
@@ -51,10 +61,16 @@ const server = Bun.serve({
       return new Response(null, { status: 204, headers: CORS })
     }
 
+    // GET /api/sessions -> ListSessionsResponse (resume picker)
+    if (req.method === "GET" && pathname === ROUTES.listSessions) {
+      return json({ sessions: Store.list() })
+    }
+
     // POST /api/sessions -> { sessionId }
     if (req.method === "POST" && pathname === ROUTES.createSession) {
       const sessionId = randomUUID()
-      sessions.set(sessionId, { subscribers: new Set(), history: [] })
+      Store.createSession(sessionId)
+      subscribers(sessionId) // pre-create the fan-out set
       return json({ sessionId })
     }
 
@@ -62,23 +78,23 @@ const server = Bun.serve({
     const m = pathname.match(/^\/api\/sessions\/([^/]+)\/(events|messages)$/)
     if (m) {
       const [, sessionId, kind] = m
-      const session = sessions.get(sessionId)
-      if (!session) return json({ error: "unknown session" }, 404)
+      // Accept any session that exists on disk (enables resume across restart),
+      // not just ones created in this process.
+      if (!Store.exists(sessionId)) return json({ error: "unknown session" }, 404)
 
-      // GET .../events -> SSE
+      // GET .../events -> SSE. Replays persisted history first (== resume), then live.
       if (kind === "events" && req.method === "GET") {
         let selfController: Subscriber
         const stream = new ReadableStream<Uint8Array>({
           start(controller) {
             selfController = controller
-            // Replay history so a late subscriber sees the full run.
-            for (const ev of session.history) {
+            for (const ev of Store.history(sessionId)) {
               controller.enqueue(encoder.encode(sse(ev)))
             }
-            session.subscribers.add(controller)
+            subscribers(sessionId).add(controller)
           },
           cancel() {
-            session.subscribers.delete(selfController)
+            subscribers(sessionId).delete(selfController)
           },
         })
         return new Response(stream, {
@@ -102,10 +118,11 @@ const server = Bun.serve({
         }
         if (!text) return json({ error: "missing text" }, 400)
 
-        // Fire-and-forget: translate the agent run into events.
-        void runAgent(sessionId, text, (ev) => emitTo(session, ev)).catch((err) => {
-          emitTo(session, { type: "error", message: (err as Error)?.message ?? String(err) })
-          emitTo(session, { type: "session.status", sessionId, status: "idle" })
+        Store.setTitleIfDefault(sessionId, text) // first message becomes the resume label
+
+        void runAgent(sessionId, text, (ev) => emitTo(sessionId, ev)).catch((err) => {
+          emitTo(sessionId, { type: "error", message: (err as Error)?.message ?? String(err) })
+          emitTo(sessionId, { type: "session.status", sessionId, status: "idle" })
         })
 
         return new Response(null, { status: 202, headers: CORS })
@@ -116,4 +133,6 @@ const server = Bun.serve({
   },
 })
 
-console.log(`[@mc/server] listening on http://localhost:${server.port} (model=${process.env.ZEN_MODEL})`)
+console.log(
+  `[@mc/server] listening on http://localhost:${server.port} (provider=${activeProviderId()})`,
+)

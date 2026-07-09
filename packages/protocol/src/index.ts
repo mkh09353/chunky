@@ -27,12 +27,25 @@ export interface CreateSessionResponse {
 export interface SendMessageRequest {
   text: string
 }
+/** One row in the resume picker: a persisted session the client can reattach to. */
+export interface SessionSummary {
+  sessionId: string
+  title: string
+  createdAt: number
+  lastActivity: number
+}
+export interface ListSessionsResponse {
+  sessions: SessionSummary[]
+}
 
 // ---- Endpoints (relative to http://localhost:<port>) ----
 export const ROUTES = {
   createSession: `/api/sessions`, // POST -> CreateSessionResponse
+  listSessions: `/api/sessions`, // GET  -> ListSessionsResponse (resume picker)
   sendMessage: (id: string) => `/api/sessions/${id}/messages`, // POST SendMessageRequest -> 202
-  events: (id: string) => `/api/sessions/${id}/events`, // GET -> SSE stream of AgentEvent
+  // GET -> SSE stream of AgentEvent. Replays persisted history first, so opening
+  // this on an existing id IS "resume": the full prior transcript streams, then live.
+  events: (id: string) => `/api/sessions/${id}/events`,
 } as const
 
 // ---- SSE helpers (used by BOTH sides) ----

@@ -29,18 +29,14 @@ const REDIRECT_URI = `http://localhost:${OAUTH_PORT}${OAUTH_REDIRECT_PATH}`
 const OAUTH_POLLING_SAFETY_MARGIN_MS = 3_000
 const DEFAULT_MODEL = process.env.CODEX_MODEL || "gpt-5.5"
 
-// Curated Codex models (gpt-5.x + gpt-5.x-codex reasoning family), mirroring
-// opencode's ALLOWED_MODELS plus the codex variants. Enriched from models.dev.
-const CODEX_MODELS = [
-  "gpt-5.5",
-  "gpt-5.4",
-  "gpt-5.4-mini",
-  "gpt-5.3-codex",
-  "gpt-5.3-codex-spark",
-  "gpt-5.2-codex",
-  "gpt-5.1-codex",
-]
+// Models a ChatGPT account can actually use via the Codex backend. This is
+// opencode's ALLOWED_MODELS set (codex.ts) — the plain `-codex` variants
+// (gpt-5.3-codex, gpt-5.2-codex, …) return "not supported when using Codex with
+// a ChatGPT account", so they're deliberately excluded. Enriched from models.dev.
+const CODEX_MODELS = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"]
 const USER_AGENT = "multicode-cli/0.0.0"
+// Per-process session id sent on the `session-id` header (matches codex CLI).
+const CODEX_SESSION_ID = crypto.randomUUID()
 
 const ACCESS_TOKEN_REFRESH_SKEW_MS = 60_000
 
@@ -220,6 +216,8 @@ function responsesContentText(content: unknown): string {
 function codexResponsesBody(bodyStr: string): string {
   try {
     const body = JSON.parse(bodyStr)
+    // Codex CLI does not send max_output_tokens; the backend can reject it.
+    delete body.max_output_tokens
     // Function tools: strict must be a boolean (LangChain emits null) — drop it.
     if (Array.isArray(body.tools)) {
       for (const t of body.tools) if (t && t.strict == null) delete t.strict
@@ -256,6 +254,7 @@ async function injectingFetch(input: RequestInfo | URL, init?: RequestInit): Pro
   headers.set("authorization", `Bearer ${auth.access}`)
   headers.set("User-Agent", USER_AGENT)
   headers.set("originator", "multicode")
+  headers.set("session-id", CODEX_SESSION_ID) // codex CLI sends one; helps attribution
   if (auth.accountId) headers.set("ChatGPT-Account-Id", auth.accountId)
 
   const parsed =
@@ -441,6 +440,10 @@ export const codexProvider: ProviderDef = {
       // to service_tier — both go through modelKwargs (spread into the body).
       modelKwargs: {
         store: false, // Codex requires store:false.
+        // With store:false the endpoint is stateless, so a reasoning model needs
+        // its encrypted reasoning returned to carry state across turns / tool
+        // round-trips (opencode's transform.ts does the same).
+        include: ["reasoning.encrypted_content"],
         ...(selection.speed === "fast" ? { service_tier: "priority" } : {}),
       },
     }),

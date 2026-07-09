@@ -7,6 +7,7 @@
 // omits it (so the wire is identical to the pre-threads prototype).
 import type { AgentEvent } from "@chunky/protocol"
 import { getAgent } from "./agent.ts"
+import { activeSelection } from "./providers/registry.ts"
 import { ThreadManager } from "./threads.ts"
 
 export type Emit = (ev: AgentEvent) => void
@@ -151,12 +152,16 @@ export async function translateStream(
 export async function runAgent(sessionId: string, text: string, emit: Emit): Promise<void> {
   emit({ type: "session.status", sessionId, status: "running" })
 
+  // Freeze the root selection for this run. A later /model change affects the
+  // next root turn, never an in-flight root or any of its child threads.
+  const selection = activeSelection()
+
   // Context for spawn_thread: any thread_id in this run (root or descendant)
   // resolves back to this manager via the thread registry.
-  const threads = new ThreadManager(emit, sessionId)
+  const threads = new ThreadManager(emit, sessionId, selection)
 
   try {
-    const stream = await getAgent().stream(
+    const stream = await getAgent(selection).stream(
       { messages: [{ role: "user", content: text }] },
       {
         configurable: { thread_id: sessionId },

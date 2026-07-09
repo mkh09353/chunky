@@ -11,15 +11,39 @@ import { AsyncLocalStorageProviderSingleton } from "@langchain/core/singletons"
 import type { AgentEvent } from "@chunky/protocol"
 import { translateStream, type Emit } from "./run.ts"
 import { getAgent } from "./agent.ts"
+import {
+  activeSelection,
+  childSelection,
+  type AgentSelection,
+  type AgentSelectionOverride,
+} from "./providers/registry.ts"
 import { registerThread, unregisterThread, type ThreadSpawner } from "./thread-context.ts"
+
+/** The narrow part of a compiled agent that ThreadManager needs. Keeping this
+ * structural lets the deterministic thread test inject a fake stream without
+ * model credentials. */
+export interface StreamableAgent {
+  stream(...args: any[]): Promise<AsyncIterable<unknown>>
+}
+
+export type AgentForSelection = (selection: AgentSelection) => StreamableAgent
 
 export class ThreadManager implements ThreadSpawner {
   private readonly rootId: string
   private readonly emit: Emit
+  private readonly agentFor: AgentForSelection
+  private readonly selections = new Map<string, AgentSelection>()
 
-  constructor(emit: Emit, rootId: string) {
+  constructor(
+    emit: Emit,
+    rootId: string,
+    rootSelection: AgentSelection = activeSelection(),
+    agentFor: AgentForSelection = getAgent,
+  ) {
     this.emit = emit
     this.rootId = rootId
+    this.agentFor = agentFor
+    this.selections.set(rootId, rootSelection)
     // The root (main session) thread resolves to this manager, so the main
     // model's spawn_thread calls are routed here.
     registerThread(rootId, this)
@@ -28,6 +52,7 @@ export class ThreadManager implements ThreadSpawner {
   /** Release the root registration when the session turn ends. */
   dispose(): void {
     unregisterThread(this.rootId)
+    this.selections.clear()
   }
 
   /**
@@ -37,12 +62,23 @@ export class ThreadManager implements ThreadSpawner {
    * root, the child links to the main thread (parentThreadId=null); otherwise the
    * child nests under the caller (deeper recursion).
    */
-  async spawn(opts: { callerThreadId: string; title: string; instructions: string }): Promise<string> {
+  async spawn(opts: {
+    callerThreadId: string
+    title: string
+    instructions: string
+    selection?: AgentSelectionOverride
+  }): Promise<string> {
     const childThreadId = randomUUID()
     const parentThreadId = opts.callerThreadId === this.rootId ? null : opts.callerThreadId
+    const parentSelection = this.selections.get(opts.callerThreadId)
+    if (!parentSelection) {
+      throw new Error(`missing model selection for caller thread ${opts.callerThreadId}`)
+    }
+    const selection = childSelection(parentSelection, opts.selection)
 
     // The child is itself a valid spawn context, so grandchildren route correctly.
     registerThread(childThreadId, this)
+    this.selections.set(childThreadId, selection)
 
     this.emit({ type: "thread.spawn", threadId: childThreadId, parentThreadId, title: opts.title })
     this.emit({ type: "thread.status", threadId: childThreadId, status: "running", title: opts.title })
@@ -55,7 +91,7 @@ export class ThreadManager implements ThreadSpawner {
       // stream with a cleared async-local store so it is fully isolated: the
       // child streams only through its OWN iterator, tagged with its threadId.
       const stream = await AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () =>
-        getAgent().stream(
+        this.agentFor(selection).stream(
           { messages: [{ role: "user", content: opts.instructions }] },
           {
             configurable: { thread_id: childThreadId },
@@ -71,6 +107,7 @@ export class ThreadManager implements ThreadSpawner {
     } finally {
       this.emit({ type: "thread.status", threadId: childThreadId, status: "idle", title: opts.title })
       unregisterThread(childThreadId)
+      this.selections.delete(childThreadId)
     }
 
     return finalText

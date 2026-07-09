@@ -17,11 +17,29 @@ import {
   selectionFor,
   setPersistedProvider,
   setSelectionFor,
+  type Effort,
   type ModelSelection,
+  type Speed,
 } from "../settings.ts"
 
 export type { ModelInfo } from "./models-catalog.ts"
 export type { Effort, ModelSelection, Speed } from "../settings.ts"
+
+/** A complete, immutable model choice for one agent run. Keeping the provider
+ * alongside its model knobs lets a root run snapshot its choice once and lets a
+ * child deliberately choose a different provider without consulting global
+ * settings mid-run. */
+export type AgentSelection = Readonly<{ provider: string } & ModelSelection>
+
+/** Optional model-choice fields accepted when spawning a child. Omitted fields
+ * inherit from the caller (or, when changing providers, that provider's saved
+ * selection). */
+export interface AgentSelectionOverride {
+  provider?: string
+  model?: string
+  effort?: Effort
+  speed?: Speed
+}
 
 /** What a provider returns when a login flow is initiated. The actual token
  *  exchange completes in the background; poll `ready()` / the status route. */
@@ -136,22 +154,53 @@ export function setSelection(id: string, sel: ModelSelection): void {
   setSelectionFor(id, sel)
 }
 
+/** Return a frozen, complete selection for a provider's saved model knobs. */
+export function selectionForProvider(id: string): AgentSelection {
+  if (!providers[id]) throw new Error(`unknown provider "${id}"`)
+  return Object.freeze({ provider: id, ...selectionFor(id) })
+}
+
+/** Snapshot the active provider and its selection for one agent run. */
+export function activeSelection(): AgentSelection {
+  return selectionForProvider(activeProviderId())
+}
+
+/**
+ * Resolve a child selection without looking at the global active provider. A
+ * same-provider override inherits its caller's knobs; changing provider starts
+ * from that provider's saved selection before applying explicit fields.
+ */
+export function childSelection(
+  parent: AgentSelection,
+  override: AgentSelectionOverride | undefined,
+): AgentSelection {
+  if (!override) return parent
+
+  const provider = override.provider ?? parent.provider
+  const base = provider === parent.provider ? parent : selectionForProvider(provider)
+  return Object.freeze({
+    provider,
+    model: override.model ?? base.model,
+    effort: override.effort ?? base.effort,
+    speed: override.speed ?? base.speed,
+  })
+}
+
 /**
  * A stable signature of the current active selection. The agent cache keys on
  * this so changing provider OR model OR effort/speed rebuilds the agent, while
  * an unchanged selection reuses it (preserving its live thread state).
  */
-export function selectionSignature(): string {
-  const id = activeProviderId()
-  const s = selectionFor(id)
-  return `${id}::${s.model ?? ""}::${s.effort ?? ""}::${s.speed ?? ""}`
+export function selectionSignature(selection: AgentSelection = activeSelection()): string {
+  return `${selection.provider}::${selection.model ?? ""}::${selection.effort ?? ""}::${selection.speed ?? ""}`
 }
 
-/** Build the chat model for the active (or named) provider using its selection. */
-export function resolveModel(id: string = activeProviderId()): BaseChatModel {
-  const p = providers[id]
-  if (!p) throw new Error(`unknown provider "${id}"`)
-  return p.buildModel(selectionFor(id))
+/** Build a chat model for one explicit agent selection. */
+export function resolveModel(selection: AgentSelection = activeSelection()): BaseChatModel {
+  const p = providers[selection.provider]
+  if (!p) throw new Error(`unknown provider "${selection.provider}"`)
+  const { provider: _provider, ...modelSelection } = selection
+  return p.buildModel(modelSelection)
 }
 
 // OAuth providers self-register on import. Kept at the bottom so the registry's

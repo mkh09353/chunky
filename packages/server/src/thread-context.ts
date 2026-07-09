@@ -7,15 +7,21 @@
 // a tool call from ANY depth resolves to the right manager — which is how a child
 // thread can itself spawn further children (recursion).
 //
-// This module imports nothing internal, so it breaks what would otherwise be an
-// agent.ts <-> threads.ts import cycle.
+// Its only internal import is type-only, so it remains a runtime-cycle break
+// between agent.ts and threads.ts.
+import type { AgentSelectionOverride } from "./providers/registry.ts"
 
 export interface ThreadSpawner {
   /**
    * Launch a child thread from `callerThreadId` and return its final text.
    * The manager decides the child's threadId and parent linkage.
    */
-  spawn(opts: { callerThreadId: string; title: string; instructions: string }): Promise<string>
+  spawn(opts: {
+    callerThreadId: string
+    title: string
+    instructions: string
+    selection?: AgentSelectionOverride
+  }): Promise<string>
 }
 
 const registry = new Map<string, ThreadSpawner>()

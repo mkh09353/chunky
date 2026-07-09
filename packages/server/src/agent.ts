@@ -12,7 +12,14 @@
 import { tool } from "@langchain/core/tools"
 import { z } from "zod"
 import { createAgent, summarizationMiddleware } from "langchain"
-import { activeProviderId, resolveModel, selectionOf, selectionSignature } from "./providers/registry.ts"
+import {
+  activeSelection,
+  resolveModel,
+  selectionSignature,
+  type AgentSelection,
+  type Effort,
+  type Speed,
+} from "./providers/registry.ts"
 import { threadContextFor } from "./thread-context.ts"
 import { buildSystemPrompt, type EditToolName } from "./prompt.ts"
 import { applyPatch } from "./tools/apply-patch.ts"
@@ -32,24 +39,44 @@ import { write } from "./tools/write.ts"
  * thread whose model invoked this tool — which we use to find the active run's
  * ThreadManager and to nest the child under the correct parent.
  */
+interface SpawnThreadInput {
+  title: string
+  instructions: string
+  provider?: string
+  model?: string
+  effort?: Effort
+  speed?: Speed
+}
+
 const spawnThread = tool(
-  async ({ title, instructions }: { title: string; instructions: string }, config?: unknown) => {
+  async ({ title, instructions, provider, model, effort, speed }: SpawnThreadInput, config?: unknown) => {
     const callerThreadId = (config as any)?.configurable?.thread_id as string | undefined
     const ctx = threadContextFor(callerThreadId)
     if (!ctx || !callerThreadId) {
       return "error: spawn_thread is only available inside an active session run."
     }
-    const text = await ctx.spawn({ callerThreadId, title, instructions })
+    const hasSelectionOverride = provider !== undefined || model !== undefined || effort !== undefined || speed !== undefined
+    const text = await ctx.spawn({
+      callerThreadId,
+      title,
+      instructions,
+      selection: hasSelectionOverride ? { provider, model, effort, speed } : undefined,
+    })
     return `Child thread "${title}" finished.\n\n${text}`
   },
   {
     name: "spawn_thread",
     description:
       "Delegate a focused subtask to an independent child agent thread that streams its own work live and can " +
-      "spawn its own children. Returns the child thread's final answer.",
+      "spawn its own children. Omit model-selection fields to inherit this thread's model, or choose a configured " +
+      "provider/model when a different model is better suited. Returns the child thread's final answer.",
     schema: z.object({
       title: z.string().describe("Short title shown in the UI (e.g. 'List project files')."),
       instructions: z.string().describe("Full task/instructions for the child agent."),
+      provider: z.string().optional().describe("Optional provider id for the child; defaults to this thread's provider."),
+      model: z.string().optional().describe("Optional model id for the child; defaults to the inherited/provider selection."),
+      effort: z.enum(["low", "medium", "high", "xhigh"]).optional().describe("Optional reasoning effort for the child."),
+      speed: z.enum(["standard", "fast"]).optional().describe("Optional speed setting for the child."),
     }),
   },
 )
@@ -104,12 +131,13 @@ export function editToolNameForModel(modelId: string | undefined, providerId: st
   return isGptCodexFamily(modelId, providerId) ? "apply_patch" : "edit"
 }
 
-/** Build the lean agent for the active provider. Tools read/bash/write/edit
- *  operate directly on WORKSPACE via node:fs; the system prompt is ~300 tokens. */
-export function buildAgent(_opts: BuildAgentOpts = {}) {
-  const providerId = activeProviderId()
-  const modelId = selectionOf(providerId).model
-  const model = resolveModel()
+/** Build the lean agent for one explicit provider/model selection. Tools
+ * read/bash/write/edit operate directly on WORKSPACE via node:fs; the system
+ * prompt is ~300 tokens. */
+export function buildAgent(selection: AgentSelection = activeSelection(), _opts: BuildAgentOpts = {}) {
+  const providerId = selection.provider
+  const modelId = selection.model
+  const model = resolveModel(selection)
   // TODO: prompt-caching middleware. langchain exports anthropicPromptCachingMiddleware,
   // but every current provider builds an OpenAI-compatible ChatOpenAI (zen/grok/codex),
   // not ChatAnthropic, so it would be a no-op here. Wire it in if/when an Anthropic
@@ -137,23 +165,21 @@ export function buildAgent(_opts: BuildAgentOpts = {}) {
   })
 }
 
-// Default singleton, kept for compatibility. It pins the boot-time provider's
-// model; getAgent() lets a run pick up a provider switch without a restart.
-export const agent = buildAgent()
-
 // Cache one agent per full SELECTION signature (provider + model + effort +
 // speed) so switching provider, model, OR a reasoning knob rebuilds the model,
 // while an unchanged selection reuses its agent (keeping live thread state). The
 // durable sqlite checkpointer is keyed by thread_id, so even a rebuilt agent
 // resumes prior memory from disk.
-const agentCache = new Map<string, ReturnType<typeof buildAgent>>([[selectionSignature(), agent]])
+// Agents are intentionally lazy: deterministic thread tests can inject a fake
+// stream without requiring any provider credentials at module-import time.
+const agentCache = new Map<string, ReturnType<typeof buildAgent>>()
 
-/** The agent for the current selection, rebuilt on first use per signature. */
-export function getAgent(): ReturnType<typeof buildAgent> {
-  const sig = selectionSignature()
+/** The agent for one explicit selection, rebuilt on first use per signature. */
+export function getAgent(selection: AgentSelection = activeSelection()): ReturnType<typeof buildAgent> {
+  const sig = selectionSignature(selection)
   let a = agentCache.get(sig)
   if (!a) {
-    a = buildAgent()
+    a = buildAgent(selection)
     agentCache.set(sig, a)
   }
   return a

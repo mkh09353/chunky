@@ -26,7 +26,7 @@ Available tools:
 - bash: run shell commands — use this to list, search (grep/rg), and find files
 ${editListLine}
 - write: create or overwrite a file
-- spawn_thread: delegate a focused subtask to an independent child agent
+- spawn_thread: delegate a focused subtask to an independent child agent; omit model fields to inherit, or choose another configured provider/model when it better fits the subtask
 
 Guidelines:
 - Read a file before editing it; match its existing style and indentation.

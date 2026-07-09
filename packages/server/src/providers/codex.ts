@@ -1,24 +1,23 @@
-// Codex / ChatGPT subscription provider, ported best-effort from opencode's
-// packages/opencode/src/plugin/openai/codex.ts.
+// Codex / ChatGPT subscription provider, ported from opencode's
+// packages/opencode/src/plugin/openai/codex.ts. WORKS end-to-end (chat,
+// streaming, tools, effort) on a real ChatGPT sub.
 //
-// CAVEAT (read before relying on this): ChatGPT's Codex backend speaks the
-// OpenAI *Responses* API at https://chatgpt.com/backend-api/codex/responses,
-// NOT the chat-completions API that ChatOpenAI emits. opencode gets the
-// responses-shaped request from the Vercel AI SDK's responses transport; we
-// only have LangChain's ChatOpenAI (chat-completions shaped). So the OAuth,
-// token refresh, account-id header, and URL routing are all ported faithfully
-// and testable, but a real end-to-end chat turn will likely need a
-// responses-API request body that ChatOpenAI does not produce. This is wired
-// as the same registry pattern so it can be finished by swapping the model for
-// a responses-capable client without touching the auth plumbing. See the
-// integrator notes in the task report.
+// ChatGPT's Codex backend (https://chatgpt.com/backend-api/codex/responses)
+// speaks the OpenAI *Responses* API. LangChain's ChatOpenAI handles that shape
+// natively via `useResponsesApi: true` (body, streaming, tool round-trips) — so
+// we do NOT hand-build responses bodies. `reasoningEffort` is set natively and
+// `store:false` via modelKwargs. The only hand-handling (in injectingFetch →
+// codexResponsesBody) is for Codex's *non-standard deviations* from the public
+// Responses API, which no SDK knows about: it forbids system messages (moved to
+// top-level `instructions`) and rejects LangChain's `strict:null` on tools.
+// These are empirical (from the endpoint's 400 messages); set MC_DEBUG_CODEX=1
+// to log the request/response if the private backend changes its rules.
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import { ChatOpenAI } from "@langchain/openai"
 import { createServer } from "node:http"
 import { AuthStore, type OAuthInfo } from "./auth-store.ts"
 import type { LoginInitiation, ProviderDef } from "./registry.ts"
 import { enrichModels, type ModelInfo } from "./models-catalog.ts"
-import { chatOptionsFor } from "./model-options.ts"
 import type { ModelSelection } from "../settings.ts"
 
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
@@ -212,18 +211,15 @@ function responsesContentText(content: unknown): string {
   return ""
 }
 
-/** Adapt a standard Responses-API request body to what Codex's backend requires:
- *  (1) system/developer messages moved from `input` into top-level `instructions`
- *      (Codex rejects system messages), and (2) `store: false` (Codex won't persist). */
+/** Adapt the Responses-API body for Codex's *non-standard* deviations that no
+ *  SDK knows about: (1) move system/developer messages out of `input` into the
+ *  top-level `instructions` (Codex forbids system messages — the public Responses
+ *  API allows them), and (2) drop `strict:null` on function tools (a LangChain
+ *  quirk the endpoint rejects). `store` and `reasoning.effort` are set natively
+ *  on the model, so they're not touched here. */
 function codexResponsesBody(bodyStr: string): string {
   try {
     const body = JSON.parse(bodyStr)
-    body.store = false // Codex: "Store must be set to false"
-    // Responses API takes reasoning.effort, not a top-level reasoning_effort.
-    if (body.reasoning_effort) {
-      body.reasoning = { ...(body.reasoning || {}), effort: body.reasoning_effort }
-      delete body.reasoning_effort
-    }
     // Function tools: strict must be a boolean (LangChain emits null) — drop it.
     if (Array.isArray(body.tools)) {
       for (const t of body.tools) if (t && t.strict == null) delete t.strict
@@ -428,16 +424,25 @@ export const codexProvider: ProviderDef = {
       apiKey: "oauth",
       streaming: true,
       // Codex's backend speaks the OpenAI *Responses* API, so emit that body
-      // shape (input/instructions), not chat-completions (messages).
+      // shape (input/instructions), not chat-completions (messages). LangChain
+      // handles the shape; we set store/effort the native way so it emits the
+      // correct `store` and `reasoning.effort` fields (no body rewrite needed).
       useResponsesApi: true,
+      // reasoningEffort is a native ChatOpenAI field → LangChain emits the
+      // correct `reasoning.effort` on the Responses path.
+      ...(selection.effort ? { reasoningEffort: selection.effort as any } : {}),
       configuration: {
         // With useResponsesApi, ChatOpenAI POSTs to `${baseURL}/responses`,
         // i.e. the Codex responses endpoint. injectingFetch adds auth headers.
         baseURL: "https://chatgpt.com/backend-api/codex",
         fetch: injectingFetch as unknown as typeof fetch,
       },
-      // Codex reasoning models take BOTH effort and a speed knob (standard/fast).
-      ...chatOptionsFor(selection, { withSpeed: true }),
+      // `store` isn't a ChatOpenAI constructor field, and Codex-only speed maps
+      // to service_tier — both go through modelKwargs (spread into the body).
+      modelKwargs: {
+        store: false, // Codex requires store:false.
+        ...(selection.speed === "fast" ? { service_tier: "priority" } : {}),
+      },
     }),
   login: async (method?: string) => {
     if (method === "browser") return startBrowserLogin()

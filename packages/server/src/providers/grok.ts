@@ -15,6 +15,9 @@ import { ChatOpenAI } from "@langchain/openai"
 import { createServer } from "node:http"
 import { AuthStore, type OAuthInfo } from "./auth-store.ts"
 import type { LoginInitiation, ProviderDef } from "./registry.ts"
+import { enrichModels, type ModelInfo } from "./models-catalog.ts"
+import { chatOptionsFor } from "./model-options.ts"
+import type { ModelSelection } from "../settings.ts"
 
 // Public Grok-CLI OAuth client. xAI's auth server rejects loopback OAuth from
 // non-allowlisted clients, so we reuse the Grok-CLI client_id xAI ships for
@@ -27,6 +30,10 @@ const DEVICE_CODE_GRANT_TYPE = "urn:ietf:params:oauth:grant-type:device_code"
 const SCOPE = "openid profile email offline_access grok-cli:access api:access"
 const API_BASE = "https://api.x.ai/v1"
 const DEFAULT_MODEL = process.env.GROK_MODEL || "grok-4"
+
+// Curated Grok chat models offered in the picker (reasoning grok-4.x family).
+// Enriched from models.dev's "xai" provider; unknown ids degrade gracefully.
+const GROK_MODELS = ["grok-4.5", "grok-4.3", "grok-4"]
 
 const DEVICE_CODE_DEFAULT_INTERVAL_MS = 5_000
 const DEVICE_CODE_MIN_INTERVAL_MS = 1_000
@@ -388,15 +395,18 @@ export const grokProvider: ProviderDef = {
     const auth = AuthStore.get("grok")
     return Boolean(auth && (auth.refresh || (auth.expires && auth.expires > Date.now())))
   },
-  buildModel: (): BaseChatModel =>
+  listModels: (): Promise<ModelInfo[]> => enrichModels(GROK_MODELS, ["xai", "opencode"]),
+  buildModel: (selection: ModelSelection): BaseChatModel =>
     new ChatOpenAI({
-      model: DEFAULT_MODEL,
+      model: selection.model || DEFAULT_MODEL,
       apiKey: "oauth", // dummy; the real token is injected by the fetch override
       streaming: true,
       configuration: {
         baseURL: API_BASE,
         fetch: injectingFetch as unknown as typeof fetch,
       },
+      // Grok 4.x are reasoning models: apply the picker's effort (no speed knob).
+      ...chatOptionsFor(selection),
     }),
   login: async (method?: string) => {
     if (method === "browser") return startBrowserLogin()

@@ -12,7 +12,7 @@ export const COMMANDS: Command[] = [
   { name: "/clear", description: "Clear the conversation" },
   { name: "/help", description: "Show help" },
   { name: "/login", description: "Log in to an OAuth provider (Grok / Codex)" },
-  { name: "/model", description: "Switch the active provider" },
+  { name: "/model", description: "Pick a model (provider, model, effort/speed)" },
   { name: "/quit", description: "Exit MultiCode CLI" },
 ]
 

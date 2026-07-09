@@ -17,6 +17,9 @@ import { ChatOpenAI } from "@langchain/openai"
 import { createServer } from "node:http"
 import { AuthStore, type OAuthInfo } from "./auth-store.ts"
 import type { LoginInitiation, ProviderDef } from "./registry.ts"
+import { enrichModels, type ModelInfo } from "./models-catalog.ts"
+import { chatOptionsFor } from "./model-options.ts"
+import type { ModelSelection } from "../settings.ts"
 
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 const ISSUER = "https://auth.openai.com"
@@ -26,6 +29,18 @@ const OAUTH_REDIRECT_PATH = "/auth/callback"
 const REDIRECT_URI = `http://localhost:${OAUTH_PORT}${OAUTH_REDIRECT_PATH}`
 const OAUTH_POLLING_SAFETY_MARGIN_MS = 3_000
 const DEFAULT_MODEL = process.env.CODEX_MODEL || "gpt-5.5"
+
+// Curated Codex models (gpt-5.x + gpt-5.x-codex reasoning family), mirroring
+// opencode's ALLOWED_MODELS plus the codex variants. Enriched from models.dev.
+const CODEX_MODELS = [
+  "gpt-5.5",
+  "gpt-5.4",
+  "gpt-5.4-mini",
+  "gpt-5.3-codex",
+  "gpt-5.3-codex-spark",
+  "gpt-5.2-codex",
+  "gpt-5.1-codex",
+]
 const USER_AGENT = "multicode-cli/0.0.0"
 
 const ACCESS_TOKEN_REFRESH_SKEW_MS = 60_000
@@ -343,9 +358,10 @@ export const codexProvider: ProviderDef = {
     const auth = AuthStore.get("codex")
     return Boolean(auth && (auth.refresh || (auth.expires && auth.expires > Date.now())))
   },
-  buildModel: (): BaseChatModel =>
+  listModels: (): Promise<ModelInfo[]> => enrichModels(CODEX_MODELS, ["openai", "opencode"]),
+  buildModel: (selection: ModelSelection): BaseChatModel =>
     new ChatOpenAI({
-      model: DEFAULT_MODEL,
+      model: selection.model || DEFAULT_MODEL,
       apiKey: "oauth",
       streaming: true,
       configuration: {
@@ -354,6 +370,8 @@ export const codexProvider: ProviderDef = {
         baseURL: "https://chatgpt.com/backend-api/codex",
         fetch: injectingFetch as unknown as typeof fetch,
       },
+      // Codex reasoning models take BOTH effort and a speed knob (standard/fast).
+      ...chatOptionsFor(selection, { withSpeed: true }),
     }),
   login: async (method?: string) => {
     if (method === "browser") return startBrowserLogin()

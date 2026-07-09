@@ -5,7 +5,7 @@ import { readdirSync } from "node:fs"
 import { tool } from "@langchain/core/tools"
 import { z } from "zod"
 import { createDeepAgent } from "deepagents"
-import { resolveModel, activeProviderId } from "./providers/registry.ts"
+import { resolveModel, selectionSignature } from "./providers/registry.ts"
 import { threadContextFor } from "./thread-context.ts"
 
 // ONE trivial custom tool: list the entries of a directory (defaults to ".").
@@ -103,18 +103,26 @@ export function buildAgent(opts: BuildAgentOpts = {}) {
 // model; getAgent() lets a run pick up a provider switch without a restart.
 export const agent = buildAgent()
 
-// Cache one agent per provider id so switching providers rebuilds the model
-// (addressing the boot-pin caveat) while a given provider keeps ONE agent — and
-// therefore one checkpointer — so its thread memory is preserved across turns.
-const agentCache = new Map<string, ReturnType<typeof buildAgent>>([[activeProviderId(), agent]])
+// Cache one agent per full SELECTION signature (provider + model + effort +
+// speed) so switching provider, model, OR a reasoning knob rebuilds the model,
+// while an unchanged selection reuses its agent (keeping live thread state). The
+// durable sqlite checkpointer is keyed by thread_id, so even a rebuilt agent
+// resumes prior memory from disk.
+const agentCache = new Map<string, ReturnType<typeof buildAgent>>([[selectionSignature(), agent]])
 
-/** The agent for the currently-active provider, rebuilt on first use per provider. */
+/** The agent for the current selection, rebuilt on first use per signature. */
 export function getAgent(): ReturnType<typeof buildAgent> {
-  const id = activeProviderId()
-  let a = agentCache.get(id)
+  const sig = selectionSignature()
+  let a = agentCache.get(sig)
   if (!a) {
     a = buildAgent()
-    agentCache.set(id, a)
+    agentCache.set(sig, a)
   }
   return a
+}
+
+/** Drop cached agents so the next getAgent() rebuilds for the current selection.
+ *  The /api/model/select route calls this after persisting a new selection. */
+export function invalidateAgent(): void {
+  agentCache.clear()
 }

@@ -9,3 +9,5 @@ bun.lock
 *.db-wal
 *.db-shm
 auth.json
+settings.json
+models-dev-cache.json

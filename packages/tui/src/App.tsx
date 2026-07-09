@@ -9,6 +9,7 @@ import { Transcript } from "./components/Transcript.js"
 import { StatusLine } from "./components/StatusLine.js"
 import { PromptInput } from "./components/PromptInput.js"
 import { LoginPicker, type ProviderRow } from "./components/LoginPicker.js"
+import { ModelPicker, type ModelSelectionResult } from "./components/ModelPicker.js"
 import { openBrowser } from "./openBrowser.js"
 import { ACCENT } from "./theme.js"
 
@@ -22,6 +23,14 @@ interface Props {
   demo?: "basic" | "threads"
 }
 
+/** The active model selection, shown on the status line and updated by /model. */
+interface CurrentSelection {
+  provider: string
+  model: string | null
+  effort?: string | null
+  speed?: string | null
+}
+
 export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Props) {
   const { exit } = useApp()
   const [state, setState] = useState<TranscriptState>(initialState)
@@ -30,14 +39,20 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   // When set, the /login provider picker is open; PromptInput is disabled and
   // arrow/enter/esc drive the picker instead.
   const [loginPicker, setLoginPicker] = useState<{ providers: ProviderRow[]; selected: number } | null>(null)
+  // When true, the /model fuzzy picker is open (owns the keyboard while shown).
+  const [modelPickerOpen, setModelPickerOpen] = useState(false)
+  // The active model selection, reflected on the status line.
+  const [currentSel, setCurrentSel] = useState<CurrentSelection | null>(null)
   const sessionIdRef = useRef<string | null>(null)
   const rawSupported = Boolean(useStdin().isRawModeSupported)
+
+  const pickerOpen = loginPicker != null || modelPickerOpen
 
   // Ctrl+T collapses/expands child-thread bodies (the tree view stays; only
   // spawned threads' contents fold to their header lines).
   useInput(
     (input, key) => {
-      if (loginPicker) return // picker owns the keys while open
+      if (pickerOpen) return // a picker owns the keys while open
       if (key.ctrl && (input === "t" || input === "T")) setThreadsCollapsed((v) => !v)
     },
     { isActive: rawSupported },
@@ -70,6 +85,24 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       cancelled = true
     }
   }, [mode, baseUrl, apply])
+
+  // ---- live: load the current model selection so the status line is accurate ----
+  useEffect(() => {
+    if (mode !== "live") return
+    let cancelled = false
+    ;(async () => {
+      try {
+        const res = await fetch(baseUrl + "/api/model")
+        const body = (await res.json()) as CurrentSelection
+        if (!cancelled) setCurrentSel(body)
+      } catch {
+        // leave as null; status line falls back to a placeholder
+      }
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [mode, baseUrl])
 
   const submit = useCallback(
     async (text: string) => {
@@ -206,40 +239,30 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     { isActive: rawSupported && loginPicker != null },
   )
 
-  // /model — cycle the active provider to the next registered one and select it.
-  const doModel = useCallback(async () => {
+  // /model — open the fuzzy model picker (provider → model → effort/speed).
+  const doModel = useCallback(() => {
     if (mode !== "live") {
-      printLine("Provider switching needs the live server (run with --live).")
+      printLine("The model picker needs the live server (run the server, then the TUI with --live).")
       return
     }
-    const providers = await fetchProviders()
-    if (providers.length === 0) {
-      printLine("No providers available (is the server running?).")
-      return
-    }
-    const activeIdx = Math.max(
-      0,
-      providers.findIndex((p) => p.active),
-    )
-    const next = providers[(activeIdx + 1) % providers.length]!
-    try {
-      const res = await fetch(baseUrl + `/api/providers/${next.id}/select`, { method: "POST" })
-      const body = (await res.json()) as { active?: string; error?: string }
-      if (body.error) {
-        printLine(`Could not select ${next.id}: ${body.error}`)
-        return
-      }
-      const list = providers
-        .map((p) => `  ${p.id === next.id ? "●" : "○"} ${p.id} — ${p.label}${p.ready ? "" : " [login needed]"}`)
-        .join("\n")
-      printLine(
-        `Active provider → ${next.id}\n${list}\n\n` +
-          `Note: this takes effect for models built after selection; restart the server if the agent was already built.`,
-      )
-    } catch (err) {
-      printLine(`Select request failed: ${String(err)}`)
-    }
-  }, [mode, baseUrl, fetchProviders, printLine])
+    setModelPickerOpen(true)
+  }, [mode, printLine])
+
+  // Called when the picker finishes selecting (or reports an error): close it,
+  // update the status line, and echo a summary line into the transcript.
+  const onModelDone = useCallback(
+    (result: ModelSelectionResult, summary: string) => {
+      setModelPickerOpen(false)
+      setCurrentSel({
+        provider: result.provider,
+        model: result.model,
+        effort: result.effort ?? null,
+        speed: result.speed ?? null,
+      })
+      printLine(summary)
+    },
+    [printLine],
+  )
 
   const onCommand = useCallback(
     (name: string) => {
@@ -260,7 +283,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           void doLogin()
           break
         case "/model":
-          void doModel()
+          doModel()
           break
       }
     },
@@ -283,6 +306,11 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   // More than just the main thread means child threads exist -> show the toggle hint.
   const hasThreads = state.order.length > 1
 
+  // Status-line model label: the selected model + its effort, or a placeholder.
+  const modelLabel = mode === "live" ? currentSel?.model ?? "…" : "mock"
+  const effortLabel = currentSel?.effort ? ` · ${currentSel.effort}` : ""
+  const speedLabel = currentSel?.speed && currentSel.speed !== "standard" ? ` · ${currentSel.speed}` : ""
+
   return (
     <Box flexDirection="column" width="100%">
       <WelcomeBanner mode={mode} cwd={cwd} />
@@ -290,12 +318,17 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       {running && startedAt != null && <StatusLine startedAt={startedAt} />}
       <Box flexDirection="column" width="100%" marginTop={1}>
         {loginPicker && <LoginPicker providers={loginPicker.providers} selected={loginPicker.selected} />}
+        {modelPickerOpen && (
+          <ModelPicker baseUrl={baseUrl} onDone={onModelDone} onCancel={() => setModelPickerOpen(false)} />
+        )}
         <Box width="100%" justifyContent="flex-end">
           <Text dimColor>
-            <Text color={ACCENT}>●</Text> {mode === "live" ? "glm-5.2" : "mock"} · /model
+            <Text color={ACCENT}>●</Text> {modelLabel}
+            {effortLabel}
+            {speedLabel} · /model
           </Text>
         </Box>
-        <PromptInput disabled={running || loginPicker != null} onSubmit={submit} onCommand={onCommand} />
+        <PromptInput disabled={running || pickerOpen} onSubmit={submit} onCommand={onCommand} />
         <Text dimColor>
           {"  ? for shortcuts · / for commands · ctrl+c to quit"}
           {hasThreads ? "  ·  ctrl+t to " + (threadsCollapsed ? "expand" : "collapse") + " threads" : ""}

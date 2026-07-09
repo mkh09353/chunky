@@ -4,11 +4,17 @@ import { randomUUID } from "node:crypto"
 import { DEFAULT_PORT, ROUTES, sse, type AgentEvent } from "@mc/protocol"
 import { runAgent } from "./run.ts"
 import { Store } from "./store.ts"
+import { invalidateAgent } from "./agent.ts"
 import {
   activeProviderId,
   getProvider,
+  listModelsFor,
   listProviders,
+  selectionOf,
   setActiveProviderId,
+  setSelection,
+  type Effort,
+  type Speed,
 } from "./providers/registry.ts"
 
 type Subscriber = ReadableStreamDefaultController<Uint8Array>
@@ -120,6 +126,55 @@ const server = Bun.serve({
       if (!provider) return json({ error: `unknown provider "${id}"` }, 404)
       setActiveProviderId(id)
       return json({ active: id })
+    }
+
+    // GET /api/providers/:id/models -> { models: ModelInfo[] } (fuzzy picker source)
+    const modelsMatch = pathname.match(/^\/api\/providers\/([^/]+)\/models$/)
+    if (modelsMatch && req.method === "GET") {
+      const id = modelsMatch[1]!
+      if (!getProvider(id)) return json({ error: `unknown provider "${id}"` }, 404)
+      try {
+        return json({ models: await listModelsFor(id) })
+      } catch (err) {
+        return json({ error: (err as Error)?.message ?? String(err) }, 502)
+      }
+    }
+
+    // GET /api/model -> the current active selection { provider, model, effort?, speed? }
+    if (req.method === "GET" && pathname === "/api/model") {
+      const provider = activeProviderId()
+      const sel = selectionOf(provider)
+      return json({ provider, model: sel.model ?? null, effort: sel.effort ?? null, speed: sel.speed ?? null })
+    }
+
+    // POST /api/model/select { provider, model, effort?, speed? }
+    //   -> persists the selection, makes that provider active, invalidates the
+    //      agent cache (so the next turn rebuilds with the new model/knobs), and
+    //      returns the now-active selection.
+    if (req.method === "POST" && pathname === "/api/model/select") {
+      let body: { provider?: unknown; model?: unknown; effort?: unknown; speed?: unknown }
+      try {
+        body = (await req.json()) as typeof body
+      } catch {
+        return json({ error: "invalid JSON body" }, 400)
+      }
+      const provider = typeof body.provider === "string" ? body.provider : ""
+      if (!getProvider(provider)) return json({ error: `unknown provider "${provider}"` }, 404)
+      const model = typeof body.model === "string" && body.model.length > 0 ? body.model : undefined
+      if (!model) return json({ error: "missing model" }, 400)
+
+      const EFFORTS = ["low", "medium", "high", "xhigh"]
+      const SPEEDS = ["standard", "fast"]
+      const effort =
+        typeof body.effort === "string" && EFFORTS.includes(body.effort) ? (body.effort as Effort) : undefined
+      const speed =
+        typeof body.speed === "string" && SPEEDS.includes(body.speed) ? (body.speed as Speed) : undefined
+
+      setActiveProviderId(provider)
+      setSelection(provider, { model, effort, speed })
+      invalidateAgent()
+      const sel = selectionOf(provider)
+      return json({ provider, model: sel.model ?? null, effort: sel.effort ?? null, speed: sel.speed ?? null })
     }
 
     // GET /api/sessions -> ListSessionsResponse (resume picker)

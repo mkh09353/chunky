@@ -11,7 +11,8 @@ export interface Command {
 export const COMMANDS: Command[] = [
   { name: "/clear", description: "Clear the conversation" },
   { name: "/help", description: "Show help" },
-  { name: "/model", description: "Switch the active model" },
+  { name: "/login", description: "Log in to an OAuth provider (Grok / Codex)" },
+  { name: "/model", description: "Switch the active provider" },
   { name: "/quit", description: "Exit MultiCode CLI" },
 ]
 

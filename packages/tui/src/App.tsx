@@ -77,6 +77,109 @@ export function App({ mode, baseUrl, cwd, autoDemo = true }: Props) {
     [mode, baseUrl, apply],
   )
 
+  // Print a one-shot assistant line into the transcript (used by slash commands).
+  const printLine = useCallback(
+    (text: string) => {
+      apply({ type: "message.start", role: "assistant" })
+      apply({ type: "message.delta", text })
+      apply({ type: "message.end" })
+    },
+    [apply],
+  )
+
+  interface ProviderRow {
+    id: string
+    label: string
+    ready: boolean
+    active: boolean
+  }
+
+  // GET /api/providers (live only). Returns [] on any failure.
+  const fetchProviders = useCallback(async (): Promise<ProviderRow[]> => {
+    try {
+      const res = await fetch(baseUrl + "/api/providers")
+      const body = (await res.json()) as { providers?: ProviderRow[] }
+      return body.providers ?? []
+    } catch {
+      return []
+    }
+  }, [baseUrl])
+
+  // /login — list providers and initiate a login for the first not-yet-ready one.
+  const doLogin = useCallback(async () => {
+    if (mode !== "live") {
+      printLine("/login needs the live server (run the server, then the TUI with --live).")
+      return
+    }
+    const providers = await fetchProviders()
+    if (providers.length === 0) {
+      printLine("No providers available (is the server running?).")
+      return
+    }
+    const list = providers
+      .map((p) => `  ${p.active ? "●" : "○"} ${p.id} — ${p.label} ${p.ready ? "[ready]" : "[login needed]"}`)
+      .join("\n")
+    const target = providers.find((p) => !p.ready) ?? providers.find((p) => p.id !== "zen")
+    if (!target) {
+      printLine(`Providers:\n${list}\n\nAll providers are already logged in.`)
+      return
+    }
+    try {
+      const res = await fetch(baseUrl + `/api/auth/${target.id}/login`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ method: "device" }),
+      })
+      const body = (await res.json()) as { url?: string; userCode?: string; instructions?: string; error?: string }
+      if (body.error) {
+        printLine(`Providers:\n${list}\n\nLogin for ${target.id} failed: ${body.error}`)
+        return
+      }
+      const codeLine = body.userCode ? `\n  Code: ${body.userCode}` : ""
+      printLine(
+        `Providers:\n${list}\n\nLogging in to ${target.id}:\n  ${body.instructions ?? body.url ?? ""}` +
+          `${codeLine}\n  URL: ${body.url ?? ""}\n\nAfter authorizing, run /model to select it.`,
+      )
+    } catch (err) {
+      printLine(`Login request failed: ${String(err)}`)
+    }
+  }, [mode, baseUrl, fetchProviders, printLine])
+
+  // /model — cycle the active provider to the next registered one and select it.
+  const doModel = useCallback(async () => {
+    if (mode !== "live") {
+      printLine("Provider switching needs the live server (run with --live).")
+      return
+    }
+    const providers = await fetchProviders()
+    if (providers.length === 0) {
+      printLine("No providers available (is the server running?).")
+      return
+    }
+    const activeIdx = Math.max(
+      0,
+      providers.findIndex((p) => p.active),
+    )
+    const next = providers[(activeIdx + 1) % providers.length]!
+    try {
+      const res = await fetch(baseUrl + `/api/providers/${next.id}/select`, { method: "POST" })
+      const body = (await res.json()) as { active?: string; error?: string }
+      if (body.error) {
+        printLine(`Could not select ${next.id}: ${body.error}`)
+        return
+      }
+      const list = providers
+        .map((p) => `  ${p.id === next.id ? "●" : "○"} ${p.id} — ${p.label}${p.ready ? "" : " [login needed]"}`)
+        .join("\n")
+      printLine(
+        `Active provider → ${next.id}\n${list}\n\n` +
+          `Note: this takes effect for models built after selection; restart the server if the agent was already built.`,
+      )
+    } catch (err) {
+      printLine(`Select request failed: ${String(err)}`)
+    }
+  }, [mode, baseUrl, fetchProviders, printLine])
+
   const onCommand = useCallback(
     (name: string) => {
       switch (name) {
@@ -88,21 +191,19 @@ export function App({ mode, baseUrl, cwd, autoDemo = true }: Props) {
           exit()
           break
         case "/help":
-          apply({ type: "message.start", role: "assistant" })
-          apply({
-            type: "message.delta",
-            text: "Commands: /clear, /help, /model, /quit. Type a message and press Enter to talk to the agent.",
-          })
-          apply({ type: "message.end" })
+          printLine(
+            "Commands: /clear, /help, /login, /model, /quit. Type a message and press Enter to talk to the agent.",
+          )
+          break
+        case "/login":
+          void doLogin()
           break
         case "/model":
-          apply({ type: "message.start", role: "assistant" })
-          apply({ type: "message.delta", text: "Model switching is cosmetic in this prototype (single Zen model)." })
-          apply({ type: "message.end" })
+          void doModel()
           break
       }
     },
-    [apply, exit],
+    [printLine, doLogin, doModel, exit],
   )
 
   // Mock demo turn so the transcript streams even without a TTY.

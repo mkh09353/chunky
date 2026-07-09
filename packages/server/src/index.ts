@@ -4,7 +4,12 @@ import { randomUUID } from "node:crypto"
 import { DEFAULT_PORT, ROUTES, sse, type AgentEvent } from "@mc/protocol"
 import { runAgent } from "./run.ts"
 import { Store } from "./store.ts"
-import { activeProviderId } from "./providers/registry.ts"
+import {
+  activeProviderId,
+  getProvider,
+  listProviders,
+  setActiveProviderId,
+} from "./providers/registry.ts"
 
 type Subscriber = ReadableStreamDefaultController<Uint8Array>
 
@@ -59,6 +64,62 @@ const server = Bun.serve({
 
     if (req.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: CORS })
+    }
+
+    // ---- Provider / OAuth routes (additive; independent of sessions) ----
+
+    // GET /api/providers -> { providers: [{ id, label, ready, active }] }
+    if (req.method === "GET" && pathname === "/api/providers") {
+      const active = activeProviderId()
+      return json({
+        providers: listProviders().map((p) => ({
+          id: p.id,
+          label: p.label,
+          ready: p.ready(),
+          active: p.id === active,
+        })),
+      })
+    }
+
+    // POST /api/auth/:id/login -> { url, userCode?, instructions } (initiate login)
+    const loginMatch = pathname.match(/^\/api\/auth\/([^/]+)\/login$/)
+    if (loginMatch && req.method === "POST") {
+      const id = loginMatch[1]!
+      const provider = getProvider(id)
+      if (!provider) return json({ error: `unknown provider "${id}"` }, 404)
+      if (!provider.login) return json({ error: `provider "${id}" has no login flow` }, 400)
+      let method: string | undefined
+      try {
+        const body = (await req.json().catch(() => ({}))) as { method?: unknown }
+        if (typeof body?.method === "string") method = body.method
+      } catch {
+        // no/invalid body -> default flow
+      }
+      try {
+        const initiation = await provider.login(method)
+        return json(initiation)
+      } catch (err) {
+        return json({ error: (err as Error)?.message ?? String(err) }, 502)
+      }
+    }
+
+    // GET /api/auth/:id/status -> { ready }
+    const statusMatch = pathname.match(/^\/api\/auth\/([^/]+)\/status$/)
+    if (statusMatch && req.method === "GET") {
+      const id = statusMatch[1]!
+      const provider = getProvider(id)
+      if (!provider) return json({ error: `unknown provider "${id}"` }, 404)
+      return json({ ready: provider.ready() })
+    }
+
+    // POST /api/providers/:id/select -> { active } (set active provider for new sessions)
+    const selectMatch = pathname.match(/^\/api\/providers\/([^/]+)\/select$/)
+    if (selectMatch && req.method === "POST") {
+      const id = selectMatch[1]!
+      const provider = getProvider(id)
+      if (!provider) return json({ error: `unknown provider "${id}"` }, 404)
+      setActiveProviderId(id)
+      return json({ active: id })
     }
 
     // GET /api/sessions -> ListSessionsResponse (resume picker)

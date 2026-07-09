@@ -201,6 +201,53 @@ async function validAuth(): Promise<OAuthInfo> {
   return refreshPromise
 }
 
+/** Pull the text out of a Responses-API content value (string or block array). */
+function responsesContentText(content: unknown): string {
+  if (typeof content === "string") return content
+  if (Array.isArray(content)) {
+    return content
+      .map((b) => (b && typeof b === "object" && typeof (b as any).text === "string" ? (b as any).text : ""))
+      .join("")
+  }
+  return ""
+}
+
+/** Adapt a standard Responses-API request body to what Codex's backend requires:
+ *  (1) system/developer messages moved from `input` into top-level `instructions`
+ *      (Codex rejects system messages), and (2) `store: false` (Codex won't persist). */
+function codexResponsesBody(bodyStr: string): string {
+  try {
+    const body = JSON.parse(bodyStr)
+    body.store = false // Codex: "Store must be set to false"
+    // Responses API takes reasoning.effort, not a top-level reasoning_effort.
+    if (body.reasoning_effort) {
+      body.reasoning = { ...(body.reasoning || {}), effort: body.reasoning_effort }
+      delete body.reasoning_effort
+    }
+    // Function tools: strict must be a boolean (LangChain emits null) — drop it.
+    if (Array.isArray(body.tools)) {
+      for (const t of body.tools) if (t && t.strict == null) delete t.strict
+    }
+    if (Array.isArray(body.input)) {
+      const systemTexts: string[] = []
+      body.input = body.input.filter((item: any) => {
+        if (item?.role === "system" || item?.role === "developer") {
+          const t = responsesContentText(item.content)
+          if (t) systemTexts.push(t)
+          return false
+        }
+        return true
+      })
+      if (systemTexts.length) {
+        body.instructions = [body.instructions, ...systemTexts].filter(Boolean).join("\n\n")
+      }
+    }
+    return JSON.stringify(body)
+  } catch {
+    return bodyStr
+  }
+}
+
 /** Fetch that refreshes on demand, injects the bearer + ChatGPT-Account-Id, and
  *  routes chat/completions or responses requests to the Codex responses endpoint. */
 async function injectingFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
@@ -222,7 +269,23 @@ async function injectingFetch(input: RequestInfo | URL, init?: RequestInit): Pro
       ? new URL(CODEX_API_ENDPOINT)
       : parsed
 
-  return fetch(target, { ...init, headers })
+  // Codex's responses backend rejects system messages in `input` ("System
+  // messages are not allowed"); the Responses API wants the system prompt in
+  // the top-level `instructions` field. Move any system/developer items there.
+  if (typeof init?.body === "string" && target.pathname.endsWith("/responses")) {
+    init = { ...init, body: codexResponsesBody(init.body) }
+  }
+
+  const res = await fetch(target, { ...init, headers })
+  if (process.env.MC_DEBUG_CODEX && !res.ok) {
+    const reqBody = typeof init?.body === "string" ? init.body.slice(0, 700) : "(non-string body)"
+    const resBody = await res
+      .clone()
+      .text()
+      .catch(() => "")
+    console.error(`[codex-debug] ${res.status} ${target.href}\n  req: ${reqBody}\n  res: ${resBody.slice(0, 900)}`)
+  }
+  return res
 }
 
 // ---------- login flows ----------
@@ -364,9 +427,12 @@ export const codexProvider: ProviderDef = {
       model: selection.model || DEFAULT_MODEL,
       apiKey: "oauth",
       streaming: true,
+      // Codex's backend speaks the OpenAI *Responses* API, so emit that body
+      // shape (input/instructions), not chat-completions (messages).
+      useResponsesApi: true,
       configuration: {
-        // baseURL is a placeholder; injectingFetch rewrites chat/responses
-        // requests to the Codex responses endpoint.
+        // With useResponsesApi, ChatOpenAI POSTs to `${baseURL}/responses`,
+        // i.e. the Codex responses endpoint. injectingFetch adds auth headers.
         baseURL: "https://chatgpt.com/backend-api/codex",
         fetch: injectingFetch as unknown as typeof fetch,
       },

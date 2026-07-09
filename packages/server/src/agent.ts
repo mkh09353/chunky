@@ -1,16 +1,25 @@
 // Agent wiring. The model comes from the provider registry (resolveModel), and
 // agent construction is a factory (buildAgent) so the threads work can rebuild
-// it per provider. Durable state via a SQLite checkpointer. Filesystem tools
-// (read_file/write_file/edit_file/ls/glob/grep) are backed by a REAL
-// disk-backed FilesystemBackend rooted at WORKSPACE — not the in-memory
-// StateBackend DeepAgents defaults to — so agent edits land on disk.
+// it per provider. Durable state via a SQLite checkpointer.
+//
+// LEAN HARNESS: we call `createAgent` from `langchain` directly — the same
+// primitive `createDeepAgent` wraps — instead of `createDeepAgent`. This sheds
+// DeepAgents' heavy defaults (BASE_AGENT_PROMPT, write_todos, the 6 verbose
+// filesystem tools, the `task` tool) and replaces them with our own ~300-token
+// system prompt and four lean tools (read/bash/write/edit) that operate directly
+// on WORKSPACE via node:fs. Checkpointer, streaming, threads, and providers are
+// all unchanged — only the agent-construction call differs.
 import { tool } from "@langchain/core/tools"
 import { z } from "zod"
-import { createDeepAgent, FilesystemBackend } from "deepagents"
+import { createAgent } from "langchain"
 import { activeProviderId, resolveModel, selectionOf, selectionSignature } from "./providers/registry.ts"
 import { threadContextFor } from "./thread-context.ts"
+import { buildSystemPrompt, type EditToolName } from "./prompt.ts"
 import { applyPatch } from "./tools/apply-patch.ts"
-import { WORKSPACE } from "./workspace.ts"
+import { bash } from "./tools/bash.ts"
+import { editTool } from "./tools/edit.ts"
+import { read } from "./tools/read.ts"
+import { write } from "./tools/write.ts"
 
 /**
  * spawn_thread — delegate a subtask to a FULL, independent child agent thread.
@@ -36,16 +45,11 @@ const spawnThread = tool(
   {
     name: "spawn_thread",
     description:
-      "Delegate a focused subtask to a full, independent child agent thread that streams its own work live. " +
-      "Use it to isolate or parallelize a subtask; the child is a real agent that can itself spawn further child " +
-      "threads. Returns the child thread's final answer.",
+      "Delegate a focused subtask to an independent child agent thread that streams its own work live and can " +
+      "spawn its own children. Returns the child thread's final answer.",
     schema: z.object({
-      title: z
-        .string()
-        .describe("Short title for the child thread, shown in the UI (e.g. 'List project files')."),
-      instructions: z
-        .string()
-        .describe("The full task/instructions to hand to the child agent thread."),
+      title: z.string().describe("Short title shown in the UI (e.g. 'List project files')."),
+      instructions: z.string().describe("Full task/instructions for the child agent."),
     }),
   },
 )
@@ -68,7 +72,9 @@ function makeCheckpointer() {
 }
 
 export interface BuildAgentOpts {
-  // The threads work fills this in (subagent roster for real nested threads).
+  // Retained for compatibility. Real nested threads now come from the spawn_thread
+  // tool (see threads.ts), not DeepAgents' subagent roster / task tool, so this is
+  // no longer wired into agent construction.
   subagents?: unknown[]
 }
 
@@ -83,33 +89,35 @@ function isGptCodexFamily(modelId: string | undefined, providerId: string): bool
 }
 
 /**
- * Pick the edit tool(s) for the active model. GPT/Codex models are trained
- * on the V4A `apply_patch` format, so they get that tool; Claude and other
- * models keep DeepAgents' built-in `edit_file` (from the filesystem
- * middleware — see buildAgent's `backend`). We can't cleanly remove just
- * `edit_file` from the filesystem middleware's built-in tool set, so it
- * stays available to every model; gpt/codex models additionally get
- * `apply_patch`, which they strongly prefer (it's the format they were
- * trained on) over the generic `edit_file`.
+ * Pick the edit tool(s) for the active model. GPT/Codex models are trained on
+ * the V4A `apply_patch` format, so they get that tool (name "apply_patch");
+ * every other model gets the Pi-ported `edit` tool (name "edit"). Exactly one
+ * edit tool is bound per model — this is the per-model swap.
  */
 export function editToolsForModel(modelId: string | undefined, providerId: string) {
-  return isGptCodexFamily(modelId, providerId) ? [applyPatch] : []
+  return isGptCodexFamily(modelId, providerId) ? [applyPatch] : [editTool]
 }
 
-/** Build the DeepAgents agent for the active provider. Filesystem tools are
- *  backed by a real disk-backed FilesystemBackend rooted at WORKSPACE
- *  (replacing DeepAgents' default in-memory StateBackend), so read_file /
- *  write_file / edit_file / ls / glob / grep operate on the real project
- *  directory and edits land on disk. */
-export function buildAgent(opts: BuildAgentOpts = {}) {
+/** The name of the edit tool bound for the active model — used to adapt the
+ *  system prompt's edit guidance to whichever tool the model actually has. */
+export function editToolNameForModel(modelId: string | undefined, providerId: string): EditToolName {
+  return isGptCodexFamily(modelId, providerId) ? "apply_patch" : "edit"
+}
+
+/** Build the lean agent for the active provider. Tools read/bash/write/edit
+ *  operate directly on WORKSPACE via node:fs; the system prompt is ~300 tokens. */
+export function buildAgent(_opts: BuildAgentOpts = {}) {
   const providerId = activeProviderId()
   const modelId = selectionOf(providerId).model
-  return createDeepAgent({
+  // TODO: prompt-caching middleware. langchain exports anthropicPromptCachingMiddleware,
+  // but every current provider builds an OpenAI-compatible ChatOpenAI (zen/grok/codex),
+  // not ChatAnthropic, so it would be a no-op here. Wire it in if/when an Anthropic
+  // provider lands.
+  return createAgent({
     model: resolveModel(),
-    tools: [spawnThread, ...editToolsForModel(modelId, providerId)],
-    backend: new FilesystemBackend({ rootDir: WORKSPACE, virtualMode: true }),
+    tools: [read, bash, write, spawnThread, ...editToolsForModel(modelId, providerId)],
+    systemPrompt: buildSystemPrompt(editToolNameForModel(modelId, providerId)),
     checkpointer: makeCheckpointer(),
-    ...(opts.subagents ? ({ subagents: opts.subagents } as Record<string, unknown>) : {}),
   })
 }
 

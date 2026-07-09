@@ -1,7 +1,7 @@
 // apply_patch — the V4A diff tool OpenAI's GPT/Codex models are trained on
-// (see the Codex CLI's `apply_patch` tool). Claude and other models use
-// DeepAgents' built-in `edit_file` instead; this tool exists so gpt/codex
-// models can use the format they actually know.
+// (see the Codex CLI's `apply_patch` tool). Claude and other models use the
+// Pi-ported `edit` tool instead (see tools/edit.ts); this tool exists so
+// gpt/codex models can use the format they actually know.
 //
 // Envelope:
 //   *** Begin Patch

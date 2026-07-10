@@ -116,13 +116,20 @@ export function PromptInput({ disabled, onSubmit, onCommand, status }: Props) {
 function BottomRule({ status }: { status?: string }) {
   const { stdout } = useStdout()
   const cols = stdout?.columns ?? 80
-  const label = status ?? ""
-  // -2 leaves a cell of breathing room at the right edge and guards against an
-  // off-by-one that would wrap the rule onto a second line.
-  const dashes = Math.max(0, cols - label.length - 2)
+  const label = (status ?? "").trim()
+  // The dashes use the SAME border color as the top rule (Ink draws borderTop in
+  // BORDER) so both lines match. The status is embedded near the right with the
+  // rule continuing past it to the edge (grok-code style), a space on each side.
+  if (!label) {
+    return <Text color={BORDER}>{"─".repeat(Math.max(0, cols - 1))}</Text>
+  }
+  const rightDashes = 3
+  const left = Math.max(0, cols - label.length - rightDashes - 3) // 2 spaces + 1 margin
   return (
-    <Text dimColor>
-      {"─".repeat(dashes)} {label}
+    <Text>
+      <Text color={BORDER}>{"─".repeat(left)}</Text>
+      <Text dimColor> {label} </Text>
+      <Text color={BORDER}>{"─".repeat(rightDashes)}</Text>
     </Text>
   )
 }

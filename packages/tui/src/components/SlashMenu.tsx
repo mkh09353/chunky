@@ -13,6 +13,7 @@ export const COMMANDS: Command[] = [
   { name: "/help", description: "Show help" },
   { name: "/login", description: "Log in to an OAuth provider (Grok / Codex)" },
   { name: "/model", description: "Pick a model (provider, model, effort/speed)" },
+  { name: "/advisor", description: "Set the advisor model (a stronger model, on tap)" },
   { name: "/quit", description: "Exit Chunky CLI" },
 ]
 

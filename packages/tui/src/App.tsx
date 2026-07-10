@@ -16,6 +16,7 @@ import { StatusLine } from "./components/StatusLine.js"
 import { PromptInput } from "./components/PromptInput.js"
 import { LoginPicker, type ProviderRow } from "./components/LoginPicker.js"
 import { ModelPicker, type ModelSelectionResult } from "./components/ModelPicker.js"
+import { AdvisorPicker, type AdvisorSelectionResult } from "./components/AdvisorPicker.js"
 import { openBrowser } from "./openBrowser.js"
 import { ACCENT } from "./theme.js"
 
@@ -47,12 +48,21 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   const [loginPicker, setLoginPicker] = useState<{ providers: ProviderRow[]; selected: number } | null>(null)
   // When true, the /model fuzzy picker is open (owns the keyboard while shown).
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
+  // When true, the /advisor picker is open (owns the keyboard while shown).
+  const [advisorPickerOpen, setAdvisorPickerOpen] = useState(false)
   // The active model selection, reflected on the status line.
   const [currentSel, setCurrentSel] = useState<CurrentSelection | null>(null)
+  // The active advisor config, reflected on the status line.
+  const [advisor, setAdvisor] = useState<{
+    enabled: boolean
+    provider?: string
+    model?: string
+    active: boolean
+  } | null>(null)
   const sessionIdRef = useRef<string | null>(null)
   const rawSupported = Boolean(useStdin().isRawModeSupported)
 
-  const pickerOpen = loginPicker != null || modelPickerOpen
+  const pickerOpen = loginPicker != null || modelPickerOpen || advisorPickerOpen
 
   // Ctrl+T collapses/expands child-thread bodies (the tree view stays; only
   // spawned threads' contents fold to their header lines).
@@ -109,6 +119,30 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       cancelled = true
     }
   }, [mode, baseUrl])
+
+  // ---- live: load the advisor config so the status line shows it (and after /advisor) ----
+  const refreshAdvisor = useCallback(async () => {
+    if (mode !== "live") return
+    try {
+      const res = await fetch(baseUrl + "/api/advisor")
+      const body = (await res.json()) as {
+        config?: { enabled?: boolean; provider?: string; model?: string }
+        active?: boolean
+      }
+      setAdvisor({
+        enabled: body.config?.enabled ?? false,
+        provider: body.config?.provider,
+        model: body.config?.model,
+        active: Boolean(body.active),
+      })
+    } catch {
+      // leave as null; status line omits the advisor label
+    }
+  }, [mode, baseUrl])
+
+  useEffect(() => {
+    void refreshAdvisor()
+  }, [refreshAdvisor])
 
   const submit = useCallback(
     async (text: string) => {
@@ -274,6 +308,26 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     [printLine],
   )
 
+  // /advisor — open the picker that sets the always-on advisor's model.
+  const doAdvisor = useCallback(() => {
+    if (mode !== "live") {
+      printLine("The advisor picker needs the live server (run the server, then the TUI with --live).")
+      return
+    }
+    setAdvisorPickerOpen(true)
+  }, [mode, printLine])
+
+  // Called when the advisor picker finishes: close it, refresh the status line
+  // from the server (so the active/inactive state is accurate), echo a summary.
+  const onAdvisorDone = useCallback(
+    (_result: AdvisorSelectionResult, summary: string) => {
+      setAdvisorPickerOpen(false)
+      void refreshAdvisor()
+      printLine(summary)
+    },
+    [printLine, refreshAdvisor],
+  )
+
   const onCommand = useCallback(
     (name: string) => {
       switch (name) {
@@ -286,7 +340,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           break
         case "/help":
           printLine(
-            "Commands: /clear, /help, /login, /model, /quit. Type a message and press Enter to talk to the agent.",
+            "Commands: /clear, /help, /login, /model, /advisor, /quit. Type a message and press Enter to talk to the agent.",
           )
           break
         case "/login":
@@ -295,9 +349,12 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         case "/model":
           doModel()
           break
+        case "/advisor":
+          doAdvisor()
+          break
       }
     },
-    [printLine, doLogin, doModel, exit],
+    [printLine, doLogin, doModel, doAdvisor, exit],
   )
 
   // Mock demo turn so the transcript streams even without a TTY.
@@ -320,6 +377,14 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   const modelLabel = mode === "live" ? currentSel?.model ?? "…" : "mock"
   const effortLabel = currentSel?.effort ? ` · ${currentSel.effort}` : ""
   const speedLabel = currentSel?.speed && currentSel.speed !== "standard" ? ` · ${currentSel.speed}` : ""
+  // Advisor label: provider/model (with "(inactive)" when configured but suppressed
+  // because it equals the executor), or "off". Omitted entirely outside live mode.
+  const advisorLabel =
+    mode === "live" && advisor
+      ? advisor.enabled && advisor.model
+        ? `${advisor.provider}/${advisor.model}${advisor.active ? "" : " (inactive)"}`
+        : "off"
+      : null
 
   return (
     <Box flexDirection="column" width="100%">
@@ -331,11 +396,15 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         {modelPickerOpen && (
           <ModelPicker baseUrl={baseUrl} onDone={onModelDone} onCancel={() => setModelPickerOpen(false)} />
         )}
+        {advisorPickerOpen && (
+          <AdvisorPicker baseUrl={baseUrl} onDone={onAdvisorDone} onCancel={() => setAdvisorPickerOpen(false)} />
+        )}
         <Box width="100%" justifyContent="flex-end">
           <Text dimColor>
             <Text color={ACCENT}>●</Text> {modelLabel}
             {effortLabel}
-            {speedLabel} · /model
+            {speedLabel}
+            {advisorLabel ? ` · advisor ${advisorLabel}` : ""} · /model /advisor
           </Text>
         </Box>
         <PromptInput disabled={running || pickerOpen} onSubmit={submit} onCommand={onCommand} />

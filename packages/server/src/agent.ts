@@ -9,20 +9,62 @@
 // system prompt and four lean tools (read/bash/write/edit) that operate directly
 // on WORKSPACE via node:fs. Checkpointer, streaming, threads, and providers are
 // all unchanged — only the agent-construction call differs.
+import { tool } from "@langchain/core/tools"
+import { z } from "zod"
 import { createAgent, summarizationMiddleware } from "langchain"
 import {
   activeSelection,
+  advisorFor,
   resolveModel,
   selectionSignature,
   type AgentSelection,
 } from "./providers/registry.ts"
-import { buildSystemPrompt, type EditToolName } from "./prompt.ts"
+import { threadContextFor } from "./thread-context.ts"
+import { ADVISOR_SYSTEM_PROMPT, buildSystemPrompt, type EditToolName } from "./prompt.ts"
 import { applyPatch } from "./tools/apply-patch.ts"
 import { bash } from "./tools/bash.ts"
 import { editTool } from "./tools/edit.ts"
 import { read } from "./tools/read.ts"
 import { spawnThread } from "./tools/spawn-thread.ts"
 import { write } from "./tools/write.ts"
+
+/**
+ * advisor — consult a stronger model on demand. Unlike spawn_thread (a fresh,
+ * run-to-completion worker), the advisor is a PERSISTENT side thread on a stable
+ * thread_id: it remembers earlier consults this session and gathers its own
+ * context via read-only tools. Mirrors spawn_thread's shape — it finds the active
+ * run's ThreadManager via configurable.thread_id and delegates to consultAdvisor.
+ */
+const advisor = tool(
+  async ({ question, pointers }: { question: string; pointers?: string }, config?: unknown) => {
+    const callerThreadId = (config as any)?.configurable?.thread_id as string | undefined
+    const ctx = threadContextFor(callerThreadId)
+    if (!ctx || !callerThreadId) {
+      return "error: advisor is only available inside an active session run."
+    }
+    return ctx.consultAdvisor({ callerThreadId, question, pointers })
+  },
+  {
+    name: "advisor",
+    description:
+      "Consult your advisor — a stronger model running as a persistent side thread that remembers your earlier " +
+      "consultations this session and can read files and search the codebase itself. Use it for a hard decision, a " +
+      "subtle bug, an architecture/design question, a plan, or when you're stuck. Give it a focused brief: state the " +
+      "question and point it at the specific files/lines it needs (e.g. 'review the retry logic in src/net.ts around " +
+      "line 80 — it deadlocks under load'). Don't paste whole files — point, don't dump. Ask early rather than " +
+      "thrashing. Returns the advisor's guidance.",
+    schema: z.object({
+      question: z.string().describe("The question or problem to get advice on."),
+      pointers: z
+        .string()
+        .optional()
+        .describe(
+          "Where to look: files/lines/context the advisor should read (it has read access), plus any brief " +
+            "recent-context summary. Point, don't paste whole files.",
+        ),
+    }),
+  },
+)
 
 /**
  * Durable checkpointer so agent memory survives a restart, backed by bun:sqlite
@@ -74,6 +116,25 @@ export function editToolNameForModel(modelId: string | undefined, providerId: st
   return isGptCodexFamily(modelId, providerId) ? "apply_patch" : "edit"
 }
 
+/**
+ * The executor's toolset for a selection: the always-on read/bash/write/spawn +
+ * the per-model edit tool, PLUS the `advisor` tool when an advisor is configured
+ * AND differs from the executor (always-on + auto-suppress; see advisorFor).
+ * Factored out so a test can assert advisor presence without building a model.
+ */
+export function executorToolsFor(selection: AgentSelection) {
+  const advisorSel = advisorFor(selection)
+  const tools = [
+    read,
+    bash,
+    write,
+    spawnThread,
+    ...editToolsForModel(selection.model, selection.provider),
+    ...(advisorSel ? [advisor] : []),
+  ]
+  return { tools, hasAdvisor: advisorSel != null }
+}
+
 /** Build the lean agent for one explicit provider/model selection. Tools
  * read/bash/write/edit operate directly on WORKSPACE via node:fs; the system
  * prompt is ~300 tokens. */
@@ -81,14 +142,15 @@ export function buildAgent(selection: AgentSelection = activeSelection(), _opts:
   const providerId = selection.provider
   const modelId = selection.model
   const model = resolveModel(selection)
+  const { tools, hasAdvisor } = executorToolsFor(selection)
   // TODO: prompt-caching middleware. langchain exports anthropicPromptCachingMiddleware,
   // but every current provider builds an OpenAI-compatible ChatOpenAI (zen/grok/codex),
   // not ChatAnthropic, so it would be a no-op here. Wire it in if/when an Anthropic
   // provider lands.
   return createAgent({
     model,
-    tools: [read, bash, write, spawnThread, ...editToolsForModel(modelId, providerId)],
-    systemPrompt: buildSystemPrompt(editToolNameForModel(modelId, providerId)),
+    tools,
+    systemPrompt: buildSystemPrompt(editToolNameForModel(modelId, providerId), hasAdvisor),
     checkpointer: makeCheckpointer(),
     // Auto-compaction — the context-management half of Pi's efficiency win (a
     // "tighter working set" so long sessions don't grow unbounded, which is what we
@@ -129,7 +191,45 @@ export function getAgent(selection: AgentSelection = activeSelection()): ReturnT
 }
 
 /** Drop cached agents so the next getAgent() rebuilds for the current selection.
- *  The /api/model/select route calls this after persisting a new selection. */
+ *  The /api/model/select and /api/advisor routes call this after a config change —
+ *  the latter so executors rebuild to add/drop the always-on advisor tool. */
 export function invalidateAgent(): void {
   agentCache.clear()
+}
+
+/**
+ * Build the READ-ONLY advisor agent for one selection. It gets ONLY read + bash
+ * (it advises, it must not mutate code — no edit/write/apply_patch/spawn_thread/
+ * advisor) and its own system prompt. ThreadManager.consultAdvisor drives it as a
+ * persistent side thread on a stable thread_id, so the checkpointer gives it
+ * continuity across consults.
+ */
+export function buildAdvisorAgent(selection: AgentSelection) {
+  const model = resolveModel(selection)
+  return createAgent({
+    model,
+    tools: [read, bash],
+    systemPrompt: ADVISOR_SYSTEM_PROMPT,
+    checkpointer: makeCheckpointer(),
+    middleware: [
+      summarizationMiddleware({
+        model,
+        trigger: { tokens: 100_000 },
+        keep: { messages: 20 },
+      }),
+    ],
+  })
+}
+
+/** The advisor agent for one selection, cached in the SAME agentCache (keyed
+ *  "advisor::<sig>") so invalidateAgent() clears it too. ThreadManager's default
+ *  advisorAgentFor injectable. */
+export function getAdvisorAgent(selection: AgentSelection = activeSelection()): ReturnType<typeof buildAgent> {
+  const sig = "advisor::" + selectionSignature(selection)
+  let a = agentCache.get(sig)
+  if (!a) {
+    a = buildAdvisorAgent(selection) as ReturnType<typeof buildAgent>
+    agentCache.set(sig, a)
+  }
+  return a
 }

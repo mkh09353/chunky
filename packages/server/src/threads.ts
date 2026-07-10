@@ -11,11 +11,12 @@ import { AsyncLocalStorageProviderSingleton } from "@langchain/core/singletons"
 import type { AgentEvent } from "@chunky/protocol"
 import type { Emit } from "./event-emitter.ts"
 import { translateStream } from "./run.ts"
-import { getAgent } from "./agent.ts"
+import { getAdvisorAgent, getAgent } from "./agent.ts"
 import {
   activeSelection,
   childSelection,
   providerRuntime,
+  resolveAdvisorSelection,
   type AgentSelection,
   type AgentSelectionOverride,
 } from "./providers/registry.ts"
@@ -34,6 +35,7 @@ export class ThreadManager implements ThreadSpawner {
   private readonly rootId: string
   private readonly emit: Emit
   private readonly agentFor: AgentForSelection
+  private readonly advisorAgentFor: AgentForSelection
   private readonly selections = new Map<string, AgentSelection>()
 
   constructor(
@@ -41,10 +43,12 @@ export class ThreadManager implements ThreadSpawner {
     rootId: string,
     rootSelection: AgentSelection = activeSelection(),
     agentFor: AgentForSelection = getAgent,
+    advisorAgentFor: AgentForSelection = getAdvisorAgent,
   ) {
     this.emit = emit
     this.rootId = rootId
     this.agentFor = agentFor
+    this.advisorAgentFor = advisorAgentFor
     this.selections.set(rootId, rootSelection)
     // The root (main session) thread resolves to this manager, so the main
     // model's spawn_thread calls are routed here.
@@ -123,5 +127,58 @@ export class ThreadManager implements ThreadSpawner {
       this.selections.delete(childThreadId)
     }
 
+  }
+
+  /**
+   * Consult the always-on advisor and return its guidance. Unlike spawn(), this
+   * runs on a STABLE thread id (`${rootId}:advisor`, never randomUUID): the
+   * checkpointer keys on thread_id, so each consult resumes the SAME advisor
+   * conversation — continuity for free. The advisor thread is deliberately NOT
+   * registered in the thread registry, NOT added to `selections`, and NOT
+   * disposed after the consult (the advisor has no spawn/advisor tools, so nothing
+   * inside it resolves a manager, and its thread must persist for the session).
+   */
+  async consultAdvisor(opts: {
+    callerThreadId: string
+    question: string
+    pointers?: string
+  }): Promise<string> {
+    const advisorSel = resolveAdvisorSelection()
+    if (!advisorSel) {
+      return "error: no advisor is configured — ask the user to set one (/advisor)."
+    }
+
+    const advisorThreadId = `${this.rootId}:advisor`
+    const content = opts.pointers
+      ? `${opts.question}\n\nWhere to look / context:\n${opts.pointers}`
+      : opts.question
+
+    this.emit({ type: "thread.spawn", threadId: advisorThreadId, parentThreadId: null, title: "Advisor" })
+    this.emit({ type: "thread.status", threadId: advisorThreadId, status: "running", title: "Advisor" })
+
+    let finalText = ""
+    try {
+      // Same async-local isolation as spawn(): a cleared store so the advisor's
+      // tokens stream only through its OWN iterator, tagged with its threadId,
+      // instead of leaking (untagged) into the caller's messages stream.
+      const stream = await AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () =>
+        this.advisorAgentFor(advisorSel).stream(
+          { messages: [{ role: "user", content }] },
+          {
+            configurable: { thread_id: advisorThreadId },
+            streamMode: ["updates", "messages"],
+          } as any,
+        ),
+      )
+      finalText = await translateStream(stream, advisorThreadId, this.emit)
+    } catch (err) {
+      const message = (err as Error)?.message ?? String(err)
+      this.emit({ type: "error", message, threadId: advisorThreadId } as AgentEvent)
+      finalText = `error: ${message}`
+    } finally {
+      this.emit({ type: "thread.status", threadId: advisorThreadId, status: "idle", title: "Advisor" })
+    }
+
+    return finalText
   }
 }

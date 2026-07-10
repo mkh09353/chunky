@@ -10,12 +10,14 @@ import {
   getProvider,
   listModelsFor,
   listProviders,
+  resolveAdvisorSelection,
   selectionOf,
   setActiveProviderId,
   setSelection,
   type Effort,
   type Speed,
 } from "./providers/registry.ts"
+import { getAdvisor, setAdvisor, type AdvisorConfig } from "./settings.ts"
 
 type Subscriber = ReadableStreamDefaultController<Uint8Array>
 
@@ -175,6 +177,32 @@ const server = Bun.serve({
       invalidateAgent()
       const sel = selectionOf(provider)
       return json({ provider, model: sel.model ?? null, effort: sel.effort ?? null, speed: sel.speed ?? null })
+    }
+
+    // GET /api/advisor -> { config, active } (the always-on advisor's config + readiness)
+    if (req.method === "GET" && pathname === "/api/advisor") {
+      return json({ config: getAdvisor(), active: resolveAdvisorSelection() != null })
+    }
+
+    // POST /api/advisor { enabled?, provider?, model?, effort? }
+    //   -> merge-persists the advisor config, invalidates the agent cache (so
+    //      executors rebuild to add/drop the advisor tool), returns config + active.
+    if (req.method === "POST" && pathname === "/api/advisor") {
+      let body: { enabled?: unknown; provider?: unknown; model?: unknown; effort?: unknown }
+      try {
+        body = (await req.json()) as typeof body
+      } catch {
+        return json({ error: "invalid JSON body" }, 400)
+      }
+      const EFFORTS = ["low", "medium", "high", "xhigh"]
+      const patch: Partial<AdvisorConfig> = {}
+      if (typeof body.enabled === "boolean") patch.enabled = body.enabled
+      if (typeof body.provider === "string") patch.provider = body.provider
+      if (typeof body.model === "string") patch.model = body.model
+      if (typeof body.effort === "string" && EFFORTS.includes(body.effort)) patch.effort = body.effort as Effort
+      setAdvisor(patch)
+      invalidateAgent()
+      return json({ config: getAdvisor(), active: resolveAdvisorSelection() != null })
     }
 
     // GET /api/sessions -> ListSessionsResponse (resume picker)

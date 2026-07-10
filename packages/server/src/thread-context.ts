@@ -22,6 +22,17 @@ export interface ThreadSpawner {
     instructions: string
     selection?: AgentSelectionOverride
   }): Promise<string>
+
+  /**
+   * Consult the always-on advisor — a persistent side thread on a stronger model
+   * (stable thread_id, so it remembers earlier consults this session). Returns
+   * the advisor's guidance text.
+   */
+  consultAdvisor(opts: {
+    callerThreadId: string
+    question: string
+    pointers?: string
+  }): Promise<string>
 }
 
 const registry = new Map<string, ThreadSpawner>()

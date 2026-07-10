@@ -1,6 +1,7 @@
 import React from "react"
 import { Box, Text } from "ink"
 import { ChunkyLogo } from "./ChunkyLogo.js"
+import { ACCENT } from "../theme.js"
 
 /** Shorten a path to Claude Code's `/…/parent/dir` form. */
 function shortCwd(cwd: string): string {
@@ -10,9 +11,9 @@ function shortCwd(cwd: string): string {
 }
 
 /**
- * Start-of-session welcome, approximating Claude Code's: a full-width rounded
- * box with a two-column layout — greeting + sparkle logo on the left, tips and
- * "what's new" on the right, split by a vertical divider.
+ * Start-of-session welcome: a full-width rounded box with a single centered
+ * column — the greeting, the Chunky mascot, the active model + cwd, and the
+ * (only) mode we run in.
  */
 export function WelcomeBanner({
   mode,
@@ -21,41 +22,29 @@ export function WelcomeBanner({
 }: {
   mode: "mock" | "live"
   cwd: string
-  /** The active model label for the left column (real selection, not hardcoded). */
+  /** The active model label (real selection, not hardcoded). */
   model: string
 }) {
   return (
-    <Box width="100%" marginBottom={1} borderStyle="round" borderColor="gray" flexDirection="row">
-      {/* left column: greeting + logo + model/cwd, centered */}
-      <Box flexDirection="column" width="46%" alignItems="center" paddingY={1} paddingX={1}>
-        <Text bold>Welcome to Chunky</Text>
-        <Box marginY={1}>
-          <ChunkyLogo />
-        </Box>
-        <Text dimColor>{model}</Text>
-        <Text dimColor>{shortCwd(cwd)}</Text>
+    <Box
+      width="100%"
+      marginBottom={1}
+      borderStyle="round"
+      borderColor="gray"
+      flexDirection="column"
+      alignItems="center"
+      paddingY={1}
+      paddingX={1}
+    >
+      <Text bold>Welcome to Chunky</Text>
+      <Box marginY={1}>
+        <ChunkyLogo />
       </Box>
-      {/* right column: tips + what's new, divided by a left border */}
-      <Box
-        flexGrow={1}
-        flexDirection="column"
-        paddingY={1}
-        paddingX={2}
-        borderStyle="single"
-        borderColor="gray"
-        borderTop={false}
-        borderBottom={false}
-        borderRight={false}
-      >
-        <Text bold>Tips for getting started</Text>
-        <Text dimColor>Ask me to build something, or press / for commands</Text>
-        <Box marginY={0}>
-          <Text dimColor>{"─".repeat(28)}</Text>
-        </Box>
-        <Text bold>What&apos;s new</Text>
-        <Text dimColor>Full-width Claude Code-style input bar</Text>
-        <Text dimColor>Streaming transcript over SSE</Text>
-      </Box>
+      <Text dimColor>{model}</Text>
+      <Text dimColor>{shortCwd(cwd)}</Text>
+      <Text dimColor>
+        mode: <Text color={ACCENT}>all yolo, all the time</Text>
+      </Text>
     </Box>
   )
 }

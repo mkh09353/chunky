@@ -5,13 +5,24 @@
 // SAME logic drives the main session run AND every spawned child thread (see
 // threads.ts). Events are tagged with `threadId` for children; the main thread
 // omits it (so the wire is identical to the pre-threads prototype).
-import type { AgentEvent } from "@chunky/protocol"
+import type { UsageDelta } from "@chunky/protocol"
 import { getAgent, RECURSION_LIMIT } from "./agent.ts"
 import { taggedEmitter, type Emit } from "./event-emitter.ts"
-import { activeSelection, providerRuntime } from "./providers/registry.ts"
+import { activeSelection, getProvider, providerRuntime } from "./providers/registry.ts"
 import { ThreadManager } from "./threads.ts"
+import { usageFromLangChainMessage, promptTokensOf } from "./usage.ts"
+import { checkCacheCold, cacheWarningEvent, noteRequest } from "./cache-watch.ts"
 
 export type { Emit } from "./event-emitter.ts"
+
+/** Tells a stream which conversation's prompt cache to keep warm. Only the main
+ *  user-driven session carries one (child/advisor threads don't warn). */
+export interface CacheContext {
+  /** Conversation id whose cache we track (the main session id). */
+  conversationId: string
+  /** Model driving this turn — recorded so a later switch is detected. */
+  model: string
+}
 
 // Extract plain text from an AIMessageChunk `content`, which is either a string
 // or an array of content blocks (we only care about text blocks).
@@ -52,6 +63,7 @@ export async function translateStream(
   stream: AsyncIterable<unknown>,
   threadId: string | undefined,
   emit: Emit,
+  cache?: CacheContext,
 ): Promise<string> {
   // Tag message/tool/error events with the owning threadId (omitted for main).
   const emitT = taggedEmitter(emit, threadId)
@@ -60,6 +72,13 @@ export async function translateStream(
   let finalText = ""
   const seenToolStart = new Set<string>()
   const seenToolEnd = new Set<string>()
+  // Track the LAST LLM request's prompt size to feed the cache watch. Within a
+  // tool loop later requests reuse the cache; it's the turn's final prompt that
+  // approximates the live context that a cold cache would force us to re-send.
+  // Providers report usage on the streamed chunk and/or the completed updates
+  // message — prefer updates, fall back to the stashed chunk.
+  let lastRequestUsage: UsageDelta | null = null
+  let pendingChunkUsage: UsageDelta | null = null
 
   const openAssistant = () => {
     if (!assistantOpen) {
@@ -88,6 +107,10 @@ export async function translateStream(
             finalText += t
             emitT({ type: "message.delta", text: t })
           }
+          // Stash chunk usage; used only if the matching updates AI message
+          // carries none of its own.
+          const u = usageFromLangChainMessage(chunk)
+          if (u && promptTokensOf(u) > 0) pendingChunkUsage = u
         }
         continue
       }
@@ -104,6 +127,14 @@ export async function translateStream(
             if (kind === "ai") {
               // A completed assistant message closes any open streamed text turn.
               closeAssistant()
+              const u = usageFromLangChainMessage(msg)
+              if (u && promptTokensOf(u) > 0) {
+                lastRequestUsage = u
+                pendingChunkUsage = null
+              } else if (pendingChunkUsage) {
+                lastRequestUsage = pendingChunkUsage
+                pendingChunkUsage = null
+              }
               const toolCalls = msg?.tool_calls
               if (Array.isArray(toolCalls)) {
                 for (const tc of toolCalls) {
@@ -138,6 +169,17 @@ export async function translateStream(
     }
   } finally {
     closeAssistant()
+    // Stream ended mid-message: the stashed chunk is then the last request.
+    if (pendingChunkUsage) {
+      lastRequestUsage = pendingChunkUsage
+      pendingChunkUsage = null
+    }
+  }
+
+  // Arm the cache watch with this turn's final prompt size so the NEXT turn can
+  // tell whether the cache went cold (idle past the TTL or a model switch).
+  if (cache && lastRequestUsage) {
+    noteRequest(cache.conversationId, lastRequestUsage, lastRequestUsage.model ?? cache.model, Date.now())
   }
 
   return finalText
@@ -167,21 +209,52 @@ export function userMessageContent(text: string, images?: InputImage[]): unknown
  * the `spawn_thread` tool to launch real, independent, streamable child threads.
  * `images` are pasted attachments (Ctrl+V); ignored on the Anthropic-SDK path for now.
  */
-export async function runAgent(sessionId: string, text: string, emit: Emit, images?: InputImage[]): Promise<void> {
+export async function runAgent(
+  sessionId: string,
+  text: string,
+  emit: Emit,
+  images?: InputImage[],
+  abort?: AbortController,
+): Promise<void> {
   emit({ type: "session.status", sessionId, status: "running" })
 
   // Freeze the root selection for this run. A later /model change affects the
   // next root turn, never an in-flight root or any of its child threads.
   const selection = activeSelection()
 
+  // Preflight credentials: refresh an expiring OAuth token, or fail fast with a
+  // clear "run /login" error. Without this a revoked token hangs the whole turn
+  // inside the streaming request (the error is swallowed by the stream).
+  try {
+    await getProvider(selection.provider)?.ensureAuth?.()
+  } catch (err) {
+    const detail = (err as Error)?.message ?? String(err)
+    emit({
+      type: "error",
+      message: `${selection.provider}: sign-in expired — run /login to re-authenticate. (${detail})`,
+    })
+    emit({ type: "session.status", sessionId, status: "idle" })
+    return
+  }
+
+  // Before spending anything, warn if this thread's prompt cache went cold since
+  // the last turn (idle past the TTL, or a model switch) — a cue to start fresh.
+  // Only meaningful when the model is known (needed to detect a switch).
+  const model = selection.model
+  if (model) {
+    const cold = checkCacheCold(sessionId, model, Date.now())
+    if (cold) emit(cacheWarningEvent(sessionId, cold))
+  }
+
   // Context for spawn_thread: any thread_id in this run (root or descendant)
   // resolves back to this manager via the thread registry.
   const threads = new ThreadManager(emit, sessionId, selection)
+  const cache: CacheContext | undefined = model ? { conversationId: sessionId, model } : undefined
 
   try {
     if (providerRuntime(selection.provider) === "anthropic-sdk") {
       const { runAnthropicAgent } = await import("./anthropic-runner.ts")
-      await runAnthropicAgent({ selection, threadId: sessionId, prompt: text, emit })
+      await runAnthropicAgent({ selection, threadId: sessionId, prompt: text, emit, cache, abort })
     } else {
       const stream = await getAgent(selection).stream(
         { messages: [{ role: "user", content: userMessageContent(text, images) }] } as any,
@@ -189,13 +262,19 @@ export async function runAgent(sessionId: string, text: string, emit: Emit, imag
           configurable: { thread_id: sessionId },
           streamMode: ["updates", "messages"],
           recursionLimit: RECURSION_LIMIT,
+          signal: abort?.signal,
         } as any,
       )
 
-      await translateStream(stream, undefined, emit)
+      await translateStream(stream, undefined, emit, cache)
     }
   } catch (err) {
-    emit({ type: "error", message: (err as Error)?.message ?? String(err) })
+    // A user interrupt aborts the stream — report it as a calm stop, not an error.
+    if (abort?.signal.aborted || (err as Error)?.name === "AbortError") {
+      emit({ type: "error", message: "⏹ Interrupted." })
+    } else {
+      emit({ type: "error", message: (err as Error)?.message ?? String(err) })
+    }
   } finally {
     threads.dispose()
     emit({ type: "session.status", sessionId, status: "idle" })

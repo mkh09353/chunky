@@ -10,12 +10,15 @@ import {
   type Query,
   type SDKMessage,
 } from "@anthropic-ai/claude-agent-sdk"
-import { randomUUID } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { z } from "zod"
 import { taggedEmitter, type Emit } from "./event-emitter.ts"
 import { buildSystemPrompt } from "./prompt.ts"
 import type { AgentSelection } from "./providers/registry.ts"
 import { anthropicOAuthEnvironment } from "./providers/anthropic-sdk.ts"
+import { usageFromAnthropicResult } from "./usage.ts"
+import { noteRequest } from "./cache-watch.ts"
+import type { CacheContext } from "./run.ts"
 import { WORKSPACE } from "./workspace.ts"
 import { bash, bashInputShape } from "./tools/bash.ts"
 import { editInputShape, editTool } from "./tools/edit.ts"
@@ -28,6 +31,22 @@ const ALLOWED_TOOLS = [`mcp__${SERVER_NAME}__*`]
 const CHUNKY_TOOLS = [read, bash, write, editTool, spawnThread]
 const SDK_TOOL_NAMES = new Set(CHUNKY_TOOLS.map((chunkyTool) => `mcp__${SERVER_NAME}__${chunkyTool.name}`))
 const knownSessions = new Set<string>()
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+
+/** Claude Code requires the SDK `sessionId`/`resume` to be a valid UUID. Root
+ * sessions and spawned children already are one (randomUUID), but the always-on
+ * advisor runs on a STABLE non-UUID id (`${rootId}:advisor`) for resume
+ * continuity, which the subprocess rejects with "Invalid session ID. Must be a
+ * valid UUID." (exit 1). Pass UUID thread ids through unchanged; derive a
+ * deterministic v5-shaped UUID for any that aren't, so the advisor keeps a stable
+ * session identity that resumes across consults and restarts. */
+function sdkSessionId(threadId: string): string {
+  if (UUID_RE.test(threadId)) return threadId
+  const h = createHash("sha256").update(threadId).digest("hex")
+  const variant = ((parseInt(h[16], 16) & 0x3) | 0x8).toString(16)
+  return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-${variant}${h.slice(17, 20)}-${h.slice(20, 32)}`
+}
 
 type QueryFactory = typeof query
 type SessionInfoReader = typeof getSessionInfo
@@ -139,6 +158,10 @@ export interface AnthropicRunRequest {
   systemPrompt?: string
   /** Override which MCP tools are callable (e.g. read-only for the advisor). */
   allowedTools?: string[]
+  /** When set, feed the SDK result's token counts to the prompt-cache watch. */
+  cache?: CacheContext
+  /** Abort the in-flight SDK query (user interrupt). */
+  abort?: AbortController
 }
 
 export async function buildAnthropicOptions(
@@ -146,12 +169,14 @@ export async function buildAnthropicOptions(
   dependencies: AnthropicRunnerDependencies = defaultDependencies,
 ): Promise<AnthropicOptions> {
   const { selection, threadId, emit, eventThreadId, freshSession } = request
+  const sessionId = sdkSessionId(threadId)
   const shouldResume =
     !freshSession &&
-    (knownSessions.has(threadId) || Boolean(await dependencies.getSessionInfo(threadId, { dir: WORKSPACE }).catch(() => undefined)))
+    (knownSessions.has(threadId) || Boolean(await dependencies.getSessionInfo(sessionId, { dir: WORKSPACE }).catch(() => undefined)))
   return {
     cwd: WORKSPACE,
     env: anthropicOAuthEnvironment(),
+    ...(request.abort ? { abortController: request.abort } : {}),
     model: selection.model || undefined,
     effort: selection.effort,
     systemPrompt: request.systemPrompt ?? buildSystemPrompt("edit"),
@@ -162,7 +187,7 @@ export async function buildAnthropicOptions(
     permissionMode: "dontAsk",
     includePartialMessages: true,
     persistSession: true,
-    ...(shouldResume ? { resume: threadId } : { sessionId: threadId }),
+    ...(shouldResume ? { resume: sessionId } : { sessionId }),
   }
 }
 
@@ -184,6 +209,7 @@ export async function translateAnthropicMessages(
   messages: AsyncIterable<SDKMessage>,
   displayThreadId: string | undefined,
   emitRoot: Emit,
+  cache?: CacheContext,
 ): Promise<string> {
   const emit = taggedEmitter(emitRoot, displayThreadId)
   let assistantOpen = false
@@ -241,6 +267,13 @@ export async function translateAnthropicMessages(
           const detail = message.errors.join("; ") || message.subtype
           emit({ type: "error", message: `Anthropic Agent SDK failed: ${detail}` })
         }
+        // Result carries the turn's usage; arm the cache watch with its prompt
+        // size so the next turn can detect a cold cache. Works on subscription
+        // OAuth too (token counts are reported even when cost is 0).
+        if (cache) {
+          const delta = usageFromAnthropicResult(message as any)
+          noteRequest(cache.conversationId, delta, delta.model ?? cache.model, Date.now())
+        }
       }
     }
   } finally {
@@ -262,7 +295,12 @@ export async function runAnthropicAgent(
     if (!account.subscriptionType || account.apiProvider !== "firstParty") {
       throw new Error("anthropic: Agent SDK account is not backed by first-party Claude subscription OAuth")
     }
-    const finalText = await translateAnthropicMessages(q, request.eventThreadId, request.emit)
+    const finalText = await translateAnthropicMessages(
+      q,
+      request.eventThreadId,
+      request.emit,
+      request.cache,
+    )
     knownSessions.add(request.threadId)
     return finalText
   } finally {

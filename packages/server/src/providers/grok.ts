@@ -398,11 +398,19 @@ export const grokProvider: ProviderDef = {
     return Boolean(auth && (auth.refresh || (auth.expires && auth.expires > Date.now())))
   },
   listModels: (): Promise<ModelInfo[]> => enrichModels(GROK_MODELS, ["xai", "opencode"]),
+  // Preflight the OAuth token so a revoked/expired one throws here (→ clean
+  // "run /login" error) instead of hanging inside the streaming request.
+  ensureAuth: async (): Promise<void> => {
+    await validAccessToken()
+  },
   buildModel: (selection: ModelSelection): BaseChatModel =>
     new ChatOpenAI({
       model: selection.model || DEFAULT_MODEL,
       apiKey: "oauth", // dummy; the real token is injected by the fetch override
       streaming: true,
+      // Don't silently retry — an auth failure should surface fast, not back off
+      // through several exponential retries (which reads as a hang).
+      maxRetries: 1,
       configuration: {
         baseURL: API_BASE,
         fetch: injectingFetch as unknown as typeof fetch,

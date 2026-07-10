@@ -51,6 +51,13 @@ interface ProviderBase {
   ready: () => boolean
   /** The models this provider can serve, enriched with capability metadata. */
   listModels: () => Promise<ModelInfo[]>
+  /**
+   * Preflight the credentials before a run: refresh an expiring OAuth token, or
+   * throw if it can't (revoked / no refresh token). Called synchronously at the
+   * start of a turn so an unusable token surfaces a clean "run /login" error
+   * instead of hanging inside the streaming request. No-op for API-key providers.
+   */
+  ensureAuth?: () => Promise<void>
   /** Initiate a login flow (OAuth providers only). Optional method: "device" | "browser". */
   login?: (method?: string) => Promise<LoginInitiation>
 }

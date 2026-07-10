@@ -9,6 +9,8 @@ export const ACCENT_DEEP = "#cc785c"
 export const BORDER = "gray"
 export const SUCCESS = "green"
 export const ERROR = "red"
+/** Amber for advisory notices like a cold prompt-cache warning. */
+export const WARNING = "yellow"
 /** Inline `code` and fenced code body — readable on dark and light terminals. */
 export const CODE = "cyan"
 /** Fenced-code rail / language tag — quieter than CODE. */

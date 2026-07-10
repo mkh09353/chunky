@@ -87,10 +87,15 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
 
   // Ctrl+T collapses/expands child-thread bodies (the tree view stays; only
   // spawned threads' contents fold to their header lines).
+  // Esc interrupts the in-flight turn (POST /interrupt aborts the run server-side).
   useInput(
     (input, key) => {
       if (pickerOpen) return // a picker owns the keys while open
       if (key.ctrl && (input === "t" || input === "T")) setThreadsCollapsed((v) => !v)
+      if (key.escape && mode === "live" && state.status === "running") {
+        const sid = sessionIdRef.current
+        if (sid) void fetch(baseUrl + ROUTES.interrupt(sid), { method: "POST" }).catch(() => {})
+      }
     },
     { isActive: rawSupported },
   )

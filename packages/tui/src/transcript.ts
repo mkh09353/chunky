@@ -13,6 +13,15 @@ export type Item =
   | { kind: "assistant"; text: string; streaming: boolean }
   | { kind: "tool"; id: string; name: string; input: unknown; done: boolean; ok?: boolean; output?: string }
   | { kind: "error"; text: string }
+  /** Prompt cache went cold at the start of this turn (idle past TTL / model switch). */
+  | {
+      kind: "cache-warning"
+      reason: "idle" | "model-switch"
+      idleMs?: number
+      approxTokens: number
+      fromModel?: string
+      toModel?: string
+    }
 
 export interface ThreadNode {
   id: string
@@ -122,6 +131,21 @@ export function reduce(state: TranscriptState, ev: AgentEvent): TranscriptState 
         status: ev.status,
         threads: { ...state.threads, [MAIN]: { ...main, status: ev.status } },
       }
+    }
+
+    case "cache.warning": {
+      const threadId = ev.threadId || MAIN
+      return updateThreadItems(state, threadId, (items) => [
+        ...items,
+        {
+          kind: "cache-warning",
+          reason: ev.reason,
+          approxTokens: ev.approxTokens,
+          ...(ev.idleMs != null ? { idleMs: ev.idleMs } : {}),
+          ...(ev.fromModel ? { fromModel: ev.fromModel } : {}),
+          ...(ev.toModel ? { toModel: ev.toModel } : {}),
+        },
+      ])
     }
 
     case "thread.spawn": {

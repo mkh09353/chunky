@@ -24,6 +24,8 @@ type Subscriber = ReadableStreamDefaultController<Uint8Array>
 // In-memory fan-out only. Durable history lives in the Store, so this is just
 // the set of currently-connected SSE clients per session.
 const live = new Map<string, Set<Subscriber>>()
+// AbortController for each session's in-flight turn, so /interrupt can cancel it.
+const running = new Map<string, AbortController>()
 const encoder = new TextEncoder()
 
 function subscribers(sessionId: string): Set<Subscriber> {
@@ -218,8 +220,8 @@ const server = Bun.serve({
       return json({ sessionId })
     }
 
-    // Match /api/sessions/:id/(events|messages)
-    const m = pathname.match(/^\/api\/sessions\/([^/]+)\/(events|messages)$/)
+    // Match /api/sessions/:id/(events|messages|interrupt)
+    const m = pathname.match(/^\/api\/sessions\/([^/]+)\/(events|messages|interrupt)$/)
     if (m) {
       const [, sessionId, kind] = m
       // Accept any session that exists on disk (enables resume across restart),
@@ -286,11 +288,27 @@ const server = Bun.serve({
 
         if (text) Store.setTitleIfDefault(sessionId, text) // first message becomes the resume label
 
-        void runAgent(sessionId, text, (ev) => emitTo(sessionId, ev), images).catch((err) => {
-          emitTo(sessionId, { type: "error", message: (err as Error)?.message ?? String(err) })
-          emitTo(sessionId, { type: "session.status", sessionId, status: "idle" })
-        })
+        // Abort any prior in-flight turn for this session, then track this one so
+        // POST /interrupt (Esc in the TUI) can cancel it.
+        running.get(sessionId)?.abort()
+        const ac = new AbortController()
+        running.set(sessionId, ac)
 
+        void runAgent(sessionId, text, (ev) => emitTo(sessionId, ev), images, ac)
+          .catch((err) => {
+            emitTo(sessionId, { type: "error", message: (err as Error)?.message ?? String(err) })
+            emitTo(sessionId, { type: "session.status", sessionId, status: "idle" })
+          })
+          .finally(() => {
+            if (running.get(sessionId) === ac) running.delete(sessionId)
+          })
+
+        return new Response(null, { status: 202, headers: CORS })
+      }
+
+      // POST .../interrupt -> abort the session's in-flight turn (Esc).
+      if (kind === "interrupt" && req.method === "POST") {
+        running.get(sessionId)?.abort()
         return new Response(null, { status: 202, headers: CORS })
       }
     }

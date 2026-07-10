@@ -419,11 +419,18 @@ export const codexProvider: ProviderDef = {
     return Boolean(auth && (auth.refresh || (auth.expires && auth.expires > Date.now())))
   },
   listModels: (): Promise<ModelInfo[]> => enrichModels(CODEX_MODELS, ["openai", "opencode"]),
+  // Preflight the OAuth token so a revoked/expired one throws here (→ clean
+  // "run /login" error) instead of hanging inside the streaming request.
+  ensureAuth: async (): Promise<void> => {
+    await validAuth()
+  },
   buildModel: (selection: ModelSelection): BaseChatModel =>
     new ChatOpenAI({
       model: selection.model || DEFAULT_MODEL,
       apiKey: "oauth",
       streaming: true,
+      // Fail fast on auth errors instead of backing off through retries.
+      maxRetries: 1,
       // Codex's backend speaks the OpenAI *Responses* API, so emit that body
       // shape (input/instructions), not chat-completions (messages). LangChain
       // handles the shape; we set store/effort the native way so it emits the

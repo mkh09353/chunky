@@ -2,17 +2,45 @@ import React, { useEffect, useState } from "react"
 import { Box, Text } from "ink"
 import type { Item, ThreadNode, TranscriptState } from "../transcript.js"
 import { MAIN } from "../transcript.js"
+import { collapseToolRuns, type DisplayItem } from "../collapseToolRuns.js"
 import { parseBlocks, parseInline, type MdSpan } from "../markdown.js"
 import {
   ACCENT,
   ACCENT_DEEP,
+  BORDER,
   CODE,
   CODE_MUTED,
   DOT,
   ERROR,
   SPINNER_FRAMES,
   SUCCESS,
+  WARNING,
 } from "../theme.js"
+
+// Max chars for a coalesced group's trailing input hint, mirroring kimi's
+// TOOL_SUMMARY_MAX_LENGTH — tighter than a lone tool's header so the "×N" count
+// and the summary both fit on one line.
+const TOOL_SUMMARY_MAX_LENGTH = 50
+
+/** Compact token count for notices: 1234 → "1.2k", 1_500_000 → "1.5M". */
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`
+  if (n >= 10_000) return `${Math.round(n / 1000)}k`
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`
+  return String(n)
+}
+
+/** One-line cold-cache notice, e.g. "Cache cold after 42m idle — ~98k tokens
+ *  will re-send. Consider a fresh thread." */
+function cacheWarningText(item: Extract<Item, { kind: "cache-warning" }>): string {
+  const tokens = `~${fmtTokens(item.approxTokens)} tokens re-sent`
+  if (item.reason === "model-switch") {
+    const models = item.fromModel && item.toModel ? ` (${item.fromModel} → ${item.toModel})` : ""
+    return `Cache cold after model switch${models} — ${tokens}. Consider a fresh thread.`
+  }
+  const mins = item.idleMs != null ? Math.round(item.idleMs / 60_000) : 0
+  return `Cache cold after ${mins}m idle — ${tokens}. Consider a fresh thread.`
+}
 
 /**
  * The transcript is a TREE of threads. The main session thread renders inline
@@ -32,7 +60,7 @@ export function Transcript({
   if (!main) return null
   return (
     <Box flexDirection="column">
-      {main.items.map((it, i) => (
+      {collapseToolRuns(main.items).map((it, i) => (
         <ItemView key={i} item={it} />
       ))}
       <ThreadChildren parentId={MAIN} state={state} depth={0} collapsed={collapsed} />
@@ -107,7 +135,7 @@ function ThreadBlock({
             <Text color={rail}>{"│"}</Text>
           </Box>
           <Box flexDirection="column" flexGrow={1}>
-            {thread.items.map((it, i) => (
+            {collapseToolRuns(thread.items).map((it, i) => (
               <ItemView key={i} item={it} />
             ))}
             <ThreadChildren parentId={thread.id} state={state} depth={depth + 1} collapsed={collapsed} />
@@ -128,8 +156,23 @@ function Spinner({ color }: { color: string }) {
   return <Text color={color}>{SPINNER_FRAMES[frame]}</Text>
 }
 
-export function ItemView({ item }: { item: Item }) {
+export function ItemView({ item }: { item: DisplayItem }) {
   switch (item.kind) {
+    case "tool-group": {
+      // A coalesced run: one line, a status dot (grey spinner while any call is
+      // in flight → green ⏺ once all done), the tool name, an ×N count, and only
+      // the LAST call's input as a hint. No ⎿ preview — that's the whole point.
+      const hint = summarizeInput(item.lastInput, TOOL_SUMMARY_MAX_LENGTH)
+      return (
+        <Box marginTop={1}>
+          {item.running ? <Spinner color={BORDER} /> : <Text color={SUCCESS}>{DOT}</Text>}
+          <Text bold> {item.name}</Text>
+          <Text dimColor> ×{item.count}</Text>
+          {hint ? <Text dimColor> · {hint}</Text> : null}
+        </Box>
+      )
+    }
+
     case "user":
       return (
         <Box marginTop={1}>
@@ -174,6 +217,13 @@ export function ItemView({ item }: { item: Item }) {
       return (
         <Box marginTop={1}>
           <Text color={ERROR}>✗ {item.text}</Text>
+        </Box>
+      )
+
+    case "cache-warning":
+      return (
+        <Box marginTop={1}>
+          <Text color={WARNING}>⚠ {cacheWarningText(item)}</Text>
         </Box>
       )
   }
@@ -283,12 +333,12 @@ function SpanView({ span }: { span: MdSpan }) {
   }
 }
 
-function summarizeInput(input: unknown): string {
+function summarizeInput(input: unknown, max = 60): string {
   if (input == null) return ""
-  if (typeof input === "string") return truncate(input, 60)
+  if (typeof input === "string") return truncate(input, max)
   try {
     const entries = Object.entries(input as Record<string, unknown>)
-    return truncate(entries.map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join(", "), 60)
+    return truncate(entries.map(([k, v]) => `${k}: ${JSON.stringify(v)}`).join(", "), max)
   } catch {
     return ""
   }

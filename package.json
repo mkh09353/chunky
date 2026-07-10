@@ -7,7 +7,7 @@
     "chunky": "./chunky.ts"
   },
   "scripts": {
-    "server": "bun run packages/server/src/index.ts",
+    "server": "CHUNKY_AUTH=\"${CHUNKY_AUTH:-$HOME/.chunky/state/auth.json}\" bun run packages/server/src/index.ts",
     "tui": "bun run packages/tui/src/index.tsx",
     "chunky": "bun run chunky.ts",
     "install:cli": "bash scripts/install.sh",

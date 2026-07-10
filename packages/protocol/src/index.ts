@@ -9,8 +9,37 @@ export const DEFAULT_PORT = 4599
  * for the v0 single-thread prototype the server may only ever emit the flat
  * message/tool/session events, but the TUI should tolerate thread events.
  */
+/** Token snapshot for one LLM request/turn. Used only to size the prompt cache
+ *  (input + cacheRead + cacheWrite ≈ the prompt that must be re-sent on a miss);
+ *  cost is intentionally not tracked here. */
+export interface UsageDelta {
+  inputTokens: number
+  outputTokens: number
+  cacheReadTokens?: number
+  cacheWriteTokens?: number
+  /** Model id that produced this usage, when known. */
+  model?: string
+}
+
 export type AgentEvent =
   | { type: "session.status"; sessionId: string; status: "idle" | "running" }
+  /** Emitted at the START of a turn when the prompt cache for this thread is
+   * cold — the previous turn's cached prefix is gone, so this turn re-sends the
+   * whole context. Either the idle gap exceeded the cache TTL, or the model
+   * changed (which invalidates the cache). A cue to start a fresh thread. */
+  | {
+      type: "cache.warning"
+      sessionId: string
+      threadId?: string
+      reason: "idle" | "model-switch"
+      /** Milliseconds since the previous turn's last request (idle reason). */
+      idleMs?: number
+      /** Approx prompt tokens that will be re-sent (previous turn's context). */
+      approxTokens: number
+      /** Model of the previous turn / this turn (model-switch reason). */
+      fromModel?: string
+      toModel?: string
+    }
   | { type: "message.start"; role: "assistant"; threadId?: string }
   | { type: "message.delta"; text: string; threadId?: string }
   | { type: "message.end"; threadId?: string }
@@ -51,6 +80,8 @@ export const ROUTES = {
   createSession: `/api/sessions`, // POST -> CreateSessionResponse
   listSessions: `/api/sessions`, // GET  -> ListSessionsResponse (resume picker)
   sendMessage: (id: string) => `/api/sessions/${id}/messages`, // POST SendMessageRequest -> 202
+  // POST -> 202. Abort the session's in-flight turn (user interrupt / Esc).
+  interrupt: (id: string) => `/api/sessions/${id}/interrupt`,
   // GET -> SSE stream of AgentEvent. Replays persisted history first, so opening
   // this on an existing id IS "resume": the full prior transcript streams, then live.
   events: (id: string) => `/api/sessions/${id}/events`,

@@ -19,6 +19,15 @@ export async function* mockThreadsRun(userText: string): AsyncGenerator<AgentEve
 
   yield { type: "session.status", sessionId, status: "running" }
 
+  // Demo the cold-cache notice: as if resuming this thread after a long idle gap.
+  yield {
+    type: "cache.warning",
+    sessionId,
+    reason: "idle",
+    idleMs: 42 * 60_000,
+    approxTokens: 98_000,
+  }
+
   // --- main thread opening ---
   yield { type: "message.start", role: "assistant" }
   for (const c of chunks(`On it: "${userText}". I'll delegate the exploration to a child thread.`)) {
@@ -85,6 +94,5 @@ export async function* mockThreadsRun(userText: string): AsyncGenerator<AgentEve
     await sleep(18)
   }
   yield { type: "message.end" }
-
   yield { type: "session.status", sessionId, status: "idle" }
 }

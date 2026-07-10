@@ -18,7 +18,6 @@ import { LoginPicker, type ProviderRow } from "./components/LoginPicker.js"
 import { ModelPicker, type ModelSelectionResult } from "./components/ModelPicker.js"
 import { AdvisorPicker, type AdvisorSelectionResult } from "./components/AdvisorPicker.js"
 import { openBrowser } from "./openBrowser.js"
-import { ACCENT } from "./theme.js"
 
 interface Props {
   mode: "mock" | "live"
@@ -28,6 +27,21 @@ interface Props {
   autoDemo?: boolean
   /** Which mock generator the auto-demo drives ("threads" shows the nested-thread view). */
   demo?: "basic" | "threads"
+}
+
+// Model ids that read better fully uppercased in the status line.
+const MODEL_ACRONYMS = new Set(["glm", "gpt", "api", "llm"])
+
+/** Prettify a model id for display: `grok-4.5` → `Grok 4.5`, `glm-5.2` → `GLM 5.2`,
+ *  `claude-fable-5` → `Claude Fable 5`. Strips any `[...]` variant tag. Best-effort. */
+function prettyModel(id: string | null | undefined): string {
+  if (!id) return "…"
+  return id
+    .replace(/\[.*?\]/g, "")
+    .split(/[-_]/)
+    .filter(Boolean)
+    .map((p) => (MODEL_ACRONYMS.has(p.toLowerCase()) ? p.toUpperCase() : /^[\d.]+$/.test(p) ? p : p[0]!.toUpperCase() + p.slice(1)))
+    .join(" ")
 }
 
 /** The active model selection, shown on the status line and updated by /model. */
@@ -57,6 +71,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     enabled: boolean
     provider?: string
     model?: string
+    effort?: string
     active: boolean
   } | null>(null)
   const sessionIdRef = useRef<string | null>(null)
@@ -126,13 +141,14 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     try {
       const res = await fetch(baseUrl + "/api/advisor")
       const body = (await res.json()) as {
-        config?: { enabled?: boolean; provider?: string; model?: string }
+        config?: { enabled?: boolean; provider?: string; model?: string; effort?: string }
         active?: boolean
       }
       setAdvisor({
         enabled: body.config?.enabled ?? false,
         provider: body.config?.provider,
         model: body.config?.model,
+        effort: body.config?.effort,
         active: Boolean(body.active),
       })
     } catch {
@@ -373,8 +389,6 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   // More than just the main thread means child threads exist -> show the toggle hint.
   const hasThreads = state.order.length > 1
 
-  // Status-line model label: the selected model + its effort, or a placeholder.
-  const modelLabel = mode === "live" ? currentSel?.model ?? "…" : "mock"
   // Welcome-banner model label: the REAL active selection (model · provider), not a
   // hardcoded string. Shows "connecting…" until the first /api/model fetch lands.
   const bannerModel =
@@ -383,16 +397,18 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         ? `${currentSel.model} · ${currentSel.provider}`
         : "connecting…"
       : "mock transcript"
-  const effortLabel = currentSel?.effort ? ` · ${currentSel.effort}` : ""
-  const speedLabel = currentSel?.speed && currentSel.speed !== "standard" ? ` · ${currentSel.speed}` : ""
-  // Advisor label: provider/model (with "(inactive)" when configured but suppressed
-  // because it equals the executor), or "off". Omitted entirely outside live mode.
-  const advisorLabel =
-    mode === "live" && advisor
-      ? advisor.enabled && advisor.model
-        ? `${advisor.provider}/${advisor.model}${advisor.active ? "" : " (inactive)"}`
-        : "off"
-      : null
+  // Grok-code-style status drawn into the input's bottom rule: the executor model
+  // and effort, then the advisor's model and effort. "advisor: off" when there's
+  // none; "(inactive)" when it's configured but suppressed (same model as executor).
+  const effortParen = (e?: string | null) => (e ? ` (${e})` : "")
+  const advisorPart =
+    advisor && advisor.enabled && advisor.model
+      ? ` · advisor: ${prettyModel(advisor.model)}${effortParen(advisor.effort)}${advisor.active ? "" : " (inactive)"}`
+      : " · advisor: off"
+  const bottomStatus =
+    mode === "live"
+      ? `${prettyModel(currentSel?.model)}${effortParen(currentSel?.effort)}${advisorPart}`
+      : "mock"
 
   return (
     <Box flexDirection="column" width="100%">
@@ -407,15 +423,12 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         {advisorPickerOpen && (
           <AdvisorPicker baseUrl={baseUrl} onDone={onAdvisorDone} onCancel={() => setAdvisorPickerOpen(false)} />
         )}
-        <Box width="100%" justifyContent="flex-end">
-          <Text dimColor>
-            <Text color={ACCENT}>●</Text> {modelLabel}
-            {effortLabel}
-            {speedLabel}
-            {advisorLabel ? ` · advisor ${advisorLabel}` : ""} · /model /advisor
-          </Text>
-        </Box>
-        <PromptInput disabled={running || pickerOpen} onSubmit={submit} onCommand={onCommand} />
+        <PromptInput
+          disabled={running || pickerOpen}
+          onSubmit={submit}
+          onCommand={onCommand}
+          status={bottomStatus}
+        />
         <Text dimColor>
           {"  ? for shortcuts · / for commands · ctrl+c to quit"}
           {hasThreads ? "  ·  ctrl+t to " + (threadsCollapsed ? "expand" : "collapse") + " threads" : ""}

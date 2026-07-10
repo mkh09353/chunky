@@ -1,5 +1,5 @@
 import React, { useState } from "react"
-import { Box, Text, useInput, useStdin } from "ink"
+import { Box, Text, useInput, useStdin, useStdout } from "ink"
 import { ACCENT, BORDER } from "../theme.js"
 import { COMMANDS, SlashMenu, type Command } from "./SlashMenu.js"
 
@@ -7,6 +7,8 @@ interface Props {
   disabled?: boolean
   onSubmit: (text: string) => void
   onCommand: (name: string) => void
+  /** Right-aligned status (model/effort/advisor) drawn INTO the bottom rule. */
+  status?: string
 }
 
 /**
@@ -14,7 +16,7 @@ interface Props {
  * rule above and below, a terracotta `>` marker, and an inline block cursor.
  * When the line starts with `/`, a slash-command popup floats above the band.
  */
-export function PromptInput({ disabled, onSubmit, onCommand }: Props) {
+export function PromptInput({ disabled, onSubmit, onCommand, status }: Props) {
   // isRawModeSupported is stdin.isTTY, `undefined` (not false) in a non-TTY.
   // Ink's useInput only bails on a strict === false, so coerce to a real bool.
   const rawSupported = Boolean(useStdin().isRawModeSupported)
@@ -92,7 +94,7 @@ export function PromptInput({ disabled, onSubmit, onCommand }: Props) {
         borderStyle="single"
         borderColor={BORDER}
         borderTop
-        borderBottom
+        borderBottom={false}
         borderLeft={false}
         borderRight={false}
         flexShrink={0}
@@ -100,7 +102,28 @@ export function PromptInput({ disabled, onSubmit, onCommand }: Props) {
         <Text color={ACCENT}>{"❯ "}</Text>
         <CursorText value={value} cursor={cursor} showCursor={rawSupported && !disabled} />
       </Box>
+      <BottomRule status={status} />
     </Box>
+  )
+}
+
+/**
+ * The input's bottom rule with the model/advisor status drawn into its right
+ * end — a run of `─` fills the left, then the status sits flush right, so the
+ * label appears to cut through the border line (grok-code style). Falls back to
+ * a plain full-width rule when there's no status yet.
+ */
+function BottomRule({ status }: { status?: string }) {
+  const { stdout } = useStdout()
+  const cols = stdout?.columns ?? 80
+  const label = status ?? ""
+  // -2 leaves a cell of breathing room at the right edge and guards against an
+  // off-by-one that would wrap the rule onto a second line.
+  const dashes = Math.max(0, cols - label.length - 2)
+  return (
+    <Text dimColor>
+      {"─".repeat(dashes)} {label}
+    </Text>
   )
 }
 

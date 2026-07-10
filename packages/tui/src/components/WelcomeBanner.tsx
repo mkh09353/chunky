@@ -14,8 +14,16 @@ function shortCwd(cwd: string): string {
  * box with a two-column layout — greeting + sparkle logo on the left, tips and
  * "what's new" on the right, split by a vertical divider.
  */
-export function WelcomeBanner({ mode, cwd }: { mode: "mock" | "live"; cwd: string }) {
-  const model = mode === "live" ? "glm-5.2 · Zen" : "mock transcript"
+export function WelcomeBanner({
+  mode,
+  cwd,
+  model,
+}: {
+  mode: "mock" | "live"
+  cwd: string
+  /** The active model label for the left column (real selection, not hardcoded). */
+  model: string
+}) {
   return (
     <Box width="100%" marginBottom={1} borderStyle="round" borderColor="gray" flexDirection="row">
       {/* left column: greeting + logo + model/cwd, centered */}

@@ -375,6 +375,14 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
 
   // Status-line model label: the selected model + its effort, or a placeholder.
   const modelLabel = mode === "live" ? currentSel?.model ?? "…" : "mock"
+  // Welcome-banner model label: the REAL active selection (model · provider), not a
+  // hardcoded string. Shows "connecting…" until the first /api/model fetch lands.
+  const bannerModel =
+    mode === "live"
+      ? currentSel?.model
+        ? `${currentSel.model} · ${currentSel.provider}`
+        : "connecting…"
+      : "mock transcript"
   const effortLabel = currentSel?.effort ? ` · ${currentSel.effort}` : ""
   const speedLabel = currentSel?.speed && currentSel.speed !== "standard" ? ` · ${currentSel.speed}` : ""
   // Advisor label: provider/model (with "(inactive)" when configured but suppressed
@@ -388,7 +396,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
 
   return (
     <Box flexDirection="column" width="100%">
-      <WelcomeBanner mode={mode} cwd={cwd} />
+      <WelcomeBanner mode={mode} cwd={cwd} model={bannerModel} />
       <Transcript state={state} collapsed={threadsCollapsed} />
       {running && startedAt != null && <StatusLine startedAt={startedAt} />}
       <Box flexDirection="column" width="100%" marginTop={1}>

@@ -1,4 +1,4 @@
-import React, { useState } from "react"
+import React, { useRef, useState } from "react"
 import { Box, Text, useInput, useStdin, useStdout } from "ink"
 import { ACCENT, BORDER } from "../theme.js"
 import { COMMANDS, SlashMenu, type Command } from "./SlashMenu.js"
@@ -20,8 +20,15 @@ export function PromptInput({ disabled, onSubmit, onCommand, status }: Props) {
   // isRawModeSupported is stdin.isTTY, `undefined` (not false) in a non-TTY.
   // Ink's useInput only bails on a strict === false, so coerce to a real bool.
   const rawSupported = Boolean(useStdin().isRawModeSupported)
-  const [value, setValue] = useState("")
-  const [cursor, setCursor] = useState(0)
+  // value + cursor live in ONE state so the key handler edits them with a
+  // functional updater (which always receives the CURRENT state). Ink
+  // re-subscribes useInput a frame after each render, so a plain closure drops the
+  // first keystroke after a re-render — e.g. backspace right after typing "/" saw
+  // cursor=0 and no-op'd. bufRef mirrors it for reads that can't use an updater.
+  const [buf, setBuf] = useState<{ value: string; cursor: number }>({ value: "", cursor: 0 })
+  const bufRef = useRef(buf)
+  bufRef.current = buf
+  const { value, cursor } = buf
   const [selected, setSelected] = useState(0)
 
   const slashActive = value.startsWith("/") && !value.includes(" ")
@@ -40,8 +47,7 @@ export function PromptInput({ disabled, onSubmit, onCommand, status }: Props) {
         if (key.downArrow) return setSelected((s) => clampSel(s + 1))
         if (key.tab) {
           const name = matches[clampSel(selected)]!.name
-          setValue(name)
-          setCursor(name.length)
+          setBuf({ value: name, cursor: name.length })
           setSelected(0)
           return
         }
@@ -54,26 +60,29 @@ export function PromptInput({ disabled, onSubmit, onCommand, status }: Props) {
       }
 
       if (key.return) {
-        const text = value.trim()
+        const text = bufRef.current.value.trim()
         if (!text) return
         reset()
         onSubmit(text)
         return
       }
-      if (key.leftArrow) return setCursor((c) => Math.max(0, c - 1))
-      if (key.rightArrow) return setCursor((c) => Math.min(value.length, c + 1))
+      if (key.leftArrow) return setBuf((b) => ({ ...b, cursor: Math.max(0, b.cursor - 1) }))
+      if (key.rightArrow) return setBuf((b) => ({ ...b, cursor: Math.min(b.value.length, b.cursor + 1) }))
       if (key.backspace || key.delete) {
-        if (cursor > 0) {
-          setValue((v) => v.slice(0, cursor - 1) + v.slice(cursor))
-          setCursor((c) => Math.max(0, c - 1))
-          setSelected(0)
-        }
+        setBuf((b) =>
+          b.cursor > 0
+            ? { value: b.value.slice(0, b.cursor - 1) + b.value.slice(b.cursor), cursor: b.cursor - 1 }
+            : b,
+        )
+        setSelected(0)
         return
       }
       if (key.ctrl || key.meta || key.escape) return
       if (input) {
-        setValue((v) => v.slice(0, cursor) + input + v.slice(cursor))
-        setCursor((c) => c + input.length)
+        setBuf((b) => ({
+          value: b.value.slice(0, b.cursor) + input + b.value.slice(b.cursor),
+          cursor: b.cursor + input.length,
+        }))
         setSelected(0)
       }
     },
@@ -81,8 +90,7 @@ export function PromptInput({ disabled, onSubmit, onCommand, status }: Props) {
   )
 
   function reset() {
-    setValue("")
-    setCursor(0)
+    setBuf({ value: "", cursor: 0 })
     setSelected(0)
   }
 

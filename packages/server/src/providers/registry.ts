@@ -13,6 +13,7 @@ import { ChatOpenAI } from "@langchain/openai"
 import { enrichModels, type ModelInfo } from "./models-catalog.ts"
 import { chatOptionsFor } from "./model-options.ts"
 import {
+  getAdvisor,
   persistedProvider,
   selectionFor,
   setPersistedProvider,
@@ -201,6 +202,26 @@ export function resolveModel(selection: AgentSelection = activeSelection()): Bas
   if (!p) throw new Error(`unknown provider "${selection.provider}"`)
   const { provider: _provider, ...modelSelection } = selection
   return p.buildModel(modelSelection)
+}
+
+// ---- Advisor selection (the always-on side-thread model) ----
+
+/** Resolve the configured advisor selection, or null when it can't run: disabled,
+ *  no provider/model chosen, or the provider isn't registered. */
+export function resolveAdvisorSelection(): AgentSelection | null {
+  const cfg = getAdvisor()
+  if (!cfg.enabled || !cfg.provider || !cfg.model || !providers[cfg.provider]) return null
+  return Object.freeze({ provider: cfg.provider, model: cfg.model, effort: cfg.effort, speed: undefined })
+}
+
+/** The advisor to bind for an `executor`, with the auto-suppress rule: no advisor
+ *  when unconfigured, or when it's the SAME model as the executor (advising with
+ *  the same model buys nothing). */
+export function advisorFor(executor: AgentSelection): AgentSelection | null {
+  const advisor = resolveAdvisorSelection()
+  if (!advisor) return null
+  if (advisor.provider === executor.provider && advisor.model === executor.model) return null
+  return advisor
 }
 
 // OAuth providers self-register on import. Kept at the bottom so the registry's

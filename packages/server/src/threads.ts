@@ -12,6 +12,7 @@ import type { AgentEvent } from "@chunky/protocol"
 import type { Emit } from "./event-emitter.ts"
 import { translateStream } from "./run.ts"
 import { getAdvisorAgent, getAgent, RECURSION_LIMIT } from "./agent.ts"
+import { ADVISOR_SYSTEM_PROMPT } from "./prompt.ts"
 import {
   activeSelection,
   childSelection,
@@ -159,20 +160,36 @@ export class ThreadManager implements ThreadSpawner {
 
     let finalText = ""
     try {
-      // Same async-local isolation as spawn(): a cleared store so the advisor's
-      // tokens stream only through its OWN iterator, tagged with its threadId,
-      // instead of leaking (untagged) into the caller's messages stream.
-      const stream = await AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () =>
-        this.advisorAgentFor(advisorSel).stream(
-          { messages: [{ role: "user", content }] },
-          {
-            configurable: { thread_id: advisorThreadId },
-            streamMode: ["updates", "messages"],
-            recursionLimit: RECURSION_LIMIT,
-          } as any,
-        ),
-      )
-      finalText = await translateStream(stream, advisorThreadId, this.emit)
+      if (providerRuntime(advisorSel.provider) === "anthropic-sdk") {
+        // Anthropic advisors (Claude) run via the SDK runtime, not LangChain —
+        // with the read-only advisor prompt + only read/bash. The stable
+        // advisorThreadId persists/resumes the session for continuity.
+        const { runAnthropicAgent } = await import("./anthropic-runner.ts")
+        finalText = await runAnthropicAgent({
+          selection: advisorSel,
+          threadId: advisorThreadId,
+          prompt: content,
+          emit: this.emit,
+          eventThreadId: advisorThreadId,
+          systemPrompt: ADVISOR_SYSTEM_PROMPT,
+          allowedTools: ["mcp__chunky__read", "mcp__chunky__bash"],
+        })
+      } else {
+        // Same async-local isolation as spawn(): a cleared store so the advisor's
+        // tokens stream only through its OWN iterator, tagged with its threadId,
+        // instead of leaking (untagged) into the caller's messages stream.
+        const stream = await AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () =>
+          this.advisorAgentFor(advisorSel).stream(
+            { messages: [{ role: "user", content }] },
+            {
+              configurable: { thread_id: advisorThreadId },
+              streamMode: ["updates", "messages"],
+              recursionLimit: RECURSION_LIMIT,
+            } as any,
+          ),
+        )
+        finalText = await translateStream(stream, advisorThreadId, this.emit)
+      }
     } catch (err) {
       const message = (err as Error)?.message ?? String(err)
       this.emit({ type: "error", message, threadId: advisorThreadId } as AgentEvent)

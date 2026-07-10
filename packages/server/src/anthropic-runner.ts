@@ -135,6 +135,10 @@ export interface AnthropicRunRequest {
   emit: Emit
   eventThreadId?: string
   freshSession?: boolean
+  /** Override the system prompt (e.g. the read-only advisor prompt). */
+  systemPrompt?: string
+  /** Override which MCP tools are callable (e.g. read-only for the advisor). */
+  allowedTools?: string[]
 }
 
 export async function buildAnthropicOptions(
@@ -150,11 +154,11 @@ export async function buildAnthropicOptions(
     env: anthropicOAuthEnvironment(),
     model: selection.model || undefined,
     effort: selection.effort,
-    systemPrompt: buildSystemPrompt("edit"),
+    systemPrompt: request.systemPrompt ?? buildSystemPrompt("edit"),
     tools: [],
     settingSources: [],
     mcpServers: { [SERVER_NAME]: createChunkySdkMcpServer(threadId, emit, eventThreadId) },
-    allowedTools: ALLOWED_TOOLS,
+    allowedTools: request.allowedTools ?? ALLOWED_TOOLS,
     permissionMode: "dontAsk",
     includePartialMessages: true,
     persistSession: true,

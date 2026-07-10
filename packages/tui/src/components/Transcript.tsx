@@ -2,7 +2,17 @@ import React, { useEffect, useState } from "react"
 import { Box, Text } from "ink"
 import type { Item, ThreadNode, TranscriptState } from "../transcript.js"
 import { MAIN } from "../transcript.js"
-import { ACCENT, ACCENT_DEEP, BORDER, DOT, ERROR, SPINNER_FRAMES, SUCCESS } from "../theme.js"
+import { parseBlocks, parseInline, type MdSpan } from "../markdown.js"
+import {
+  ACCENT,
+  ACCENT_DEEP,
+  CODE,
+  CODE_MUTED,
+  DOT,
+  ERROR,
+  SPINNER_FRAMES,
+  SUCCESS,
+} from "../theme.js"
 
 /**
  * The transcript is a TREE of threads. The main session thread renders inline
@@ -130,9 +140,11 @@ export function ItemView({ item }: { item: Item }) {
 
     case "assistant":
       return (
-        <Box marginTop={1} flexDirection="row">
+        <Box marginTop={1} flexDirection="row" width="100%">
           <Text color={ACCENT}>{DOT} </Text>
-          <Box flexDirection="column">
+          {/* flexGrow so long lines wrap inside the remaining columns instead of
+              overflowing and reflowing under the sparkle marker. */}
+          <Box flexDirection="column" flexGrow={1} flexShrink={1}>
             <Markdown text={item.text} />
           </Box>
         </Box>
@@ -167,66 +179,108 @@ export function ItemView({ item }: { item: Item }) {
   }
 }
 
-/** Light markdown: bold headers, list bullets, and inline **bold** segments. */
+/**
+ * Terminal markdown: fenced code, inline code/bold/italic, headings, lists,
+ * horizontal rules, and blank-line spacing. Keeps raw fences and backticks off
+ * the screen so agent prose reads clean instead of like unrendered source.
+ */
 function Markdown({ text }: { text: string }) {
-  const lines = text.split("\n")
+  const blocks = parseBlocks(text)
+  return (
+    <Box flexDirection="column">
+      {blocks.map((b, i) => {
+        switch (b.kind) {
+          case "blank":
+            // A single empty row between sections (Ink collapses pure empties).
+            return <Text key={i}>{" "}</Text>
+
+          case "hr":
+            return (
+              <Text key={i} dimColor>
+                {"─".repeat(24)}
+              </Text>
+            )
+
+          case "heading":
+            return (
+              <Text key={i} bold color={ACCENT}>
+                <Inline text={b.text} />
+              </Text>
+            )
+
+          case "bullet":
+            return (
+              <Text key={i}>
+                {" ".repeat(b.indent)}
+                <Text color={ACCENT}>• </Text>
+                <Inline text={b.text} />
+              </Text>
+            )
+
+          case "numbered":
+            return (
+              <Text key={i}>
+                {" ".repeat(b.indent)}
+                <Text color={ACCENT}>{b.n}. </Text>
+                <Inline text={b.text} />
+              </Text>
+            )
+
+          case "code":
+            return (
+              <Box key={i} flexDirection="column" marginY={0}>
+                {b.lang ? (
+                  <Text dimColor color={CODE_MUTED}>
+                    {"  "}
+                    {b.lang}
+                  </Text>
+                ) : null}
+                {(b.lines.length === 0 ? [""] : b.lines).map((line, j) => (
+                  <Text key={j} color={CODE}>
+                    {"  "}
+                    {line.length === 0 ? " " : line}
+                  </Text>
+                ))}
+              </Box>
+            )
+
+          case "paragraph":
+            return (
+              <Text key={i}>
+                <Inline text={b.text} />
+              </Text>
+            )
+        }
+      })}
+    </Box>
+  )
+}
+
+/** Render inline `code`, **bold**, and *italic* spans. */
+function Inline({ text }: { text: string }) {
+  const spans = parseInline(text)
   return (
     <>
-      {lines.map((line, i) => {
-        const header = /^(#{1,6})\s+(.*)$/.exec(line)
-        if (header) {
-          return (
-            <Text key={i} bold color={ACCENT}>
-              {header[2]}
-            </Text>
-          )
-        }
-        const bullet = /^(\s*)([-*])\s+(.*)$/.exec(line)
-        if (bullet) {
-          return (
-            <Text key={i}>
-              {bullet[1]}
-              <Text color={ACCENT}>• </Text>
-              <Inline text={bullet[3]!} />
-            </Text>
-          )
-        }
-        const numbered = /^(\s*)(\d+)\.\s+(.*)$/.exec(line)
-        if (numbered) {
-          return (
-            <Text key={i}>
-              {numbered[1]}
-              <Text color={ACCENT}>{numbered[2]}. </Text>
-              <Inline text={numbered[3]!} />
-            </Text>
-          )
-        }
-        return (
-          <Text key={i}>
-            <Inline text={line} />
-          </Text>
-        )
-      })}
+      {spans.map((s, i) => (
+        <SpanView key={i} span={s} />
+      ))}
     </>
   )
 }
 
-/** Render **bold** spans inline; everything else default fg. */
-function Inline({ text }: { text: string }) {
-  const parts = text.split(/(\*\*[^*]+\*\*)/g)
-  return (
-    <>
-      {parts.map((p, i) =>
-        /^\*\*[^*]+\*\*$/.test(p) ? (
-          <Text key={i} bold>
-            {p.slice(2, -2)}
-          </Text>
-        ) : (
-          <Text key={i}>{p}</Text>
-        ),
-      )}
-    </>
-  )
+function SpanView({ span }: { span: MdSpan }) {
+  switch (span.kind) {
+    case "bold":
+      return <Text bold>{span.text}</Text>
+    case "italic":
+      // Terminals rarely have true italic; dim+default is a quiet stand-in.
+      return <Text dimColor italic>{span.text}</Text>
+    case "code":
+      // No surrounding backticks — colour alone marks it as code.
+      return <Text color={CODE}>{span.text}</Text>
+    case "text":
+      return <Text>{span.text}</Text>
+  }
 }
 
 function summarizeInput(input: unknown): string {

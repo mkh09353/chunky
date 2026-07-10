@@ -9,6 +9,10 @@ export const ACCENT_DEEP = "#cc785c"
 export const BORDER = "gray"
 export const SUCCESS = "green"
 export const ERROR = "red"
+/** Inline `code` and fenced code body — readable on dark and light terminals. */
+export const CODE = "cyan"
+/** Fenced-code rail / language tag — quieter than CODE. */
+export const CODE_MUTED = "gray"
 
 /** The teardrop-asterisk sparkle Claude Code shows in its welcome banner. */
 export const SPARKLE = "✻"

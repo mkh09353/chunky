@@ -1,6 +1,6 @@
 import React from "react"
 import { Box, Text } from "ink"
-import { ACCENT, SPARKLE } from "../theme.js"
+import { ChunkyLogo } from "./ChunkyLogo.js"
 
 /** Shorten a path to Claude Code's `/…/parent/dir` form. */
 function shortCwd(cwd: string): string {
@@ -22,9 +22,7 @@ export function WelcomeBanner({ mode, cwd }: { mode: "mock" | "live"; cwd: strin
       <Box flexDirection="column" width="46%" alignItems="center" paddingY={1} paddingX={1}>
         <Text bold>Welcome to Chunky</Text>
         <Box marginY={1}>
-          <Text color={ACCENT} bold>
-            {SPARKLE} {SPARKLE} {SPARKLE}
-          </Text>
+          <ChunkyLogo />
         </Box>
         <Text dimColor>{model}</Text>
         <Text dimColor>{shortCwd(cwd)}</Text>

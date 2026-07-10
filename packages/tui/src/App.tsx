@@ -18,6 +18,7 @@ import { LoginPicker, type ProviderRow } from "./components/LoginPicker.js"
 import { ModelPicker, type ModelSelectionResult } from "./components/ModelPicker.js"
 import { AdvisorPicker, type AdvisorSelectionResult } from "./components/AdvisorPicker.js"
 import { openBrowser } from "./openBrowser.js"
+import { grabClipboardImage, type ClipboardImage } from "./clipboardImage.js"
 
 interface Props {
   mode: "mock" | "live"
@@ -75,6 +76,11 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     active: boolean
   } | null>(null)
   const sessionIdRef = useRef<string | null>(null)
+  // Images pasted (Ctrl+V) onto the NEXT message. A ref mirrors it so `submit`
+  // reads the latest set without going stale in its closure.
+  const [attachments, setAttachments] = useState<ClipboardImage[]>([])
+  const attachmentsRef = useRef<ClipboardImage[]>([])
+  attachmentsRef.current = attachments
   const rawSupported = Boolean(useStdin().isRawModeSupported)
 
   const pickerOpen = loginPicker != null || modelPickerOpen || advisorPickerOpen
@@ -162,7 +168,10 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
 
   const submit = useCallback(
     async (text: string) => {
-      setState((s) => pushUser(s, text))
+      const images = attachmentsRef.current
+      setAttachments([]) // consume the pasted images with this message
+      const shown = text || (images.length ? `📎 ${images.length} image${images.length === 1 ? "" : "s"}` : text)
+      setState((s) => pushUser(s, shown))
       setStartedAt(Date.now())
       if (mode === "mock") {
         const gen = demo === "threads" ? mockThreadsRun(text) : mockRun(text)
@@ -178,7 +187,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         await fetch(baseUrl + ROUTES.sendMessage(id), {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify({ text }),
+          body: JSON.stringify(images.length ? { text, images } : { text }),
         })
       } catch (err) {
         apply({ type: "error", message: `send failed: ${String(err)}` })
@@ -196,6 +205,21 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     },
     [apply],
   )
+
+  // Ctrl+V in the input — grab an image off the clipboard and attach it.
+  const onPasteImage = useCallback(async () => {
+    if (mode !== "live") {
+      printLine("Image paste needs the live server (run with --live).")
+      return
+    }
+    const img = await grabClipboardImage()
+    if (img) {
+      setAttachments((a) => [...a, img])
+      printLine("📎 image attached — type a message (optional) and press enter to send.")
+    } else {
+      printLine("No image on the clipboard. Copy an image (or screenshot), then press Ctrl+V.")
+    }
+  }, [mode, printLine])
 
   // GET /api/providers (live only). Returns [] on any failure.
   const fetchProviders = useCallback(async (): Promise<ProviderRow[]> => {
@@ -428,9 +452,11 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           onSubmit={submit}
           onCommand={onCommand}
           status={bottomStatus}
+          onPasteImage={onPasteImage}
+          attachmentCount={attachments.length}
         />
         <Text dimColor>
-          {"  ? for shortcuts · / for commands · ctrl+c to quit"}
+          {"  ? for shortcuts · / for commands · ctrl+v paste image · ctrl+c to quit"}
           {hasThreads ? "  ·  ctrl+t to " + (threadsCollapsed ? "expand" : "collapse") + " threads" : ""}
         </Text>
       </Box>

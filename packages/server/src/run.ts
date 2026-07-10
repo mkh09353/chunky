@@ -143,14 +143,31 @@ export async function translateStream(
   return finalText
 }
 
+/** An image the user pasted (Ctrl+V), carried from the TUI as base64. */
+export interface InputImage {
+  base64: string
+  mediaType: string
+}
+
+/** Build the user message: a plain string when there are no images, or the
+ *  OpenAI-style multimodal content array (text + image_url data-URIs) when there
+ *  are — which LangChain ChatOpenAI forwards to vision models (Grok 4.5, GPT-5.5). */
+export function userMessageContent(text: string, images?: InputImage[]): unknown {
+  if (!images || images.length === 0) return text
+  return [
+    ...(text ? [{ type: "text", text }] : []),
+    ...images.map((i) => ({ type: "image_url", image_url: { url: `data:${i.mediaType};base64,${i.base64}` } })),
+  ]
+}
+
 /**
  * Run one agent turn for `text` on thread `sessionId`, emitting AgentEvents.
  * This is the MAIN session thread: its message/tool events are untagged, and it
  * installs a ThreadManager (registered under `sessionId`) so the model can call
  * the `spawn_thread` tool to launch real, independent, streamable child threads.
- * Signature is intentionally unchanged — index.ts calls this.
+ * `images` are pasted attachments (Ctrl+V); ignored on the Anthropic-SDK path for now.
  */
-export async function runAgent(sessionId: string, text: string, emit: Emit): Promise<void> {
+export async function runAgent(sessionId: string, text: string, emit: Emit, images?: InputImage[]): Promise<void> {
   emit({ type: "session.status", sessionId, status: "running" })
 
   // Freeze the root selection for this run. A later /model change affects the
@@ -167,7 +184,7 @@ export async function runAgent(sessionId: string, text: string, emit: Emit): Pro
       await runAnthropicAgent({ selection, threadId: sessionId, prompt: text, emit })
     } else {
       const stream = await getAgent(selection).stream(
-        { messages: [{ role: "user", content: text }] },
+        { messages: [{ role: "user", content: userMessageContent(text, images) }] } as any,
         {
           configurable: { thread_id: sessionId },
           streamMode: ["updates", "messages"],

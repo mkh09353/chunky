@@ -269,17 +269,24 @@ const server = Bun.serve({
       // POST .../messages { text } -> 202, run agent in background
       if (kind === "messages" && req.method === "POST") {
         let text = ""
+        let images: { base64: string; mediaType: string }[] | undefined
         try {
-          const body = (await req.json()) as { text?: unknown }
+          const body = (await req.json()) as { text?: unknown; images?: unknown }
           text = typeof body?.text === "string" ? body.text : ""
+          if (Array.isArray(body?.images)) {
+            images = body.images.filter(
+              (i): i is { base64: string; mediaType: string } =>
+                !!i && typeof i.base64 === "string" && typeof i.mediaType === "string",
+            )
+          }
         } catch {
           return json({ error: "invalid JSON body" }, 400)
         }
-        if (!text) return json({ error: "missing text" }, 400)
+        if (!text && !(images && images.length)) return json({ error: "missing text or image" }, 400)
 
-        Store.setTitleIfDefault(sessionId, text) // first message becomes the resume label
+        if (text) Store.setTitleIfDefault(sessionId, text) // first message becomes the resume label
 
-        void runAgent(sessionId, text, (ev) => emitTo(sessionId, ev)).catch((err) => {
+        void runAgent(sessionId, text, (ev) => emitTo(sessionId, ev), images).catch((err) => {
           emitTo(sessionId, { type: "error", message: (err as Error)?.message ?? String(err) })
           emitTo(sessionId, { type: "session.status", sessionId, status: "idle" })
         })

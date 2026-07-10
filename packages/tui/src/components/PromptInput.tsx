@@ -9,6 +9,10 @@ interface Props {
   onCommand: (name: string) => void
   /** Right-aligned status (model/effort/advisor) drawn INTO the bottom rule. */
   status?: string
+  /** Ctrl+V: grab an image off the clipboard and attach it (async, in App). */
+  onPasteImage?: () => void
+  /** How many images are attached to the next message (shown above the input). */
+  attachmentCount?: number
 }
 
 /**
@@ -16,7 +20,7 @@ interface Props {
  * rule above and below, a terracotta `>` marker, and an inline block cursor.
  * When the line starts with `/`, a slash-command popup floats above the band.
  */
-export function PromptInput({ disabled, onSubmit, onCommand, status }: Props) {
+export function PromptInput({ disabled, onSubmit, onCommand, status, onPasteImage, attachmentCount = 0 }: Props) {
   // isRawModeSupported is stdin.isTTY, `undefined` (not false) in a non-TTY.
   // Ink's useInput only bails on a strict === false, so coerce to a real bool.
   const rawSupported = Boolean(useStdin().isRawModeSupported)
@@ -61,9 +65,15 @@ export function PromptInput({ disabled, onSubmit, onCommand, status }: Props) {
 
       if (key.return) {
         const text = bufRef.current.value.trim()
-        if (!text) return
+        // Allow an image-only message: submit when there's text OR attachments.
+        if (!text && attachmentCount === 0) return
         reset()
         onSubmit(text)
+        return
+      }
+      // Ctrl+V — pull an image off the clipboard (Cmd+V is owned by the terminal).
+      if (key.ctrl && (input === "v" || input === "V")) {
+        onPasteImage?.()
         return
       }
       if (key.leftArrow) return setBuf((b) => ({ ...b, cursor: Math.max(0, b.cursor - 1) }))
@@ -96,6 +106,11 @@ export function PromptInput({ disabled, onSubmit, onCommand, status }: Props) {
 
   return (
     <Box flexDirection="column" width="100%">
+      {attachmentCount > 0 && (
+        <Text dimColor>
+          {"  "}📎 {attachmentCount} image{attachmentCount === 1 ? "" : "s"} attached — enter to send
+        </Text>
+      )}
       {matches.length > 0 && <SlashMenu commands={matches} selected={clampSel(selected)} />}
       <Box
         width="100%"

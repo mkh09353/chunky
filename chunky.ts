@@ -45,8 +45,17 @@ function freePort(): Promise<number> {
   })
 }
 
-const PORT = process.env.CHUNKY_PORT ? Number(process.env.CHUNKY_PORT) : await freePort()
+// Always a FREE port so an installed instance never clashes with a dev server (or
+// another `chunky`). A stray CHUNKY_PORT in the shell/.env is intentionally
+// ignored; use CHUNKY_FORCE_PORT to pin one deliberately.
+const PORT = process.env.CHUNKY_FORCE_PORT ? Number(process.env.CHUNKY_FORCE_PORT) : await freePort()
 const base = `http://localhost:${PORT}`
+
+// Provider keys from state/.env (ZEN_*, etc.), but strip any CHUNKY_* — the
+// launcher owns the port, workspace, and every state path, so a stale dev .env
+// can't pin the port and re-introduce the clash.
+const dotenv = loadEnv(join(STATE, ".env"))
+for (const k of Object.keys(dotenv)) if (k.startsWith("CHUNKY_")) delete dotenv[k]
 
 // Start the server (child #1). State paths are pinned to ~/.chunky/state; the
 // agent's WORKSPACE is your invocation dir; ZEN/etc. keys come from state/.env.
@@ -56,7 +65,7 @@ const server = spawn("bun", ["run", join(APP, "packages/server/src/index.ts")], 
   stdio: ["ignore", log, log],
   env: {
     ...process.env,
-    ...loadEnv(join(STATE, ".env")),
+    ...dotenv,
     CHUNKY_PORT: String(PORT),
     CHUNKY_WORKSPACE: WORKSPACE,
     CHUNKY_DB: join(STATE, "chunky.db"),

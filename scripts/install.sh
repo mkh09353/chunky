@@ -31,6 +31,13 @@ for f in .env auth.json settings.json; do
   fi
 done
 
+# The launcher owns the port + all state paths, so scrub any CHUNKY_* from the
+# seeded .env (a dev CHUNKY_PORT=4599 would otherwise pin the port and clash).
+if [ -f "$STATE/.env" ] && grep -qE '^\s*CHUNKY_' "$STATE/.env"; then
+  grep -vE '^\s*CHUNKY_' "$STATE/.env" > "$STATE/.env.tmp" && mv "$STATE/.env.tmp" "$STATE/.env"
+  echo "   scrubbed CHUNKY_* from state/.env (launcher manages the port)"
+fi
+
 echo "→ installing launcher at $BIN/chunky"
 cat > "$BIN/chunky" <<SH
 #!/bin/sh

@@ -6,7 +6,7 @@
 // threads.ts). Events are tagged with `threadId` for children; the main thread
 // omits it (so the wire is identical to the pre-threads prototype).
 import type { AgentEvent } from "@chunky/protocol"
-import { getAgent } from "./agent.ts"
+import { getAgent, RECURSION_LIMIT } from "./agent.ts"
 import { taggedEmitter, type Emit } from "./event-emitter.ts"
 import { activeSelection, providerRuntime } from "./providers/registry.ts"
 import { ThreadManager } from "./threads.ts"
@@ -171,6 +171,7 @@ export async function runAgent(sessionId: string, text: string, emit: Emit): Pro
         {
           configurable: { thread_id: sessionId },
           streamMode: ["updates", "messages"],
+          recursionLimit: RECURSION_LIMIT,
         } as any,
       )
 

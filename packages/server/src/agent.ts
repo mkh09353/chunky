@@ -135,6 +135,12 @@ export function executorToolsFor(selection: AgentSelection) {
   return { tools, hasAdvisor: advisorSel != null }
 }
 
+/** Max LangGraph steps per turn. LangGraph defaults to 25; a coding agent that
+ *  reads/searches a real repo legitimately takes more, so we raise it — but keep
+ *  a cap so a stuck loop can't spiral forever. Applied to every `.stream()` call
+ *  (run.ts, threads.ts). Override with CHUNKY_RECURSION_LIMIT. */
+export const RECURSION_LIMIT = Number(process.env.CHUNKY_RECURSION_LIMIT) || 40
+
 /** Build the lean agent for one explicit provider/model selection. Tools
  * read/bash/write/edit operate directly on WORKSPACE via node:fs; the system
  * prompt is ~300 tokens. */
@@ -163,8 +169,8 @@ export function buildAgent(selection: AgentSelection = activeSelection(), _opts:
     middleware: [
       summarizationMiddleware({
         model,
-        trigger: { tokens: 100_000 },
-        keep: { messages: 20 },
+        trigger: { tokens: 60_000 },
+        keep: { messages: 15 },
       }),
     ],
   })
@@ -214,8 +220,8 @@ export function buildAdvisorAgent(selection: AgentSelection) {
     middleware: [
       summarizationMiddleware({
         model,
-        trigger: { tokens: 100_000 },
-        keep: { messages: 20 },
+        trigger: { tokens: 60_000 },
+        keep: { messages: 15 },
       }),
     ],
   })

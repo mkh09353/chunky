@@ -11,7 +11,7 @@ import { AsyncLocalStorageProviderSingleton } from "@langchain/core/singletons"
 import type { AgentEvent } from "@chunky/protocol"
 import type { Emit } from "./event-emitter.ts"
 import { translateStream } from "./run.ts"
-import { getAdvisorAgent, getAgent } from "./agent.ts"
+import { getAdvisorAgent, getAgent, RECURSION_LIMIT } from "./agent.ts"
 import {
   activeSelection,
   childSelection,
@@ -113,6 +113,7 @@ export class ThreadManager implements ThreadSpawner {
           {
             configurable: { thread_id: childThreadId },
             streamMode: ["updates", "messages"],
+            recursionLimit: RECURSION_LIMIT,
           } as any,
         ),
       )
@@ -167,6 +168,7 @@ export class ThreadManager implements ThreadSpawner {
           {
             configurable: { thread_id: advisorThreadId },
             streamMode: ["updates", "messages"],
+            recursionLimit: RECURSION_LIMIT,
           } as any,
         ),
       )

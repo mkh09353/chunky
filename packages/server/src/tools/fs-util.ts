@@ -9,9 +9,11 @@
 import { isAbsolute, relative, resolve } from "node:path"
 import { WORKSPACE } from "../workspace.ts"
 
-/** Line/byte caps shared by read (head) and bash (tail). */
-export const MAX_LINES = 2000
-export const MAX_BYTES = 50_000
+/** Line/byte caps shared by read (head) and bash (tail). Kept modest so a single
+ *  tool result can't flood the working set and slow every later model call — the
+ *  agent paginates (offset/limit) or narrows its search instead. */
+export const MAX_LINES = 1200
+export const MAX_BYTES = 40_000
 
 /**
  * Resolve `p` (relative OR absolute) against WORKSPACE and reject any escape.

@@ -229,6 +229,7 @@ const server = Bun.serve({
       // GET .../events -> SSE. Replays persisted history first (== resume), then live.
       if (kind === "events" && req.method === "GET") {
         let selfController: Subscriber
+        let heartbeat: ReturnType<typeof setInterval> | undefined
         const stream = new ReadableStream<Uint8Array>({
           start(controller) {
             selfController = controller
@@ -236,8 +237,22 @@ const server = Bun.serve({
               controller.enqueue(encoder.encode(sse(ev)))
             }
             subscribers(sessionId).add(controller)
+            // Heartbeat: an SSE comment every 20s so an otherwise-idle stream keeps
+            // bytes flowing. The server never times these out (idleTimeout: 0), but
+            // the TUI runs on Bun and Bun's client-side fetch aborts an idle response
+            // body after ~5 min ("TimeoutError: The operation timed out"), which is
+            // what drops the connection during quiet periods. A comment frame has no
+            // `data:` line, so readSSE ignores it — it's purely keep-alive.
+            heartbeat = setInterval(() => {
+              try {
+                controller.enqueue(encoder.encode(": ping\n\n"))
+              } catch {
+                // controller already closed; cancel() clears the interval
+              }
+            }, 20_000)
           },
           cancel() {
+            if (heartbeat) clearInterval(heartbeat)
             subscribers(sessionId).delete(selfController)
           },
         })

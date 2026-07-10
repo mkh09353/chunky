@@ -12,6 +12,11 @@ import { z } from "zod"
 import { WORKSPACE } from "../workspace.ts"
 import { MAX_BYTES, MAX_LINES, truncateOutput } from "./fs-util.ts"
 
+export const bashInputShape = {
+  command: z.string().describe("The bash command."),
+  timeout: z.number().optional().describe("Timeout in seconds (optional)."),
+}
+
 export const bash = tool(
   async ({ command, timeout }: { command: string; timeout?: number }) => {
     const proc = Bun.spawn(["bash", "-lc", command], {
@@ -53,9 +58,6 @@ export const bash = tool(
   {
     name: "bash",
     description: `Run a shell command in the project root; this is how you list, search (grep/rg), and find files. Combines stdout+stderr, tail-truncated to the last ${MAX_LINES} lines / ${MAX_BYTES / 1000}KB (full output spilled to a temp file). Optional timeout in seconds.`,
-    schema: z.object({
-      command: z.string().describe("The bash command."),
-      timeout: z.number().optional().describe("Timeout in seconds (optional)."),
-    }),
+    schema: z.object(bashInputShape),
   },
 )

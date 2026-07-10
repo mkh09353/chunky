@@ -18,6 +18,7 @@ import type { LoginInitiation, ProviderDef } from "./registry.ts"
 import { enrichModels, type ModelInfo } from "./models-catalog.ts"
 import { chatOptionsFor } from "./model-options.ts"
 import type { ModelSelection } from "../settings.ts"
+import { CHUNKY_USER_AGENT } from "./app-info.ts"
 
 // Public Grok-CLI OAuth client. xAI's auth server rejects loopback OAuth from
 // non-allowlisted clients, so we reuse the Grok-CLI client_id xAI ships for
@@ -50,7 +51,6 @@ const REDIRECT_URI = `http://${OAUTH_HOST}:${OAUTH_PORT}${OAUTH_REDIRECT_PATH}`
 // Refresh a little before expiry so a long tool call doesn't hit a mid-flight 401.
 const ACCESS_TOKEN_REFRESH_SKEW_MS = 120_000
 
-const USER_AGENT = "chunky-cli/0.0.0"
 
 interface PkceCodes {
   verifier: string
@@ -70,7 +70,7 @@ function authHeaders() {
   return {
     "Content-Type": "application/x-www-form-urlencoded",
     Accept: "application/json",
-    "User-Agent": USER_AGENT,
+    "User-Agent": CHUNKY_USER_AGENT,
   }
 }
 
@@ -300,7 +300,7 @@ async function injectingFetch(input: RequestInfo | URL, init?: RequestInit): Pro
     new Headers(init.headers as HeadersInit).forEach((value, key) => headers.set(key, value))
   }
   headers.set("authorization", `Bearer ${token}`)
-  headers.set("User-Agent", USER_AGENT)
+  headers.set("User-Agent", CHUNKY_USER_AGENT)
   return fetch(input, { ...init, headers })
 }
 
@@ -318,6 +318,7 @@ async function startDeviceLogin(): Promise<LoginInitiation> {
     .catch((err) => console.error(`[grok] device login failed: ${(err as Error).message}`))
 
   return {
+    kind: "url",
     url: device.verification_uri_complete ?? device.verification_uri,
     userCode: device.user_code,
     instructions: `Open ${device.verification_uri} on any device and enter code: ${device.user_code}`,
@@ -380,6 +381,7 @@ async function startBrowserLogin(): Promise<LoginInitiation> {
   })
 
   return {
+    kind: "url",
     url: buildAuthorizeUrl(pkce, state, nonce),
     instructions: "Open this URL in your browser to authorize. This window will close automatically.",
   }

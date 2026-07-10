@@ -19,6 +19,7 @@ import { AuthStore, type OAuthInfo } from "./auth-store.ts"
 import type { LoginInitiation, ProviderDef } from "./registry.ts"
 import { enrichModels, type ModelInfo } from "./models-catalog.ts"
 import type { ModelSelection } from "../settings.ts"
+import { CHUNKY_USER_AGENT } from "./app-info.ts"
 
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 const ISSUER = "https://auth.openai.com"
@@ -34,7 +35,6 @@ const DEFAULT_MODEL = process.env.CODEX_MODEL || "gpt-5.5"
 // (gpt-5.3-codex, gpt-5.2-codex, …) return "not supported when using Codex with
 // a ChatGPT account", so they're deliberately excluded. Enriched from models.dev.
 const CODEX_MODELS = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"]
-const USER_AGENT = "chunky-cli/0.0.0"
 // Per-process session id sent on the `session-id` header (matches codex CLI).
 const CODEX_SESSION_ID = crypto.randomUUID()
 
@@ -252,7 +252,7 @@ async function injectingFetch(input: RequestInfo | URL, init?: RequestInit): Pro
     new Headers(init.headers as HeadersInit).forEach((value, key) => headers.set(key, value))
   }
   headers.set("authorization", `Bearer ${auth.access}`)
-  headers.set("User-Agent", USER_AGENT)
+  headers.set("User-Agent", CHUNKY_USER_AGENT)
   headers.set("originator", "chunky")
   headers.set("session-id", CODEX_SESSION_ID) // codex CLI sends one; helps attribution
   if (auth.accountId) headers.set("ChatGPT-Account-Id", auth.accountId)
@@ -289,7 +289,7 @@ async function injectingFetch(input: RequestInfo | URL, init?: RequestInit): Pro
 async function startDeviceLogin(): Promise<LoginInitiation> {
   const deviceResponse = await fetch(`${ISSUER}/api/accounts/deviceauth/usercode`, {
     method: "POST",
-    headers: { "Content-Type": "application/json", "User-Agent": USER_AGENT },
+    headers: { "Content-Type": "application/json", "User-Agent": CHUNKY_USER_AGENT },
     body: JSON.stringify({ client_id: CLIENT_ID }),
   })
   if (!deviceResponse.ok) throw new Error(`Codex device auth failed to initiate (${deviceResponse.status})`)
@@ -306,7 +306,7 @@ async function startDeviceLogin(): Promise<LoginInitiation> {
       while (true) {
         const response = await fetch(`${ISSUER}/api/accounts/deviceauth/token`, {
           method: "POST",
-          headers: { "Content-Type": "application/json", "User-Agent": USER_AGENT },
+          headers: { "Content-Type": "application/json", "User-Agent": CHUNKY_USER_AGENT },
           body: JSON.stringify({
             device_auth_id: deviceData.device_auth_id,
             user_code: deviceData.user_code,
@@ -342,6 +342,7 @@ async function startDeviceLogin(): Promise<LoginInitiation> {
   })()
 
   return {
+    kind: "url",
     url: `${ISSUER}/codex/device`,
     userCode: deviceData.user_code,
     instructions: `Open ${ISSUER}/codex/device and enter code: ${deviceData.user_code}`,
@@ -402,6 +403,7 @@ async function startBrowserLogin(): Promise<LoginInitiation> {
   })
 
   return {
+    kind: "url",
     url: buildAuthorizeUrl(pkce, state),
     instructions: "Open this URL in your browser to authorize. This window will close automatically.",
   }

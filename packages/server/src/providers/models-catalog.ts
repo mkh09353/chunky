@@ -12,6 +12,7 @@
 // repeated runs don't re-hit the network. If the fetch fails and no cache
 // exists, enrichment degrades gracefully: reasoning=false, name=id.
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { CHUNKY_USER_AGENT } from "./app-info.ts"
 
 /** The shape every provider's listModels() returns and the picker consumes. */
 export interface ModelInfo {
@@ -74,7 +75,7 @@ export function loadModelsDev(): Promise<DevCatalog> {
     const disk = readDiskCache()
     if (disk) return disk
     try {
-      const res = await fetch(MODELS_DEV_URL, { headers: { "User-Agent": "chunky-cli/0.0.0" } })
+      const res = await fetch(MODELS_DEV_URL, { headers: { "User-Agent": CHUNKY_USER_AGENT } })
       if (!res.ok) throw new Error(`models.dev returned ${res.status}`)
       const catalog = (await res.json()) as DevCatalog
       writeDiskCache(catalog)

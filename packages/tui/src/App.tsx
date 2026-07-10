@@ -1,6 +1,12 @@
 import React, { useCallback, useEffect, useRef, useState } from "react"
 import { Box, Text, useApp, useInput, useStdin } from "ink"
-import { ROUTES, readSSE, type AgentEvent, type CreateSessionResponse } from "@chunky/protocol"
+import {
+  ROUTES,
+  readSSE,
+  type AgentEvent,
+  type CreateSessionResponse,
+  type LoginInitiation,
+} from "@chunky/protocol"
 import { mockRun } from "@chunky/protocol/mock"
 import { mockThreadsRun } from "./mockThreads.js"
 import { initialState, pushUser, reduce, type TranscriptState } from "./transcript.js"
@@ -183,16 +189,20 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           headers: { "content-type": "application/json" },
           body: JSON.stringify({ method: "browser" }),
         })
-        const body = (await res.json()) as { url?: string; userCode?: string; error?: string }
-        if (body.error || !body.url) {
-          printLine(`Login for ${p.id} failed: ${body.error ?? "no authorize URL returned"}`)
+        const body = (await res.json()) as LoginInitiation | { error: string }
+        if ("error" in body) {
+          printLine(`Login for ${p.id} failed: ${body.error}`)
           return
         }
-        const opened = openBrowser(body.url)
+        if (body.kind === "ready") {
+          printLine(body.instructions)
+          return
+        }
+        const opened = body.kind === "browser-opened" || openBrowser(body.url)
         printLine(
           opened
-            ? `Opening your browser to sign in to ${p.id}… complete the login there; it finishes automatically.`
-            : `Couldn't open a browser automatically. Open this URL to sign in to ${p.id}:\n  ${body.url}`,
+            ? body.instructions
+            : `Couldn't open a browser automatically. Open this URL to sign in to ${p.id}:\n  ${body.kind === "url" ? body.url : ""}`,
         )
         // Poll until the server has stored a token (loopback callback fired).
         const deadline = Date.now() + 150_000

@@ -8,6 +8,12 @@ import { tool } from "@langchain/core/tools"
 import { z } from "zod"
 import { MAX_BYTES, MAX_LINES, resolveInWorkspace, truncateOutput } from "./fs-util.ts"
 
+export const readInputShape = {
+  path: z.string().describe("File path (relative or absolute)."),
+  offset: z.number().optional().describe("1-indexed start line."),
+  limit: z.number().optional().describe("Max lines to read."),
+}
+
 export const read = tool(
   async ({ path, offset, limit }: { path: string; offset?: number; limit?: number }) => {
     const full = resolveInWorkspace(path)
@@ -40,10 +46,6 @@ export const read = tool(
   {
     name: "read",
     description: `Read a file's raw text (no line-number gutter). Capped at the first ${MAX_LINES} lines / ${MAX_BYTES / 1000}KB; use offset/limit to page through larger files.`,
-    schema: z.object({
-      path: z.string().describe("File path (relative or absolute)."),
-      offset: z.number().optional().describe("1-indexed start line."),
-      limit: z.number().optional().describe("Max lines to read."),
-    }),
+    schema: z.object(readInputShape),
   },
 )

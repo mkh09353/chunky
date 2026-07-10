@@ -9,7 +9,8 @@
     "typecheck": "tsc -b"
   },
   "devDependencies": {
-    "typescript": "^5.7.0",
-    "@types/node": "^22.10.0"
+    "@types/bun": "^1.3.0",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.0"
   }
 }

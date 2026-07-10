@@ -10,6 +10,7 @@
 // persisted via ./settings so it survives a restart.
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import { ChatOpenAI } from "@langchain/openai"
+import type { LoginInitiation } from "@chunky/protocol"
 import { enrichModels, type ModelInfo } from "./models-catalog.ts"
 import { chatOptionsFor } from "./model-options.ts"
 import {
@@ -22,6 +23,7 @@ import {
   type Speed,
 } from "../settings.ts"
 
+export type { LoginInitiation } from "@chunky/protocol"
 export type { ModelInfo } from "./models-catalog.ts"
 export type { Effort, ModelSelection, Speed } from "../settings.ts"
 
@@ -41,30 +43,30 @@ export interface AgentSelectionOverride {
   speed?: Speed
 }
 
-/** What a provider returns when a login flow is initiated. The actual token
- *  exchange completes in the background; poll `ready()` / the status route. */
-export interface LoginInitiation {
-  /** URL the user opens (device verification page, or a browser authorize URL). */
-  url: string
-  /** Short device code to type on the verification page (device-code flow only). */
-  userCode?: string
-  /** Human-readable next step. */
-  instructions: string
-}
-
-export interface ProviderDef {
+interface ProviderBase {
   id: string
   label: string
   /** True once this provider has usable credentials (API key present / logged in). */
   ready: () => boolean
   /** The models this provider can serve, enriched with capability metadata. */
   listModels: () => Promise<ModelInfo[]>
-  /** Build a ready-to-use chat model for the given selection (model id + knobs),
-   *  with auth/token injection already applied. */
-  buildModel: (selection: ModelSelection) => BaseChatModel
   /** Initiate a login flow (OAuth providers only). Optional method: "device" | "browser". */
   login?: (method?: string) => Promise<LoginInitiation>
 }
+
+/** LangChain providers build a chat model; alternate providers own the whole
+ * agent loop and cannot accidentally be resolved as a chat model. */
+export type ProviderDef = ProviderBase &
+  (
+    | {
+        runtime?: "langchain"
+        buildModel: (selection: ModelSelection) => BaseChatModel
+      }
+    | {
+        runtime: "anthropic-sdk"
+        buildModel?: never
+      }
+  )
 
 function requireEnv(name: string): string {
   const v = process.env[name]
@@ -199,8 +201,17 @@ export function selectionSignature(selection: AgentSelection = activeSelection()
 export function resolveModel(selection: AgentSelection = activeSelection()): BaseChatModel {
   const p = providers[selection.provider]
   if (!p) throw new Error(`unknown provider "${selection.provider}"`)
+  if (p.runtime === "anthropic-sdk") {
+    throw new Error(`provider "${selection.provider}" uses the ${p.runtime} agent runtime`)
+  }
   const { provider: _provider, ...modelSelection } = selection
   return p.buildModel(modelSelection)
+}
+
+export function providerRuntime(id: string): NonNullable<ProviderDef["runtime"]> {
+  const provider = providers[id]
+  if (!provider) throw new Error(`unknown provider "${id}"`)
+  return provider.runtime ?? "langchain"
 }
 
 // OAuth providers self-register on import. Kept at the bottom so the registry's
@@ -208,5 +219,7 @@ export function resolveModel(selection: AgentSelection = activeSelection()): Bas
 // (grok/codex import only *types* from this file, so the cycle is erased at runtime.)
 import { grokProvider } from "./grok.ts"
 import { codexProvider } from "./codex.ts"
+import { anthropicProvider } from "./anthropic-sdk.ts"
 registerProvider(grokProvider)
 registerProvider(codexProvider)
+registerProvider(anthropicProvider)

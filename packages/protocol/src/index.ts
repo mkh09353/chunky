@@ -38,6 +38,14 @@ export interface ListSessionsResponse {
   sessions: SessionSummary[]
 }
 
+/** Result of starting a provider login flow. The shape makes it explicit
+ * whether the client should open a URL, wait for a provider-opened browser, or
+ * stop because credentials are already ready. */
+export type LoginInitiation =
+  | { kind: "url"; url: string; userCode?: string; instructions: string }
+  | { kind: "browser-opened"; instructions: string }
+  | { kind: "ready"; instructions: string }
+
 // ---- Endpoints (relative to http://localhost:<port>) ----
 export const ROUTES = {
   createSession: `/api/sessions`, // POST -> CreateSessionResponse

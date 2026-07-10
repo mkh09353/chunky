@@ -7,6 +7,11 @@ import { tool } from "@langchain/core/tools"
 import { z } from "zod"
 import { resolveInWorkspace } from "./fs-util.ts"
 
+export const writeInputShape = {
+  path: z.string().describe("File path (relative or absolute)."),
+  content: z.string().describe("Full file contents."),
+}
+
 export const write = tool(
   async ({ path, content }: { path: string; content: string }) => {
     const full = resolveInWorkspace(path)
@@ -19,9 +24,6 @@ export const write = tool(
     description:
       "Create or overwrite a whole file (parent dirs auto-created). Use only for new files or full rewrites; " +
       "use edit/apply_patch to change an existing file.",
-    schema: z.object({
-      path: z.string().describe("File path (relative or absolute)."),
-      content: z.string().describe("Full file contents."),
-    }),
+    schema: z.object(writeInputShape),
   },
 )

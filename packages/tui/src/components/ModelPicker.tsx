@@ -93,16 +93,18 @@ export function ModelPicker({ baseUrl, onDone, onCancel }: Props) {
           providers?: Array<{ id: string; ready: boolean }>
         }
         const providers = provBody.providers ?? []
-        const all: Row[] = []
-        for (const p of providers) {
-          try {
-            const r = await fetch(baseUrl + `/api/providers/${p.id}/models`)
-            const b = (await r.json()) as { models?: ModelInfo[] }
-            for (const m of b.models ?? []) all.push({ provider: p.id, ready: p.ready, model: m })
-          } catch {
-            // skip a provider whose models can't be listed
-          }
-        }
+        const groups = await Promise.all(
+          providers.map(async (p): Promise<Row[]> => {
+            try {
+              const r = await fetch(baseUrl + `/api/providers/${p.id}/models`)
+              const b = (await r.json()) as { models?: ModelInfo[] }
+              return (b.models ?? []).map((model) => ({ provider: p.id, ready: p.ready, model }))
+            } catch {
+              return []
+            }
+          }),
+        )
+        const all = groups.flat()
         if (!cancelled) {
           setRows(all)
           setLoading(false)

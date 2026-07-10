@@ -61,15 +61,17 @@ const editItem = z.object({
   newText: z.string().describe("Replacement text."),
 })
 
+export const editInputShape = {
+  path: z.string().describe("File path (relative or absolute)."),
+  edits: z
+    .array(editItem)
+    .min(1)
+    .describe("One or more replacements, each matched against the original file (not applied incrementally)."),
+}
+
 const editSchema = z.preprocess(
   prepareEditArguments,
-  z.object({
-    path: z.string().describe("File path (relative or absolute)."),
-    edits: z
-      .array(editItem)
-      .min(1)
-      .describe("One or more replacements, each matched against the original file (not applied incrementally)."),
-  }),
+  z.object(editInputShape),
 )
 
 export const editTool = tool(

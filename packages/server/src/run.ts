@@ -7,10 +7,11 @@
 // omits it (so the wire is identical to the pre-threads prototype).
 import type { AgentEvent } from "@chunky/protocol"
 import { getAgent } from "./agent.ts"
-import { activeSelection } from "./providers/registry.ts"
+import { taggedEmitter, type Emit } from "./event-emitter.ts"
+import { activeSelection, providerRuntime } from "./providers/registry.ts"
 import { ThreadManager } from "./threads.ts"
 
-export type Emit = (ev: AgentEvent) => void
+export type { Emit } from "./event-emitter.ts"
 
 // Extract plain text from an AIMessageChunk `content`, which is either a string
 // or an array of content blocks (we only care about text blocks).
@@ -53,7 +54,7 @@ export async function translateStream(
   emit: Emit,
 ): Promise<string> {
   // Tag message/tool/error events with the owning threadId (omitted for main).
-  const emitT = (ev: AgentEvent) => emit(threadId ? ({ ...ev, threadId } as AgentEvent) : ev)
+  const emitT = taggedEmitter(emit, threadId)
 
   let assistantOpen = false
   let finalText = ""
@@ -161,15 +162,20 @@ export async function runAgent(sessionId: string, text: string, emit: Emit): Pro
   const threads = new ThreadManager(emit, sessionId, selection)
 
   try {
-    const stream = await getAgent(selection).stream(
-      { messages: [{ role: "user", content: text }] },
-      {
-        configurable: { thread_id: sessionId },
-        streamMode: ["updates", "messages"],
-      } as any,
-    )
+    if (providerRuntime(selection.provider) === "anthropic-sdk") {
+      const { runAnthropicAgent } = await import("./anthropic-runner.ts")
+      await runAnthropicAgent({ selection, threadId: sessionId, prompt: text, emit })
+    } else {
+      const stream = await getAgent(selection).stream(
+        { messages: [{ role: "user", content: text }] },
+        {
+          configurable: { thread_id: sessionId },
+          streamMode: ["updates", "messages"],
+        } as any,
+      )
 
-    await translateStream(stream, undefined, emit)
+      await translateStream(stream, undefined, emit)
+    }
   } catch (err) {
     emit({ type: "error", message: (err as Error)?.message ?? String(err) })
   } finally {

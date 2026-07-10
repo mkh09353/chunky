@@ -9,77 +9,20 @@
 // system prompt and four lean tools (read/bash/write/edit) that operate directly
 // on WORKSPACE via node:fs. Checkpointer, streaming, threads, and providers are
 // all unchanged — only the agent-construction call differs.
-import { tool } from "@langchain/core/tools"
-import { z } from "zod"
 import { createAgent, summarizationMiddleware } from "langchain"
 import {
   activeSelection,
   resolveModel,
   selectionSignature,
   type AgentSelection,
-  type Effort,
-  type Speed,
 } from "./providers/registry.ts"
-import { threadContextFor } from "./thread-context.ts"
 import { buildSystemPrompt, type EditToolName } from "./prompt.ts"
 import { applyPatch } from "./tools/apply-patch.ts"
 import { bash } from "./tools/bash.ts"
 import { editTool } from "./tools/edit.ts"
 import { read } from "./tools/read.ts"
+import { spawnThread } from "./tools/spawn-thread.ts"
 import { write } from "./tools/write.ts"
-
-/**
- * spawn_thread — delegate a subtask to a FULL, independent child agent thread.
- * Unlike a hidden subagent blob, the child is its own streamable agent run (its
- * own LangGraph thread_id) whose activity streams live to the UI, tagged with the
- * child's threadId. The child agent also has this tool, so it can spawn its own
- * children (recursion). Returns the child thread's final answer to the caller.
- *
- * The RunnableConfig (2nd arg) carries `configurable.thread_id` — the id of the
- * thread whose model invoked this tool — which we use to find the active run's
- * ThreadManager and to nest the child under the correct parent.
- */
-interface SpawnThreadInput {
-  title: string
-  instructions: string
-  provider?: string
-  model?: string
-  effort?: Effort
-  speed?: Speed
-}
-
-const spawnThread = tool(
-  async ({ title, instructions, provider, model, effort, speed }: SpawnThreadInput, config?: unknown) => {
-    const callerThreadId = (config as any)?.configurable?.thread_id as string | undefined
-    const ctx = threadContextFor(callerThreadId)
-    if (!ctx || !callerThreadId) {
-      return "error: spawn_thread is only available inside an active session run."
-    }
-    const hasSelectionOverride = provider !== undefined || model !== undefined || effort !== undefined || speed !== undefined
-    const text = await ctx.spawn({
-      callerThreadId,
-      title,
-      instructions,
-      selection: hasSelectionOverride ? { provider, model, effort, speed } : undefined,
-    })
-    return `Child thread "${title}" finished.\n\n${text}`
-  },
-  {
-    name: "spawn_thread",
-    description:
-      "Delegate a focused subtask to an independent child agent thread that streams its own work live and can " +
-      "spawn its own children. Omit model-selection fields to inherit this thread's model, or choose a configured " +
-      "provider/model when a different model is better suited. Returns the child thread's final answer.",
-    schema: z.object({
-      title: z.string().describe("Short title shown in the UI (e.g. 'List project files')."),
-      instructions: z.string().describe("Full task/instructions for the child agent."),
-      provider: z.string().optional().describe("Optional provider id for the child; defaults to this thread's provider."),
-      model: z.string().optional().describe("Optional model id for the child; defaults to the inherited/provider selection."),
-      effort: z.enum(["low", "medium", "high", "xhigh"]).optional().describe("Optional reasoning effort for the child."),
-      speed: z.enum(["standard", "fast"]).optional().describe("Optional speed setting for the child."),
-    }),
-  },
-)
 
 /**
  * Durable checkpointer so agent memory survives a restart, backed by bun:sqlite

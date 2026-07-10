@@ -9,11 +9,13 @@
 import { randomUUID } from "node:crypto"
 import { AsyncLocalStorageProviderSingleton } from "@langchain/core/singletons"
 import type { AgentEvent } from "@chunky/protocol"
-import { translateStream, type Emit } from "./run.ts"
+import type { Emit } from "./event-emitter.ts"
+import { translateStream } from "./run.ts"
 import { getAgent } from "./agent.ts"
 import {
   activeSelection,
   childSelection,
+  providerRuntime,
   type AgentSelection,
   type AgentSelectionOverride,
 } from "./providers/registry.ts"
@@ -83,8 +85,19 @@ export class ThreadManager implements ThreadSpawner {
     this.emit({ type: "thread.spawn", threadId: childThreadId, parentThreadId, title: opts.title })
     this.emit({ type: "thread.status", threadId: childThreadId, status: "running", title: opts.title })
 
-    let finalText = ""
     try {
+      if (providerRuntime(selection.provider) === "anthropic-sdk") {
+        const { runAnthropicAgent } = await import("./anthropic-runner.ts")
+        return await runAnthropicAgent({
+          selection,
+          threadId: childThreadId,
+          prompt: opts.instructions,
+          emit: this.emit,
+          eventThreadId: childThreadId,
+          freshSession: true,
+        })
+      }
+
       // A child spawned from inside the parent's tool node runs on the parent's
       // ambient callback context, which would leak the child's LLM tokens into
       // the PARENT's `messages` stream (duplicated, untagged). Create the child
@@ -99,17 +112,16 @@ export class ThreadManager implements ThreadSpawner {
           } as any,
         ),
       )
-      finalText = await translateStream(stream, childThreadId, this.emit)
+      return await translateStream(stream, childThreadId, this.emit)
     } catch (err) {
       const message = (err as Error)?.message ?? String(err)
       this.emit({ type: "error", message, threadId: childThreadId } as AgentEvent)
-      finalText = `error: ${message}`
+      return `error: ${message}`
     } finally {
       this.emit({ type: "thread.status", threadId: childThreadId, status: "idle", title: opts.title })
       unregisterThread(childThreadId)
       this.selections.delete(childThreadId)
     }
 
-    return finalText
   }
 }

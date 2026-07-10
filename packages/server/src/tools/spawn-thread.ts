@@ -3,7 +3,7 @@
 // the Anthropic Agent SDK MCP adapter invoke the exact same thread machinery.
 import { tool } from "@langchain/core/tools"
 import { z } from "zod"
-import type { Effort, Speed } from "../providers/registry.ts"
+import { getProvider, listProviders, type Effort, type Speed } from "../providers/registry.ts"
 import { threadContextFor } from "../thread-context.ts"
 
 export interface SpawnThreadInput {
@@ -18,7 +18,13 @@ export interface SpawnThreadInput {
 export const spawnThreadInputShape = {
   title: z.string().describe("Short title shown in the UI (e.g. 'List project files')."),
   instructions: z.string().describe("Full task/instructions for the child agent."),
-  provider: z.string().optional().describe("Optional provider id for the child; defaults to this thread's provider."),
+  provider: z
+    .string()
+    .optional()
+    .describe(
+      'Optional provider id for the child; must be a CONFIGURED provider (e.g. "zen", "grok", "codex", "anthropic"). ' +
+        "Omit to inherit this thread's provider — don't invent one.",
+    ),
   model: z.string().optional().describe("Optional model id for the child; defaults to the inherited/provider selection."),
   effort: z.enum(["low", "medium", "high", "xhigh"]).optional().describe("Optional reasoning effort for the child."),
   speed: z.enum(["standard", "fast"]).optional().describe("Optional speed setting for the child."),
@@ -31,6 +37,16 @@ export async function runSpawnThread(input: SpawnThreadInput, callerThreadId: st
   }
 
   const { title, instructions, provider, model, effort, speed } = input
+
+  // Guard the provider override: the model sometimes invents a plausible-but-
+  // unregistered id (e.g. "cursor"), which would otherwise throw deep in
+  // childSelection() and kill the child thread. Reject it here with the valid
+  // set so the model can correct itself, rather than crashing the spawn.
+  if (provider !== undefined && !getProvider(provider)) {
+    const valid = listProviders().map((p) => `"${p.id}"`).join(", ")
+    return `error: unknown provider "${provider}". Valid providers: ${valid}. Omit "provider" to inherit this thread's model.`
+  }
+
   const hasSelectionOverride = provider !== undefined || model !== undefined || effort !== undefined || speed !== undefined
   const text = await ctx.spawn({
     callerThreadId,

@@ -4,7 +4,7 @@
 import { Database } from "bun:sqlite"
 import type { AgentEvent, SessionSummary } from "@chunky/protocol"
 import type { Goal } from "./goal.ts"
-import { WORKSPACE } from "./workspace.ts"
+import { LAUNCH_WORKSPACE } from "./workspace.ts"
 
 const DB_PATH = process.env.CHUNKY_DB || "chunky.db"
 const db = new Database(DB_PATH)
@@ -36,15 +36,14 @@ db.exec(`
 `)
 
 // Migration: sessions gained a `workspace` column so each repo has its own
-// thread list. Add it if an older db predates it, and backfill existing rows to
-// the launch workspace — they all ran there before repos existed. (This runs at
-// import, before repos.initRepos() may switch the active workspace, so the
-// backfill correctly uses the original launch dir.)
+// thread list — and, since workspaces went per-session, so each run knows which
+// folder it operates on. Add it if an older db predates it, and backfill
+// existing rows to the launch workspace — they all ran there before repos existed.
 {
   const cols = db.query("PRAGMA table_info(sessions)").all() as { name: string }[]
   if (!cols.some((c) => c.name === "workspace")) {
     db.exec("ALTER TABLE sessions ADD COLUMN workspace TEXT")
-    db.query("UPDATE sessions SET workspace = ? WHERE workspace IS NULL").run(WORKSPACE)
+    db.query("UPDATE sessions SET workspace = ? WHERE workspace IS NULL").run(LAUNCH_WORKSPACE)
   }
 }
 
@@ -60,6 +59,7 @@ const stmtListAll = db.query(
 const stmtListByWorkspace = db.query(
   "SELECT id, title, created_at, last_activity FROM sessions WHERE workspace = ? ORDER BY last_activity DESC LIMIT 100",
 )
+const stmtWorkspace = db.query("SELECT workspace FROM sessions WHERE id = ?")
 const stmtNextSeq = db.query("SELECT COALESCE(MAX(seq), -1) + 1 AS n FROM events WHERE session_id = ?")
 const stmtInsertEvent = db.query("INSERT INTO events (session_id, seq, json) VALUES (?, ?, ?)")
 const stmtHistory = db.query("SELECT json FROM events WHERE session_id = ? ORDER BY seq ASC")
@@ -100,13 +100,21 @@ function rowToGoal(row: GoalRow): Goal {
 }
 
 export const Store = {
-  createSession(id: string, title = "New session", workspace: string = WORKSPACE): void {
+  createSession(id: string, title = "New session", workspace: string = LAUNCH_WORKSPACE): void {
     const now = Date.now()
     stmtCreate.run(id, title, now, now, workspace)
   },
 
   exists(id: string): boolean {
     return stmtExists.get(id) != null
+  },
+
+  /** The workspace a session was created in — the authoritative scope for every
+   *  run on that session (mirrors OpenCode's session-derived directory). Null for
+   *  unknown sessions or pre-migration rows that somehow lack one. */
+  workspaceOf(sessionId: string): string | null {
+    const row = stmtWorkspace.get(sessionId) as { workspace: string | null } | null
+    return row?.workspace ?? null
   },
 
   /** Persist one event and bump the session's last_activity. */

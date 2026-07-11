@@ -1,12 +1,16 @@
-// Repo registry: the set of local folders the GUI can point Chunky at, plus
-// which one is active. Persisted to <state>/repos.json so it survives restarts.
-// Switching a repo retargets WORKSPACE (see workspace.ts) and drops cached
-// agents so the next turn rebuilds with the new cwd in its prompt. Sessions are
-// scoped by workspace path in the Store, so each repo gets its own thread list.
+// Repo registry: the set of local folders the GUI can point Chunky at, plus a
+// persisted DEFAULT repo (activeId). Persisted to <state>/repos.json so it
+// survives restarts.
+//
+// NOTE: activeId is a client convenience only — the default for session creation
+// when no repoId is supplied (e.g. the TUI). It carries NO execution state:
+// every session stores its own workspace at creation (Store), and every run
+// resolves its workspace from its session. Selecting a repo here never
+// retargets in-flight runs and never invalidates agents — sessions in different
+// repos run concurrently.
 import { existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { basename, dirname, join, resolve } from "node:path"
-import { LAUNCH_WORKSPACE, WORKSPACE, setWorkspace } from "./workspace.ts"
-import { invalidateAgent } from "./agent.ts"
+import { LAUNCH_WORKSPACE } from "./workspace.ts"
 
 export interface Repo {
   id: string
@@ -90,6 +94,7 @@ export function listRepos(): Registry {
   }
 }
 
+/** The DEFAULT repo for clients that don't pass one (e.g. the TUI). */
 export function activeRepo(): Repo | null {
   const reg = load()
   return reg.repos.find((r) => r.id === reg.activeId) ?? null
@@ -114,42 +119,26 @@ export function addRepo(path: string): Repo {
   return repo
 }
 
-/** Make a repo active: retarget the workspace + drop cached agents so the next
- *  turn (and file index) operate on the new folder. */
+/** Persist a repo as the default for repo-less session creation. Pure
+ *  preference — touches no in-flight run and no cached agent. */
 export function selectRepo(id: string): Repo {
   const reg = load()
   const repo = reg.repos.find((r) => r.id === id)
   if (!repo) throw new Error(`unknown repo: ${id}`)
   reg.activeId = id
   save()
-  setWorkspace(repo.path)
-  invalidateAgent()
   return repo
 }
 
 /** Remove a repo from the list (does NOT delete the folder). The launch
- *  workspace can't be removed — it's the fallback if the active one goes away. */
+ *  workspace can't be removed — it's the fallback if the default one goes away. */
 export function removeRepo(id: string): Registry {
   const reg = load()
   const boot = makeRepo(LAUNCH_WORKSPACE)
   reg.repos = reg.repos.filter((r) => r.id !== id || r.id === boot.id)
   if (!reg.repos.some((r) => r.id === reg.activeId)) {
     reg.activeId = boot.id
-    setWorkspace(boot.path)
-    invalidateAgent()
   }
   save()
   return listRepos()
-}
-
-/** Restore the persisted active repo at boot so the GUI's last choice sticks
- *  across restarts. Called once at startup AFTER the Store has backfilled
- *  pre-existing sessions to the launch workspace. */
-export function initRepos(): void {
-  const reg = load()
-  const active = reg.repos.find((r) => r.id === reg.activeId)
-  if (active && existsSync(active.path) && active.path !== WORKSPACE) {
-    setWorkspace(active.path)
-    invalidateAgent()
-  }
 }

@@ -21,12 +21,15 @@ import {
   openEventStream,
   prettyModel,
   removeRepo,
-  selectRepo,
   sendMessage,
   type AppConfig,
   type ModelSelection,
   type Repo,
 } from "./lib/api"
+
+// Which repo tab is open is THIS CLIENT's UI state (the server has no global
+// active workspace anymore) — remembered locally so a relaunch restores it.
+const ACTIVE_REPO_KEY = "chunky.activeRepoId"
 import { groupSessions, relativeTime, threadLabel } from "./lib/format"
 import { initialState, reduce, type TranscriptState } from "./lib/transcript"
 
@@ -89,7 +92,8 @@ export default function App() {
   )
 
   // Open a repo's thread list: attach the most recent thread, or create a fresh
-  // one if the repo has none yet. Shared by boot, repo switch, and add-repo.
+  // one (pinned to that repo) if it has none yet. Shared by boot, repo switch,
+  // and add-repo.
   const openRepoThreads = useCallback(
     async (baseUrl: string, repoId: string | null) => {
       const list = await refreshSessions(baseUrl, repoId)
@@ -98,7 +102,7 @@ export default function App() {
         return
       }
       try {
-        const id = await createSession(baseUrl)
+        const id = await createSession(baseUrl, repoId)
         await refreshSessions(baseUrl, repoId)
         void attachSession(baseUrl, id, true)
       } catch (err) {
@@ -127,10 +131,14 @@ export default function App() {
 
       let repoId: string | null = null
       if (reg) {
+        // Last tab this client had open (if it still exists), else the server default.
+        const remembered = localStorage.getItem(ACTIVE_REPO_KEY)
+        repoId =
+          (remembered && reg.repos.some((r) => r.id === remembered) ? remembered : null) ??
+          reg.activeId
         setRepos(reg.repos)
-        setActiveRepoId(reg.activeId)
-        activeRepoIdRef.current = reg.activeId
-        repoId = reg.activeId
+        setActiveRepoId(repoId)
+        activeRepoIdRef.current = repoId
       }
 
       await openRepoThreads(cfg.baseUrl, repoId)
@@ -155,7 +163,7 @@ export default function App() {
   const handleNewThread = useCallback(async () => {
     if (!config) return
     try {
-      const id = await createSession(config.baseUrl)
+      const id = await createSession(config.baseUrl, activeRepoIdRef.current)
       await refreshSessions(config.baseUrl)
       void attachSession(config.baseUrl, id, true)
     } catch (err) {
@@ -171,32 +179,34 @@ export default function App() {
     [attachSession, config, sessionId],
   )
 
+  // Switching tabs is a pure client-side view change: sessions are pinned to
+  // their repo server-side, so nothing global moves — runs in other repos keep
+  // streaming untouched.
   const handleSelectRepo = useCallback(
     async (id: string) => {
       if (!config || id === activeRepoId) return
-      try {
-        const reg = await selectRepo(config.baseUrl, id)
-        setRepos(reg.repos)
-        setActiveRepoId(reg.activeId)
-        activeRepoIdRef.current = reg.activeId
-        await openRepoThreads(config.baseUrl, reg.activeId)
-      } catch (err) {
-        setConnError((err as Error).message)
-      }
+      setActiveRepoId(id)
+      activeRepoIdRef.current = id
+      localStorage.setItem(ACTIVE_REPO_KEY, id)
+      await openRepoThreads(config.baseUrl, id)
     },
     [config, activeRepoId, openRepoThreads],
   )
 
-  // Adds a folder (server validates + activates it). Throws propagate to the
-  // RepoTabs form so it can show "not a directory" inline.
+  // Adds a folder (server validates it). Throws propagate to the RepoTabs form
+  // so it can show "not a directory" inline. The new repo becomes this client's
+  // open tab.
   const handleAddRepo = useCallback(
     async (path: string) => {
       if (!config) return
       const reg = await addRepo(config.baseUrl, path)
       setRepos(reg.repos)
-      setActiveRepoId(reg.activeId)
-      activeRepoIdRef.current = reg.activeId
-      await openRepoThreads(config.baseUrl, reg.activeId)
+      // The server makes a freshly added repo its default (activeId) — open it here too.
+      const openId = reg.activeId
+      setActiveRepoId(openId)
+      activeRepoIdRef.current = openId
+      if (openId) localStorage.setItem(ACTIVE_REPO_KEY, openId)
+      await openRepoThreads(config.baseUrl, openId)
     },
     [config, openRepoThreads],
   )
@@ -205,13 +215,17 @@ export default function App() {
     async (id: string) => {
       if (!config) return
       try {
-        const wasActive = id === activeRepoIdRef.current
+        const wasOpen = id === activeRepoIdRef.current
         const reg = await removeRepo(config.baseUrl, id)
         setRepos(reg.repos)
-        setActiveRepoId(reg.activeId)
-        activeRepoIdRef.current = reg.activeId
-        // Removing the active repo shifts the server to a fallback — follow it.
-        if (wasActive) await openRepoThreads(config.baseUrl, reg.activeId)
+        // Removing the open tab: fall back to the server default (never removable).
+        if (wasOpen) {
+          const openId = reg.activeId
+          setActiveRepoId(openId)
+          activeRepoIdRef.current = openId
+          if (openId) localStorage.setItem(ACTIVE_REPO_KEY, openId)
+          await openRepoThreads(config.baseUrl, openId)
+        }
       } catch (err) {
         setConnError((err as Error).message)
       }
@@ -366,6 +380,7 @@ export default function App() {
           state={transcript}
           workspaceName={workspaceName}
           baseUrl={config?.baseUrl}
+          repoId={activeRepoId}
           draft={draft}
           onDraftChange={setDraft}
           onSubmit={(t) => void handleSubmit(t)}

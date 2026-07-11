@@ -88,20 +88,21 @@ export async function addRepo(baseUrl: string, path: string): Promise<ReposRespo
   return data
 }
 
-export async function selectRepo(baseUrl: string, id: string): Promise<ReposResponse> {
-  const res = await fetch(baseUrl + ROUTES.selectRepo(id), { method: "POST" })
-  if (!res.ok) throw new Error(`select repo failed (${res.status})`)
-  return (await res.json()) as ReposResponse
-}
-
 export async function removeRepo(baseUrl: string, id: string): Promise<ReposResponse> {
   const res = await fetch(baseUrl + ROUTES.removeRepo(id), { method: "DELETE" })
   if (!res.ok) throw new Error(`remove repo failed (${res.status})`)
   return (await res.json()) as ReposResponse
 }
 
-export async function createSession(baseUrl: string): Promise<string> {
-  const res = await fetch(baseUrl + ROUTES.createSession, { method: "POST" })
+/** Create a session pinned to `repoId`'s workspace (server default when omitted).
+ *  Which repo is "current" is purely this client's UI state — the server no
+ *  longer has a global active workspace. */
+export async function createSession(baseUrl: string, repoId?: string | null): Promise<string> {
+  const res = await fetch(baseUrl + ROUTES.createSession, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(repoId ? { repoId } : {}),
+  })
   if (!res.ok) throw new Error(`create session failed (${res.status})`)
   const data = (await res.json()) as CreateSessionResponse
   return data.sessionId
@@ -134,17 +135,20 @@ export async function interruptSession(baseUrl: string, sessionId: string): Prom
   await fetch(baseUrl + ROUTES.interrupt(sessionId), { method: "POST" }).catch(() => {})
 }
 
-/** FFF fuzzy file/dir search powering the composer's `@`-mention autocomplete.
- *  Pass an AbortSignal so a superseded keystroke's request can be cancelled. */
+/** FFF fuzzy file/dir search powering the composer's `@`-mention autocomplete,
+ *  scoped to one repo's index (server default repo when omitted). Pass an
+ *  AbortSignal so a superseded keystroke's request can be cancelled. */
 export async function searchFiles(
   baseUrl: string,
   query: string,
   signal?: AbortSignal,
   limit = 12,
+  repoId?: string | null,
 ): Promise<FileSearchItem[]> {
   const url = new URL(baseUrl + ROUTES.fileSearch)
   url.searchParams.set("q", query)
   url.searchParams.set("limit", String(limit))
+  if (repoId) url.searchParams.set("repo", repoId)
   const res = await fetch(url, { signal })
   if (!res.ok) throw new Error(`file search failed (${res.status})`)
   const data = (await res.json()) as FileSearchResponse

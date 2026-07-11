@@ -254,10 +254,10 @@ export class ThreadManager implements ThreadSpawner {
         // tokens stream only through its OWN iterator, tagged with its threadId,
         // instead of leaking (untagged) into the caller's messages stream.
         const stream = await AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () =>
-          this.advisorAgentFor(advisorSel).stream(
+          this.advisorAgentFor(advisorSel, this.workspace).stream(
             { messages: [{ role: "user", content }] },
             {
-              configurable: { thread_id: advisorThreadId },
+              configurable: { thread_id: advisorThreadId, workspace: this.workspace },
               streamMode: ["updates", "messages"],
               recursionLimit: RECURSION_LIMIT,
             } as any,

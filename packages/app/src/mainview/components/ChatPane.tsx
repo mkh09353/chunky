@@ -9,6 +9,7 @@ export function ChatPane({
   state,
   workspaceName,
   baseUrl,
+  repoId,
   draft,
   onDraftChange,
   onSubmit,
@@ -18,6 +19,7 @@ export function ChatPane({
   state: TranscriptState
   workspaceName: string
   baseUrl?: string
+  repoId?: string | null
   draft: string
   onDraftChange: (v: string) => void
   onSubmit: (text: string) => void
@@ -28,12 +30,12 @@ export function ChatPane({
   const running = state.status === "running"
   const empty = !hasTranscript(state)
 
-  // `@`-mention file autocomplete, backed by the active repo's FFF search.
-  // Rebuilt per baseUrl so its AbortController-based SearchSource is scoped to
-  // one server. Absent baseUrl → no trigger (plain input).
+  // `@`-mention file autocomplete, backed by the current repo's FFF search.
+  // Rebuilt per baseUrl + repo so its AbortController-based SearchSource is
+  // scoped to one server and one repo index. Absent baseUrl → plain input.
   const triggers = useMemo(
-    () => (baseUrl ? [createMentionTrigger(baseUrl)] : undefined),
-    [baseUrl],
+    () => (baseUrl ? [createMentionTrigger(baseUrl, repoId)] : undefined),
+    [baseUrl, repoId],
   )
 
   return (

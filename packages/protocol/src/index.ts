@@ -81,6 +81,13 @@ export interface GoalSnapshot {
 }
 
 // ---- REST shapes ----
+/** Body for POST ROUTES.createSession. The session is pinned to `repoId`'s
+ *  workspace at creation; omitted -> the server's default repo. Every run on the
+ *  session executes in that workspace, so sessions in different repos run
+ *  concurrently on one server. */
+export interface CreateSessionRequest {
+  repoId?: string
+}
 export interface CreateSessionResponse {
   sessionId: string
 }
@@ -146,6 +153,9 @@ export interface Repo {
   name: string
   addedAt: number
 }
+/** `activeId` is the server's DEFAULT repo — used only when a session is
+ *  created without an explicit repoId. It is not execution state: which repo a
+ *  client is looking at is the client's own UI state. */
 export interface ReposResponse {
   repos: Repo[]
   activeId: string | null
@@ -164,11 +174,15 @@ export type LoginInitiation =
 
 // ---- Endpoints (relative to http://localhost:<port>) ----
 export const ROUTES = {
-  createSession: `/api/sessions`, // POST -> CreateSessionResponse (in the active repo)
+  // POST CreateSessionRequest -> CreateSessionResponse (pinned to repoId's
+  // workspace; the default repo when omitted).
+  createSession: `/api/sessions`,
   listSessions: `/api/sessions`, // GET ?repo=<id> -> ListSessionsResponse (that repo's threads)
-  // GET  -> ReposResponse. POST AddRepoRequest -> ReposResponse (add + activate a folder).
+  // GET  -> ReposResponse. POST AddRepoRequest -> ReposResponse (add a folder;
+  // it also becomes the default repo).
   repos: `/api/repos`,
-  // POST -> ReposResponse. Make a repo active (retargets the workspace).
+  // POST -> ReposResponse. Persist a repo as the default for repo-less session
+  // creation. Preference only — never retargets in-flight runs.
   selectRepo: (id: string) => `/api/repos/${id}/select`,
   // DELETE -> ReposResponse. Remove a repo from the list (does not delete files).
   removeRepo: (id: string) => `/api/repos/${id}`,
@@ -184,7 +198,8 @@ export const ROUTES = {
   // GET -> SSE stream of AgentEvent. Replays persisted history first, so opening
   // this on an existing id IS "resume": the full prior transcript streams, then live.
   events: (id: string) => `/api/sessions/${id}/events`,
-  // GET ?q=&limit= -> { items: FileSearchItem[] } — FFF fuzzy search for @-mentions.
+  // GET ?q=&limit=&repo=<id> -> { items: FileSearchItem[] } — FFF fuzzy search
+  // for @-mentions, scoped to one repo (default repo when omitted).
   fileSearch: `/api/files/search`,
   // GET  -> GoalStateResponse (current goal, or null).
   // POST GoalRequest -> GoalStateResponse. Set an objective (starts the loop) or

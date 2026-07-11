@@ -33,16 +33,11 @@ import { getFinder } from "./fff.ts"
 import {
   activeRepo,
   addRepo,
-  initRepos,
   listRepos,
   removeRepo,
   repoById,
   selectRepo,
 } from "./repos.ts"
-
-// Restore the persisted active repo (sticky across restarts). Runs after the
-// Store import has backfilled pre-existing sessions to the launch workspace.
-initRepos()
 
 type Subscriber = ReadableStreamDefaultController<Uint8Array>
 
@@ -274,15 +269,19 @@ const server = Bun.serve({
       }
     }
 
-    // GET /api/files/search?q=...&limit=20
+    // GET /api/files/search?q=...&limit=20&repo=<id>
     //   -> { items: [{ path, name, kind: "file"|"directory" }] }
-    // FFF-backed fuzzy search for the TUI's @-mention autocomplete.
+    // FFF-backed fuzzy search for @-mention autocomplete, scoped to one repo's
+    // finder (default: the default repo, for clients that don't pass one).
     if (req.method === "GET" && pathname === "/api/files/search") {
       const q = url.searchParams.get("q") ?? ""
       const limitRaw = Number(url.searchParams.get("limit") ?? "20")
       const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(limitRaw, 50)) : 20
+      const repoParam = url.searchParams.get("repo")
+      const repo = repoParam ? repoById(repoParam) : activeRepo()
+      if (repoParam && !repo) return json({ error: `unknown repo "${repoParam}"`, items: [] }, 404)
       try {
-        const finder = await getFinder()
+        const finder = await getFinder(repo?.path)
         const result = finder.mixedSearch(q, { pageSize: limit })
         if (!result.ok) return json({ error: result.error, items: [] }, 502)
         const items = result.value.items.slice(0, limit).map((mixed) => {
@@ -310,7 +309,7 @@ const server = Bun.serve({
       return json(listRepos())
     }
 
-    // POST /api/repos { path } -> add a folder, make it active, return the list.
+    // POST /api/repos { path } -> add a folder (and make it the default), return the list.
     if (req.method === "POST" && pathname === ROUTES.repos) {
       let body: { path?: unknown }
       try {
@@ -322,14 +321,16 @@ const server = Bun.serve({
       if (!path) return json({ error: "missing path" }, 400)
       try {
         const repo = addRepo(path)
-        selectRepo(repo.id) // adding a repo activates it — you added it to use it
+        selectRepo(repo.id) // a freshly added repo becomes the default
         return json(listRepos())
       } catch (err) {
         return json({ error: (err as Error)?.message ?? String(err) }, 400)
       }
     }
 
-    // POST /api/repos/:id/select -> make a repo active. DELETE /api/repos/:id -> remove.
+    // POST /api/repos/:id/select -> persist a repo as the default for repo-less
+    // session creation (preference only — never touches in-flight runs).
+    // DELETE /api/repos/:id -> remove from the list.
     const repoMatch = pathname.match(/^\/api\/repos\/([^/]+?)(\/select)?$/)
     if (repoMatch) {
       const [, repoId, isSelect] = repoMatch
@@ -344,17 +345,29 @@ const server = Bun.serve({
     }
 
     // GET /api/sessions?repo=<id> -> ListSessionsResponse for that repo (or the
-    // active one). Threads are scoped per repo so each folder has its own list.
+    // default one). Threads are scoped per repo so each folder has its own list.
     if (req.method === "GET" && pathname === ROUTES.listSessions) {
       const repoId = url.searchParams.get("repo")
       const repo = repoId ? repoById(repoId) : activeRepo()
       return json({ sessions: Store.list(repo?.path) })
     }
 
-    // POST /api/sessions -> { sessionId } (created in the active repo)
+    // POST /api/sessions { repoId? } -> { sessionId }. The session is PINNED to
+    // the given repo's workspace at creation (default repo when omitted); every
+    // run on it resolves its workspace from the session, so sessions in
+    // different repos run concurrently.
     if (req.method === "POST" && pathname === ROUTES.createSession) {
+      let repoId: string | undefined
+      try {
+        const body = (await req.json().catch(() => ({}))) as { repoId?: unknown }
+        if (typeof body?.repoId === "string" && body.repoId) repoId = body.repoId
+      } catch {
+        // no/invalid body -> default repo
+      }
+      const repo = repoId ? repoById(repoId) : activeRepo()
+      if (repoId && !repo) return json({ error: `unknown repo "${repoId}"` }, 404)
       const sessionId = randomUUID()
-      Store.createSession(sessionId, undefined, activeRepo()?.path)
+      Store.createSession(sessionId, undefined, repo?.path)
       subscribers(sessionId) // pre-create the fan-out set
       return json({ sessionId })
     }

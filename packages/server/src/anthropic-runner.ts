@@ -19,7 +19,7 @@ import { anthropicOAuthEnvironment } from "./providers/anthropic-sdk.ts"
 import { usageFromAnthropicResult } from "./usage.ts"
 import { noteRequest } from "./cache-watch.ts"
 import type { CacheContext } from "./run.ts"
-import { WORKSPACE } from "./workspace.ts"
+import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { bash, bashInputShape } from "./tools/bash.ts"
 import { editInputShape, editTool } from "./tools/edit.ts"
 import { fffind, fffindInputShape, ffgrep, ffgrepInputShape } from "./tools/fff.ts"
@@ -108,9 +108,17 @@ function wrapChunkyTool<Shape extends Record<string, z.ZodTypeAny>>(
   )
 }
 
-export function createChunkySdkMcpServer(callerThreadId: string, emitRoot: Emit, displayThreadId?: string) {
+export function createChunkySdkMcpServer(
+  callerThreadId: string,
+  emitRoot: Emit,
+  displayThreadId?: string,
+  workspace: string = LAUNCH_WORKSPACE,
+) {
   const emit = taggedEmitter(emitRoot, displayThreadId)
   const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
+  // The same RunnableConfig the LangChain runtime would pass: thread identity for
+  // session-scoped tools (spawn/goal) plus the run's workspace for fs/search tools.
+  const runConfig = { configurable: { thread_id: callerThreadId, workspace } }
   return createSdkMcpServer({
     name: SERVER_NAME,
     version: "0.0.0",
@@ -120,7 +128,7 @@ export function createChunkySdkMcpServer(callerThreadId: string, emitRoot: Emit,
         read.name,
         read.description,
         readInputShape,
-        (args) => read.invoke(args),
+        (args) => read.invoke(args, runConfig),
         emit,
         readOnly,
       ),
@@ -128,14 +136,14 @@ export function createChunkySdkMcpServer(callerThreadId: string, emitRoot: Emit,
         bash.name,
         bash.description,
         bashInputShape,
-        (args) => bash.invoke(args),
+        (args) => bash.invoke(args, runConfig),
         emit,
       ),
       wrapChunkyTool(
         fffind.name,
         fffind.description,
         fffindInputShape,
-        (args) => fffind.invoke(args),
+        (args) => fffind.invoke(args, runConfig),
         emit,
         readOnly,
       ),
@@ -143,7 +151,7 @@ export function createChunkySdkMcpServer(callerThreadId: string, emitRoot: Emit,
         ffgrep.name,
         ffgrep.description,
         ffgrepInputShape,
-        (args) => ffgrep.invoke(args),
+        (args) => ffgrep.invoke(args, runConfig),
         emit,
         readOnly,
       ),
@@ -151,21 +159,21 @@ export function createChunkySdkMcpServer(callerThreadId: string, emitRoot: Emit,
         write.name,
         write.description,
         writeInputShape,
-        (args) => write.invoke(args),
+        (args) => write.invoke(args, runConfig),
         emit,
       ),
       wrapChunkyTool(
         editTool.name,
         editTool.description,
         editInputShape,
-        (args) => editTool.invoke(args),
+        (args) => editTool.invoke(args, runConfig),
         emit,
       ),
       wrapChunkyTool(
         spawnThread.name,
         spawnThread.description,
         spawnThreadInputShape,
-        (args) => spawnThread.invoke(args, { configurable: { thread_id: callerThreadId } }),
+        (args) => spawnThread.invoke(args, runConfig),
         emit,
       ),
       // Goal-mode tools resolve the session from the caller thread the same way
@@ -174,7 +182,7 @@ export function createChunkySdkMcpServer(callerThreadId: string, emitRoot: Emit,
         getGoalTool.name,
         getGoalTool.description,
         getGoalInputShape,
-        (args) => getGoalTool.invoke(args, { configurable: { thread_id: callerThreadId } }),
+        (args) => getGoalTool.invoke(args, runConfig),
         emit,
         readOnly,
       ),
@@ -182,14 +190,14 @@ export function createChunkySdkMcpServer(callerThreadId: string, emitRoot: Emit,
         goalCompleteTool.name,
         goalCompleteTool.description,
         goalCompleteInputShape,
-        (args) => goalCompleteTool.invoke(args, { configurable: { thread_id: callerThreadId } }),
+        (args) => goalCompleteTool.invoke(args, runConfig),
         emit,
       ),
       wrapChunkyTool(
         goalBlockedTool.name,
         goalBlockedTool.description,
         goalBlockedInputShape,
-        (args) => goalBlockedTool.invoke(args, { configurable: { thread_id: callerThreadId } }),
+        (args) => goalBlockedTool.invoke(args, runConfig),
         emit,
       ),
     ],
@@ -211,6 +219,8 @@ export interface AnthropicRunRequest {
   cache?: CacheContext
   /** Abort the in-flight SDK query (user interrupt). */
   abort?: AbortController
+  /** The session's workspace (cwd + tool jail). Defaults to the launch dir. */
+  workspace?: string
 }
 
 export async function buildAnthropicOptions(
@@ -218,20 +228,21 @@ export async function buildAnthropicOptions(
   dependencies: AnthropicRunnerDependencies = defaultDependencies,
 ): Promise<AnthropicOptions> {
   const { selection, threadId, emit, eventThreadId, freshSession } = request
+  const workspace = request.workspace ?? LAUNCH_WORKSPACE
   const sessionId = sdkSessionId(threadId)
   const shouldResume =
     !freshSession &&
-    (knownSessions.has(threadId) || Boolean(await dependencies.getSessionInfo(sessionId, { dir: WORKSPACE }).catch(() => undefined)))
+    (knownSessions.has(threadId) || Boolean(await dependencies.getSessionInfo(sessionId, { dir: workspace }).catch(() => undefined)))
   return {
-    cwd: WORKSPACE,
+    cwd: workspace,
     env: anthropicOAuthEnvironment(),
     ...(request.abort ? { abortController: request.abort } : {}),
     model: selection.model || undefined,
     effort: selection.effort,
-    systemPrompt: request.systemPrompt ?? buildSystemPrompt("edit"),
+    systemPrompt: request.systemPrompt ?? buildSystemPrompt("edit", false, workspace),
     tools: [],
     settingSources: [],
-    mcpServers: { [SERVER_NAME]: createChunkySdkMcpServer(threadId, emit, eventThreadId) },
+    mcpServers: { [SERVER_NAME]: createChunkySdkMcpServer(threadId, emit, eventThreadId, workspace) },
     allowedTools: request.allowedTools ?? ALLOWED_TOOLS,
     permissionMode: "dontAsk",
     includePartialMessages: true,

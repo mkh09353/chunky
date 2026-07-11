@@ -13,6 +13,7 @@ import { ThreadManager } from "./threads.ts"
 import { usageFromLangChainMessage, promptTokensOf } from "./usage.ts"
 import { checkCacheCold, cacheWarningEvent, noteRequest } from "./cache-watch.ts"
 import { Store } from "./store.ts"
+import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { decideGoalStep, firstLine, goalContinuationPrompt, toSnapshot, type GoalStep } from "./goal.ts"
 
 export type { Emit } from "./event-emitter.ts"
@@ -272,6 +273,11 @@ export async function runAgent(
   // next root turn, never an in-flight root or any of its child threads.
   const selection = activeSelection()
 
+  // Freeze the run's workspace from the SESSION (not any global): every tool
+  // call, child thread, and advisor consult in this run operates here, so
+  // sessions in different repos run concurrently without interfering.
+  const workspace = Store.workspaceOf(sessionId) ?? LAUNCH_WORKSPACE
+
   // Preflight credentials: refresh an expiring OAuth token, or fail fast with a
   // clear "run /login" error. Without this a revoked token hangs the whole turn
   // inside the streaming request (the error is swallowed by the stream).
@@ -297,8 +303,9 @@ export async function runAgent(
   }
 
   // Context for spawn_thread: any thread_id in this run (root or descendant)
-  // resolves back to this manager via the thread registry.
-  const threads = new ThreadManager(emit, sessionId, selection)
+  // resolves back to this manager via the thread registry. Defaults for the
+  // agent factories; the workspace pins children to the session's repo.
+  const threads = new ThreadManager(emit, sessionId, selection, undefined, undefined, workspace)
   const cache: CacheContext | undefined = model ? { conversationId: sessionId, model } : undefined
 
   // One turn = one full agent run (a model call + any tool loop). Both runtimes
@@ -306,12 +313,12 @@ export async function runAgent(
   const runTurn = async (prompt: string, turnImages?: InputImage[]): Promise<void> => {
     if (providerRuntime(selection.provider) === "anthropic-sdk") {
       const { runAnthropicAgent } = await import("./anthropic-runner.ts")
-      await runAnthropicAgent({ selection, threadId: sessionId, prompt, emit, cache, abort })
+      await runAnthropicAgent({ selection, threadId: sessionId, prompt, emit, cache, abort, workspace })
     } else {
-      const stream = await getAgent(selection).stream(
+      const stream = await getAgent(selection, workspace).stream(
         { messages: [{ role: "user", content: userMessageContent(prompt, turnImages) }] } as any,
         {
-          configurable: { thread_id: sessionId },
+          configurable: { thread_id: sessionId, workspace },
           streamMode: ["updates", "messages"],
           recursionLimit: RECURSION_LIMIT,
           signal: abort?.signal,

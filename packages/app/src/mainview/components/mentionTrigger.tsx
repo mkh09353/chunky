@@ -31,7 +31,7 @@ function toItem(hit: FileSearchItem): FileItem {
  * rejection). We abort the in-flight request on every new call and swallow all
  * errors (including AbortError) to an empty list.
  */
-function createFileSearchSource(baseUrl: string): SearchSource<FileItem> {
+function createFileSearchSource(baseUrl: string, repoId?: string | null): SearchSource<FileItem> {
   let controller: AbortController | null = null
 
   const run = async (query: string): Promise<FileItem[]> => {
@@ -39,7 +39,7 @@ function createFileSearchSource(baseUrl: string): SearchSource<FileItem> {
     const ac = new AbortController()
     controller = ac
     try {
-      const hits = await searchFiles(baseUrl, query, ac.signal)
+      const hits = await searchFiles(baseUrl, query, ac.signal, 12, repoId)
       return hits.map(toItem)
     } catch {
       return [] // includes AbortError from a superseded keystroke
@@ -59,10 +59,10 @@ function createFileSearchSource(baseUrl: string): SearchSource<FileItem> {
  * the serialized message carries an explicit mention token — the same contract
  * the TUI sends, which the harness expands into file context.
  */
-export function createMentionTrigger(baseUrl: string): ChatComposerTrigger {
+export function createMentionTrigger(baseUrl: string, repoId?: string | null): ChatComposerTrigger {
   return {
     character: "@",
-    searchSource: createFileSearchSource(baseUrl),
+    searchSource: createFileSearchSource(baseUrl, repoId),
     onSelect: (item) => {
       const hit = (item as FileItem).auxiliaryData
       return `@${hit ? displayPath(hit) : item.label} `

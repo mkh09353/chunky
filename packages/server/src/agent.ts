@@ -28,6 +28,7 @@ import { fffind, ffgrep } from "./tools/fff.ts"
 import { goalTools } from "./tools/goal.ts"
 import { read } from "./tools/read.ts"
 import { spawnThread } from "./tools/spawn-thread.ts"
+import { workflow } from "./tools/workflow.ts"
 import { write } from "./tools/write.ts"
 
 /**
@@ -134,6 +135,7 @@ export function executorToolsFor(selection: AgentSelection) {
     write,
     spawnThread,
     ...goalTools,
+    workflow,
     ...editToolsForModel(selection.model, selection.provider),
     ...(advisorSel ? [advisor] : []),
   ]

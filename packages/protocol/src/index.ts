@@ -55,6 +55,14 @@ export type AgentEvent =
    * blocks, or pauses. `goal` is the current snapshot (null once cleared) and
    * `message` is a short human line the TUI renders as a transcript marker. */
   | { type: "goal.update"; sessionId: string; goal: GoalSnapshot | null; message?: string }
+  /** A dynamic-workflow phase boundary — groups the sub-agents that follow under
+   *  `title` in the owning thread's transcript. `threadId` is the thread that ran
+   *  the `workflow` tool (omitted for the main thread). The workflow's sub-agents
+   *  themselves surface as ordinary child threads (thread.spawn/thread.status). */
+  | { type: "workflow.phase"; runId: string; threadId?: string; title: string }
+  /** A narrator line from a running workflow (start/finish, and each log() call),
+   *  rendered in the owning thread's transcript. */
+  | { type: "workflow.log"; runId: string; threadId?: string; message: string }
   | { type: "error"; message: string; threadId?: string }
 
 /** Lifecycle of a session goal. `active` runs the continuation loop; `paused`

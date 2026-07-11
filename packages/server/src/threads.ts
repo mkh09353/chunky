@@ -22,6 +22,7 @@ import {
   type AgentSelectionOverride,
 } from "./providers/registry.ts"
 import { registerThread, unregisterThread, type ThreadSpawner } from "./thread-context.ts"
+import { runWorkflowScript, workflowConcurrency, type WorkflowHost, type WorkflowTier } from "./workflow/engine.ts"
 
 /** The narrow part of a compiled agent that ThreadManager needs. Keeping this
  * structural lets the deterministic thread test inject a fake stream without
@@ -146,6 +147,49 @@ export class ThreadManager implements ThreadSpawner {
       this.selections.delete(childThreadId)
     }
 
+  }
+
+  /**
+   * Run a dynamic-workflow script for `callerThreadId`. The script fans out
+   * sub-agents through `agent()`, which is this manager's `spawn()` under the
+   * hood — so every workflow agent is a real child thread that streams over the
+   * session SSE and renders in the TUI thread-tree, and grandchildren still route
+   * correctly. Intermediate results stay in the script's variables; only the final
+   * return value comes back to the calling model. The manager supplies the emitter,
+   * the concurrency cap, and the small/medium/big → model-selection tier policy.
+   */
+  async runWorkflow(opts: { callerThreadId: string; script: string; args?: unknown }): Promise<string> {
+    const host: WorkflowHost = {
+      runId: randomUUID(),
+      // Owner tagging mirrors spawn()'s parent linkage: root → undefined (events
+      // untagged = main thread); a descendant → its own id so workflow.* lines land
+      // in that thread's transcript.
+      ownerThreadId: opts.callerThreadId === this.rootId ? undefined : opts.callerThreadId,
+      concurrency: workflowConcurrency(),
+      emit: this.emit,
+      spawn: ({ title, instructions, selection }) =>
+        this.spawn({ callerThreadId: opts.callerThreadId, title, instructions, selection }),
+      tierOverride: (tier) => this.tierOverride(tier),
+    }
+    return runWorkflowScript(host, opts.script, opts.args)
+  }
+
+  /**
+   * Map a workflow tier to a model-selection override (undefined = inherit the
+   * caller's model). Lean policy: `big` routes to the configured advisor model
+   * (the session's premium model) when one is set, else just raises effort;
+   * `small` lowers effort; `medium` inherits. A fully configurable per-provider
+   * tier map + picker is a later increment — this already gives `tier` real,
+   * heterogeneous meaning today without inventing model ids.
+   */
+  private tierOverride(tier: WorkflowTier): AgentSelectionOverride | undefined {
+    if (tier === "big") {
+      const advisor = resolveAdvisorSelection()
+      if (advisor) return { provider: advisor.provider, model: advisor.model, effort: advisor.effort }
+      return { effort: "high" }
+    }
+    if (tier === "small") return { effort: "low" }
+    return undefined
   }
 
   /**

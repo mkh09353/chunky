@@ -15,6 +15,10 @@ export type Item =
   | { kind: "error"; text: string }
   /** A goal-mode lifecycle marker (set / continuing / complete / blocked / paused / cleared). */
   | { kind: "goal"; status: GoalStatus | "cleared"; message: string }
+  /** A dynamic-workflow phase header, rendered in the thread that ran `workflow`. */
+  | { kind: "workflow-phase"; title: string }
+  /** A dynamic-workflow narrator line (start/finish, log()). */
+  | { kind: "workflow-log"; message: string }
   /** Prompt cache went cold at the start of this turn (idle past TTL / model switch). */
   | {
       kind: "cache-warning"
@@ -191,6 +195,16 @@ export function reduce(state: TranscriptState, ev: AgentEvent): TranscriptState 
         order: existing ? state.order : [...state.order, ev.threadId],
         threads: { ...state.threads, [ev.threadId]: node },
       }
+    }
+
+    case "workflow.phase": {
+      const threadId = ev.threadId || MAIN
+      return updateThreadItems(state, threadId, (items) => [...items, { kind: "workflow-phase", title: ev.title }])
+    }
+
+    case "workflow.log": {
+      const threadId = ev.threadId || MAIN
+      return updateThreadItems(state, threadId, (items) => [...items, { kind: "workflow-log", message: ev.message }])
     }
 
     case "message.start":

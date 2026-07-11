@@ -98,6 +98,9 @@ async function main() {
     async consultAdvisor() {
       return ""
     },
+    async runWorkflow() {
+      return ""
+    },
   }
   registerThread(SID, fakeSpawner)
   registerThread(CHILD, fakeSpawner)

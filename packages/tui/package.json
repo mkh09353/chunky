@@ -10,6 +10,7 @@
   },
   "dependencies": {
     "@chunky/protocol": "workspace:*",
+    "@ff-labs/fff-bun": "0.9.6",
     "chalk": "^5.3.0",
     "cli-boxes": "^4.0.1",
     "figures": "^6.1.0",

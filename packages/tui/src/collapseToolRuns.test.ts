@@ -46,6 +46,11 @@ function tool(
   }
 }
 
+// A coalesced group with the given summary/hint/running state.
+function group(summary: string, lastInput: unknown, running = false) {
+  return { kind: "tool-group", summary, lastInput, running }
+}
+
 // --- a lone call stays a `tool` row (nothing to coalesce) ---
 eq(
   collapseToolRuns([tool("r1", "read", { path: "a" })]),
@@ -53,47 +58,72 @@ eq(
   "single call passes through unchanged",
 )
 
-// --- consecutive same-name calls coalesce into one group ---
+// --- consecutive same-name reads coalesce into one read-like group ---
 eq(
   collapseToolRuns([
     tool("r1", "read", { path: "a" }),
     tool("r2", "read", { path: "b" }),
     tool("r3", "read", { path: "c" }),
   ]),
-  [{ kind: "tool-group", name: "read", count: 3, lastInput: { path: "c" }, running: false }],
-  "run of 3 reads → group ×3 with last input as hint",
+  [group("read 3 files", { path: "c" })],
+  "run of 3 reads → 'read 3 files' with last input as hint",
+)
+
+// --- THE POINT: read-like tools fold ACROSS names into one summary ---
+eq(
+  collapseToolRuns([
+    tool("r1", "read", { path: "a" }),
+    tool("b1", "bash", { cmd: "ls" }),
+    tool("r2", "read", { path: "b" }),
+    tool("g1", "ffgrep", { pattern: "foo" }),
+    tool("b2", "bash", { cmd: "pwd" }),
+  ]),
+  [group("read 2 files · searched 1 time · ran 2 commands", { cmd: "pwd" })],
+  "alternating read/bash/grep fold into one by-category summary",
 )
 
 // --- an interleaved assistant message breaks the run ---
 eq(
   collapseToolRuns([
     tool("r1", "read", { path: "a" }),
-    tool("r2", "read", { path: "b" }),
+    tool("b1", "bash", { cmd: "ls" }),
     { kind: "assistant", text: "thinking…", streaming: false },
-    tool("r3", "read", { path: "c" }),
-    tool("r4", "read", { path: "d" }),
+    tool("r2", "read", { path: "c" }),
+    tool("r3", "read", { path: "d" }),
   ]),
   [
-    { kind: "tool-group", name: "read", count: 2, lastInput: { path: "b" }, running: false },
+    group("read 1 file · ran 1 command", { cmd: "ls" }),
     { kind: "assistant", text: "thinking…", streaming: false },
-    { kind: "tool-group", name: "read", count: 2, lastInput: { path: "d" }, running: false },
+    group("read 2 files", { path: "d" }),
   ],
   "assistant text splits one run into two groups",
 )
 
-// --- a differently-named tool breaks the run too ---
+// --- mutating tools break a read-like run and fold only same-name ---
 eq(
   collapseToolRuns([
     tool("r1", "read", { path: "a" }),
-    tool("b1", "bash", { cmd: "ls" }),
     tool("r2", "read", { path: "b" }),
+    tool("w1", "write", { path: "x" }),
+    tool("w2", "write", { path: "y" }),
+  ]),
+  [group("read 2 files", { path: "b" }), group("write ×2", { path: "y" })],
+  "reads fold across; writes fold same-name as 'write ×2'",
+)
+
+// --- a mutating tool between two writes splits them (same-name only) ---
+eq(
+  collapseToolRuns([
+    tool("w1", "write", { path: "x" }),
+    tool("e1", "edit", { path: "z" }),
+    tool("w2", "write", { path: "y" }),
   ]),
   [
-    tool("r1", "read", { path: "a" }),
-    tool("b1", "bash", { cmd: "ls" }),
-    tool("r2", "read", { path: "b" }),
+    tool("w1", "write", { path: "x" }),
+    tool("e1", "edit", { path: "z" }),
+    tool("w2", "write", { path: "y" }),
   ],
-  "alternating names never merge (three lone rows)",
+  "write/edit/write never merge (three lone mutating rows)",
 )
 
 // --- an errored call is NOT hidden: it breaks the run and stays a `tool` row ---
@@ -102,16 +132,12 @@ eq(
   eq(
     collapseToolRuns([
       tool("r1", "read", { path: "a" }),
-      tool("r2", "read", { path: "b" }),
+      tool("b1", "bash", { cmd: "ls" }),
       errored,
       tool("r4", "read", { path: "d" }),
       tool("r5", "read", { path: "e" }),
     ]),
-    [
-      { kind: "tool-group", name: "read", count: 2, lastInput: { path: "b" }, running: false },
-      errored,
-      { kind: "tool-group", name: "read", count: 2, lastInput: { path: "e" }, running: false },
-    ],
+    [group("read 1 file · ran 1 command", { cmd: "ls" }), errored, group("read 2 files", { path: "e" })],
     "errored call surfaces standalone between two green groups",
   )
 }
@@ -122,30 +148,30 @@ eq(
     tool("r1", "read", { path: "a" }),
     tool("r2", "read", { path: "b" }, { done: false }),
   ]),
-  [{ kind: "tool-group", name: "read", count: 2, lastInput: { path: "b" }, running: true }],
+  [group("read 2 files", { path: "b" }, true)],
   "in-flight call → group.running is true",
 )
 
-// --- the full mixed transcript the task describes, end to end ---
+// --- the full mixed transcript, end to end ---
 {
   const errored = tool("t7", "read", { path: "d" }, { ok: false, output: "denied" })
   const out = collapseToolRuns([
     tool("t1", "read", { path: "a" }),
     tool("t2", "read", { path: "b" }),
-    tool("t3", "read", { path: "c" }),
+    tool("t3", "bash", { cmd: "ls" }),
     { kind: "assistant", text: "hello", streaming: false },
-    tool("t4", "bash", { cmd: "ls" }),
-    tool("t5", "bash", { cmd: "pwd" }),
+    tool("t4", "bash", { cmd: "pwd" }),
+    tool("t5", "ffgrep", { pattern: "x" }),
     errored,
     tool("t8", "read", { path: "e" }),
     tool("t9", "read", { path: "f" }),
   ])
   eq(out.length, 5, "mixed transcript collapses to 5 display rows")
-  eq(out[0], { kind: "tool-group", name: "read", count: 3, lastInput: { path: "c" }, running: false }, "mixed: reads ×3")
+  eq(out[0], group("read 2 files · ran 1 command", { cmd: "ls" }), "mixed: leading read/bash fold")
   eq(out[1], { kind: "assistant", text: "hello", streaming: false }, "mixed: assistant preserved")
-  eq(out[2], { kind: "tool-group", name: "bash", count: 2, lastInput: { cmd: "pwd" }, running: false }, "mixed: bash ×2")
+  eq(out[2], group("searched 1 time · ran 1 command", { pattern: "x" }), "mixed: bash+grep fold")
   eq(out[3], errored, "mixed: errored read stays visible")
-  eq(out[4], { kind: "tool-group", name: "read", count: 2, lastInput: { path: "f" }, running: false }, "mixed: trailing reads ×2")
+  eq(out[4], group("read 2 files", { path: "f" }), "mixed: trailing reads fold")
 }
 
 // --- non-tool items (errors, cache warnings) pass through and break runs ---

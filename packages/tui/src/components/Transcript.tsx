@@ -160,14 +160,14 @@ export function ItemView({ item }: { item: DisplayItem }) {
   switch (item.kind) {
     case "tool-group": {
       // A coalesced run: one line, a status dot (grey spinner while any call is
-      // in flight → green ⏺ once all done), the tool name, an ×N count, and only
-      // the LAST call's input as a hint. No ⎿ preview — that's the whole point.
+      // in flight → green ⏺ once all done), a by-category summary ("read 5 files ·
+      // ran 4 commands"), and only the LAST call's input as a hint. No ⎿ preview —
+      // that's the whole point.
       const hint = summarizeInput(item.lastInput, TOOL_SUMMARY_MAX_LENGTH)
       return (
         <Box marginTop={1}>
           {item.running ? <Spinner color={BORDER} /> : <Text color={SUCCESS}>{DOT}</Text>}
-          <Text bold> {item.name}</Text>
-          <Text dimColor> ×{item.count}</Text>
+          <Text bold> {item.summary}</Text>
           {hint ? <Text dimColor> · {hint}</Text> : null}
         </Box>
       )

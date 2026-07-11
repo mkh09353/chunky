@@ -459,9 +459,10 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           status={bottomStatus}
           onPasteImage={onPasteImage}
           attachmentCount={attachments.length}
+          baseUrl={mode === "live" ? baseUrl : undefined}
         />
         <Text dimColor>
-          {"  / for commands · ctrl+v paste image · ctrl+c to quit"}
+          {"  / for commands · @ for files · ctrl+v paste image · ctrl+c to quit"}
           {hasThreads ? "  ·  ctrl+t to " + (threadsCollapsed ? "expand" : "collapse") + " threads" : ""}
         </Text>
       </Box>

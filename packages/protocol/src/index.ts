@@ -85,7 +85,22 @@ export const ROUTES = {
   // GET -> SSE stream of AgentEvent. Replays persisted history first, so opening
   // this on an existing id IS "resume": the full prior transcript streams, then live.
   events: (id: string) => `/api/sessions/${id}/events`,
+  // GET ?q=&limit= -> { items: FileSearchItem[] } — FFF fuzzy search for @-mentions.
+  fileSearch: `/api/files/search`,
 } as const
+
+/** One hit from GET /api/files/search (TUI @-mention autocomplete). */
+export interface FileSearchItem {
+  path: string
+  name: string
+  kind: "file" | "directory"
+}
+
+export interface FileSearchResponse {
+  items: FileSearchItem[]
+  totalMatched?: number
+  error?: string
+}
 
 // ---- SSE helpers (used by BOTH sides) ----
 

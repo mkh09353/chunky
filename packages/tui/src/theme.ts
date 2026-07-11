@@ -1,10 +1,11 @@
 // Claude-Code-look palette + glyphs, lifted from kimi's design-system.
 // Terminals inherit the user's font — we only ever set ANSI color + box-drawing.
 
-/** Anthropic clay / terracotta accent used for the prompt marker, spinner, sparkle. */
-export const ACCENT = "#d97757"
-/** Slightly deeper clay, used for secondary accent highlights. */
-export const ACCENT_DEEP = "#cc785c"
+/** Violet brand accent (prompt marker, spinner, sparkle, ⏺ dots). Bright purple that
+ *  pops on dark terminals — kimi's dark-theme "bright purple" rgb(178,102,255). */
+export const ACCENT = "#b266ff"
+/** Deeper purple (kimi's Purple 600, rgb(147,51,234)) — secondary rail / highlights. */
+export const ACCENT_DEEP = "#9333ea"
 /** Dim gray for the input border, meta text, and tool result summaries. */
 export const BORDER = "gray"
 export const SUCCESS = "green"

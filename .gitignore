@@ -12,3 +12,4 @@ bun.lock
 auth.json
 settings.json
 models-dev-cache.json
+.chunky-fff/

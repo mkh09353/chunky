@@ -18,6 +18,7 @@ import {
   type Speed,
 } from "./providers/registry.ts"
 import { getAdvisor, setAdvisor, type AdvisorConfig } from "./settings.ts"
+import { getFinder } from "./fff.ts"
 
 type Subscriber = ReadableStreamDefaultController<Uint8Array>
 
@@ -205,6 +206,37 @@ const server = Bun.serve({
       setAdvisor(patch)
       invalidateAgent()
       return json({ config: getAdvisor(), active: resolveAdvisorSelection() != null })
+    }
+
+    // GET /api/files/search?q=...&limit=20
+    //   -> { items: [{ path, name, kind: "file"|"directory" }] }
+    // FFF-backed fuzzy search for the TUI's @-mention autocomplete.
+    if (req.method === "GET" && pathname === "/api/files/search") {
+      const q = url.searchParams.get("q") ?? ""
+      const limitRaw = Number(url.searchParams.get("limit") ?? "20")
+      const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(limitRaw, 50)) : 20
+      try {
+        const finder = await getFinder()
+        const result = finder.mixedSearch(q, { pageSize: limit })
+        if (!result.ok) return json({ error: result.error, items: [] }, 502)
+        const items = result.value.items.slice(0, limit).map((mixed) => {
+          if (mixed.type === "directory") {
+            return {
+              path: mixed.item.relativePath,
+              name: mixed.item.dirName,
+              kind: "directory" as const,
+            }
+          }
+          return {
+            path: mixed.item.relativePath,
+            name: mixed.item.fileName,
+            kind: "file" as const,
+          }
+        })
+        return json({ items, totalMatched: result.value.totalMatched })
+      } catch (err) {
+        return json({ error: (err as Error)?.message ?? String(err), items: [] }, 502)
+      }
     }
 
     // GET /api/sessions -> ListSessionsResponse (resume picker)

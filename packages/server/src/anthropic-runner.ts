@@ -22,13 +22,14 @@ import type { CacheContext } from "./run.ts"
 import { WORKSPACE } from "./workspace.ts"
 import { bash, bashInputShape } from "./tools/bash.ts"
 import { editInputShape, editTool } from "./tools/edit.ts"
+import { fffind, fffindInputShape, ffgrep, ffgrepInputShape } from "./tools/fff.ts"
 import { read, readInputShape } from "./tools/read.ts"
 import { spawnThread, spawnThreadInputShape } from "./tools/spawn-thread.ts"
 import { write, writeInputShape } from "./tools/write.ts"
 
 const SERVER_NAME = "chunky"
 const ALLOWED_TOOLS = [`mcp__${SERVER_NAME}__*`]
-const CHUNKY_TOOLS = [read, bash, write, editTool, spawnThread]
+const CHUNKY_TOOLS = [read, bash, fffind, ffgrep, write, editTool, spawnThread]
 const SDK_TOOL_NAMES = new Set(CHUNKY_TOOLS.map((chunkyTool) => `mcp__${SERVER_NAME}__${chunkyTool.name}`))
 const knownSessions = new Set<string>()
 
@@ -121,6 +122,22 @@ export function createChunkySdkMcpServer(callerThreadId: string, emitRoot: Emit,
         bashInputShape,
         (args) => bash.invoke(args),
         emit,
+      ),
+      wrapChunkyTool(
+        fffind.name,
+        fffind.description,
+        fffindInputShape,
+        (args) => fffind.invoke(args),
+        emit,
+        readOnly,
+      ),
+      wrapChunkyTool(
+        ffgrep.name,
+        ffgrep.description,
+        ffgrepInputShape,
+        (args) => ffgrep.invoke(args),
+        emit,
+        readOnly,
       ),
       wrapChunkyTool(
         write.name,

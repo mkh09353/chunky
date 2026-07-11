@@ -31,6 +31,21 @@ export interface ModelSelection {
   speed?: string | null
 }
 
+// One pickable model in the composer's model menu — mirrors the server's
+// ModelInfo plus which provider it belongs to and whether that provider is
+// logged in (selecting a not-ready provider is allowed; it just won't run
+// until /login).
+export interface ModelRow {
+  provider: string
+  ready: boolean
+  model: {
+    id: string
+    name: string
+    reasoning: boolean
+    contextLimit?: number
+  }
+}
+
 const DEFAULT_CONFIG: AppConfig = {
   baseUrl: "http://localhost:4599",
   workspace: "",
@@ -177,6 +192,44 @@ export async function fetchModel(baseUrl: string): Promise<ModelSelection | null
   } catch {
     return null
   }
+}
+
+/** Every provider's models flattened to picker rows (same source as the TUI's
+ *  /model picker). A provider whose model list fails just contributes none. */
+export async function listAllModels(baseUrl: string): Promise<ModelRow[]> {
+  const res = await fetch(baseUrl + "/api/providers")
+  if (!res.ok) throw new Error(`list providers failed (${res.status})`)
+  const body = (await res.json()) as { providers?: Array<{ id: string; ready: boolean }> }
+  const providers = body.providers ?? []
+  const groups = await Promise.all(
+    providers.map(async (p): Promise<ModelRow[]> => {
+      try {
+        const r = await fetch(baseUrl + `/api/providers/${p.id}/models`)
+        if (!r.ok) return []
+        const b = (await r.json()) as { models?: ModelRow["model"][] }
+        return (b.models ?? []).map((model) => ({ provider: p.id, ready: p.ready, model }))
+      } catch {
+        return []
+      }
+    }),
+  )
+  return groups.flat()
+}
+
+/** Persist a model selection server-side (makes its provider active and
+ *  invalidates the agent cache) and return the now-active selection. */
+export async function selectModel(
+  baseUrl: string,
+  payload: { provider: string; model: string; effort?: string; speed?: string },
+): Promise<ModelSelection> {
+  const res = await fetch(baseUrl + "/api/model/select", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+  const data = (await res.json().catch(() => ({}))) as ModelSelection & { error?: string }
+  if (!res.ok || data.error) throw new Error(data.error || `select model failed (${res.status})`)
+  return data
 }
 
 export function prettyModel(id: string | null | undefined): string {

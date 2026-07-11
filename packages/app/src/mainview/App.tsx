@@ -19,7 +19,6 @@ import {
   listSessions,
   loadConfig,
   openEventStream,
-  prettyModel,
   removeRepo,
   sendMessage,
   type AppConfig,
@@ -293,9 +292,6 @@ export default function App() {
 
   const activeRepo = repos.find((r) => r.id === activeRepoId) ?? null
   const workspaceName = activeRepo?.name || config?.workspaceName || "chunky"
-  const modelLabel = model
-    ? [prettyModel(model.model), model.effort, model.speed].filter(Boolean).join(" · ")
-    : null
   const groups = groupSessions(sessions)
 
   return (
@@ -325,17 +321,6 @@ export default function App() {
                 onAdd={handleAddRepo}
                 onRemove={(id) => void handleRemoveRepo(id)}
               />
-            }
-            endContent={
-              modelLabel ? (
-                <span
-                  className="chunky-status-pill"
-                  style={{ marginInlineEnd: 8 }}
-                  title={model?.provider ? `Provider: ${model.provider}` : undefined}
-                >
-                  {modelLabel}
-                </span>
-              ) : null
             }
           />
         }
@@ -399,6 +384,8 @@ export default function App() {
           workspaceName={workspaceName}
           baseUrl={config?.baseUrl}
           repoId={activeRepoId}
+          model={model}
+          onModelChange={setModel}
           draft={draft}
           onDraftChange={setDraft}
           onSubmit={(t) => void handleSubmit(t)}

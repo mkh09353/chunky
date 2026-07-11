@@ -475,6 +475,291 @@ body,
   border-color: transparent;
 }
 
+/* ---- Model picker (composer footer) ---------------------------------------
+
+   Codex-style: a quiet "<model> <effort>" label in the composer's bottom-right
+   (the sendActions slot, just left of the send button) that opens an upward
+   popover with a fuzzy-searchable model list, then effort/speed steps. */
+
+.chunky-model-pick {
+  position: relative;
+  display: inline-flex;
+}
+
+.chunky-model-trigger {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-1);
+  height: 2rem;
+  padding-inline: var(--spacing-2);
+  border: none;
+  /* Concentric with the composer shell, like its other footer buttons. */
+  border-radius: var(--_button-radius, var(--radius-element));
+  background: transparent;
+  color: var(--color-text-secondary);
+  font: inherit;
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease;
+}
+
+.chunky-model-trigger:hover,
+.chunky-model-trigger[aria-expanded="true"] {
+  background: var(--color-overlay-hover);
+}
+
+.chunky-model-trigger-name {
+  color: var(--color-text-primary);
+}
+
+.chunky-model-trigger-knobs {
+  color: var(--color-text-secondary);
+}
+
+.chunky-model-trigger-chevron {
+  width: 0.9rem;
+  height: 0.9rem;
+  flex-shrink: 0;
+}
+
+.chunky-model-menu {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  right: 0;
+  z-index: 50;
+  width: 22rem;
+  max-width: 80vw;
+  padding: var(--spacing-1);
+  border-radius: var(--radius-container);
+  background: var(--color-background-popover);
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-lift, 0 16px 36px rgba(0, 0, 0, 0.4));
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-1);
+  outline: none;
+}
+
+.chunky-model-filter {
+  width: 100%;
+  font: inherit;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-primary);
+  background: var(--color-background-body);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-element);
+  padding: var(--spacing-1-5) var(--spacing-2);
+  outline: none;
+}
+
+.chunky-model-filter:focus {
+  border-color: var(--chunky-purple);
+}
+
+.chunky-model-list {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 18rem;
+  overflow-y: auto;
+}
+
+.chunky-model-row {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-primary);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-element);
+  padding: var(--spacing-1-5) var(--spacing-2);
+  cursor: pointer;
+}
+
+.chunky-model-row[data-active] {
+  background: var(--color-overlay-hover);
+}
+
+.chunky-model-row:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Name grows and truncates; hint/check/star sit fixed on the right. */
+.chunky-model-row-name {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.chunky-model-row-provider {
+  color: var(--color-text-secondary);
+}
+
+.chunky-model-row-hint {
+  flex-shrink: 0;
+  font-size: var(--font-size-2xs);
+  color: var(--color-text-secondary);
+}
+
+.chunky-model-row-check {
+  width: 0.9rem;
+  height: 0.9rem;
+  flex-shrink: 0;
+  color: var(--chunky-purple-soft);
+}
+
+/* Star toggle: invisible until the row is hovered or it's already starred. */
+.chunky-model-star {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1rem;
+  height: 1.1rem;
+  flex-shrink: 0;
+  border-radius: var(--radius-full);
+  color: var(--color-text-secondary);
+  opacity: 0;
+  cursor: pointer;
+  transition: opacity 120ms ease, color 120ms ease;
+}
+
+.chunky-model-row:hover .chunky-model-star,
+.chunky-model-row[data-active] .chunky-model-star,
+.chunky-model-star-on {
+  opacity: 1;
+}
+
+.chunky-model-star:hover {
+  color: var(--color-text-primary);
+}
+
+.chunky-model-star-on {
+  color: var(--chunky-purple-soft);
+}
+
+.chunky-model-star svg {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+.chunky-model-menu-title {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-1);
+  font-size: var(--font-size-2xs);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-secondary);
+  padding: var(--spacing-1) var(--spacing-2) 0;
+}
+
+/* "All models (N)" expander between the favorites and the full catalog. */
+.chunky-model-showall {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-1);
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-element);
+  padding: var(--spacing-1-5) var(--spacing-2);
+  cursor: pointer;
+}
+
+.chunky-model-showall:hover {
+  background: var(--color-overlay-hover);
+  color: var(--color-text-primary);
+}
+
+.chunky-model-showall svg {
+  width: 0.8rem;
+  height: 0.8rem;
+  flex-shrink: 0;
+}
+
+/* Knobs for the current selection, pinned under the list: reasoning effort
+   for reasoning models, speed for Codex. Segmented pills, one-click apply. */
+.chunky-model-footer {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-1);
+  border-top: 1px solid var(--color-border);
+  padding-top: var(--spacing-1);
+}
+
+.chunky-model-knobs {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-1);
+  padding-bottom: var(--spacing-1);
+}
+
+.chunky-model-pills {
+  display: flex;
+  gap: var(--spacing-1);
+  padding-inline: var(--spacing-2);
+}
+
+.chunky-model-pill {
+  flex: 1;
+  font: inherit;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  background: var(--color-background-surface);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  padding: var(--spacing-0-5) var(--spacing-1);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.chunky-model-pill:hover:not(:disabled) {
+  border-color: var(--chunky-purple-soft);
+  color: var(--color-text-primary);
+}
+
+.chunky-model-pill:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.chunky-model-pill-active {
+  background: var(--color-accent);
+  border-color: transparent;
+  color: var(--color-on-accent);
+}
+
+.chunky-model-pill-active:hover:not(:disabled) {
+  color: var(--color-on-accent);
+}
+
+.chunky-model-note {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  padding: var(--spacing-1-5) var(--spacing-2);
+}
+
+.chunky-model-error {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-red);
+  padding: var(--spacing-1-5) var(--spacing-2);
+  word-break: break-word;
+}
+
 /* ---- Chrome --------------------------------------------------------------- */
 
 .chunky-status-pill {

@@ -1,8 +1,10 @@
 import { useMemo } from "react"
 import { ChatComposer, ChatComposerInput, ChatLayout } from "@astryxdesign/core/Chat"
+import type { ModelSelection } from "../lib/api"
 import { hasTranscript, mainItems, type TranscriptState } from "../lib/transcript"
 import { createMentionTrigger } from "./mentionTrigger"
 import { EmptyChat } from "./EmptyChat"
+import { ModelPickerMenu } from "./ModelPickerMenu"
 import { TranscriptView } from "./TranscriptView"
 
 export function ChatPane({
@@ -10,6 +12,8 @@ export function ChatPane({
   workspaceName,
   baseUrl,
   repoId,
+  model,
+  onModelChange,
   draft,
   onDraftChange,
   onSubmit,
@@ -20,6 +24,8 @@ export function ChatPane({
   workspaceName: string
   baseUrl?: string
   repoId?: string | null
+  model: ModelSelection | null
+  onModelChange: (sel: ModelSelection) => void
   draft: string
   onDraftChange: (v: string) => void
   onSubmit: (text: string) => void
@@ -67,6 +73,17 @@ export function ChatPane({
                   <span className="chunky-status-pill chunky-status-live">
                     Running…
                   </span>
+                ) : undefined
+              }
+              // Codex-style model + effort picker in the bottom-right, next to
+              // the send button.
+              sendActions={
+                baseUrl ? (
+                  <ModelPickerMenu
+                    baseUrl={baseUrl}
+                    model={model}
+                    onModelChange={onModelChange}
+                  />
                 ) : undefined
               }
             />

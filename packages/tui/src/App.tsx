@@ -461,7 +461,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           attachmentCount={attachments.length}
         />
         <Text dimColor>
-          {"  ? for shortcuts · / for commands · ctrl+v paste image · ctrl+c to quit"}
+          {"  / for commands · ctrl+v paste image · ctrl+c to quit"}
           {hasThreads ? "  ·  ctrl+t to " + (threadsCollapsed ? "expand" : "collapse") + " threads" : ""}
         </Text>
       </Box>

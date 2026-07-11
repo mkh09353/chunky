@@ -29,7 +29,11 @@ async function getRpc() {
           Electroview: new (c: { rpc: unknown }) => unknown
           createRPC: (opts: unknown) => unknown
         }
-        const rpc = mod.createRPC({}) as {
+        // maxRequestTime: the OS folder chooser is modal and open-ended, but
+        // electrobun's RPC rejects requests after 1s by default — long before
+        // anyone can pick a folder. Infinity disables the timer (explicitly
+        // supported); a missing bun-side handler still rejects immediately.
+        const rpc = mod.createRPC({ maxRequestTime: Infinity }) as {
           request?: Record<string, (...a: unknown[]) => Promise<unknown>>
         }
         new mod.Electroview({ rpc })

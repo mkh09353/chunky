@@ -13,6 +13,14 @@ import type { AgentSelectionOverride } from "./providers/registry.ts"
 
 export interface ThreadSpawner {
   /**
+   * The root session id this manager belongs to. Every live thread_id (root +
+   * each spawned child) resolves to the same manager, so a tool invoked at ANY
+   * depth can find the session it's running under — which is how the session-
+   * scoped goal tools reach the right goal from inside a child thread.
+   */
+  readonly sessionId: string
+
+  /**
    * Launch a child thread from `callerThreadId` and return its final text.
    * The manager decides the child's threadId and parent linkage.
    */
@@ -48,4 +56,11 @@ export function unregisterThread(threadId: string): void {
 /** Resolve the manager owning `threadId`, or undefined if there is no active run. */
 export function threadContextFor(threadId: string | undefined): ThreadSpawner | undefined {
   return threadId ? registry.get(threadId) : undefined
+}
+
+/** The root session id owning `threadId`, or undefined if there's no active run.
+ *  Lets a session-scoped tool (e.g. goal) map any thread depth back to its
+ *  session without knowing anything about the ThreadManager. */
+export function sessionForThread(threadId: string | undefined): string | undefined {
+  return threadContextFor(threadId)?.sessionId
 }

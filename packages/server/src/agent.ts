@@ -25,6 +25,7 @@ import { applyPatch } from "./tools/apply-patch.ts"
 import { bash } from "./tools/bash.ts"
 import { editTool } from "./tools/edit.ts"
 import { fffind, ffgrep } from "./tools/fff.ts"
+import { goalTools } from "./tools/goal.ts"
 import { read } from "./tools/read.ts"
 import { spawnThread } from "./tools/spawn-thread.ts"
 import { write } from "./tools/write.ts"
@@ -132,6 +133,7 @@ export function executorToolsFor(selection: AgentSelection) {
     ffgrep,
     write,
     spawnThread,
+    ...goalTools,
     ...editToolsForModel(selection.model, selection.provider),
     ...(advisorSel ? [advisor] : []),
   ]

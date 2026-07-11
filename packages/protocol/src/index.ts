@@ -47,7 +47,26 @@ export type AgentEvent =
   | { type: "tool.end"; id: string; ok: boolean; output: string; threadId?: string }
   | { type: "thread.spawn"; threadId: string; parentThreadId: string | null; title: string }
   | { type: "thread.status"; threadId: string; status: "running" | "idle"; title?: string }
+  /** Goal-mode lifecycle: emitted when a goal is set, auto-continues, completes,
+   * blocks, or pauses. `goal` is the current snapshot (null once cleared) and
+   * `message` is a short human line the TUI renders as a transcript marker. */
+  | { type: "goal.update"; sessionId: string; goal: GoalSnapshot | null; message?: string }
   | { type: "error"; message: string; threadId?: string }
+
+/** Lifecycle of a session goal. `active` runs the continuation loop; `paused`
+ *  stops it (turn budget hit, interrupted, or user-paused) but keeps the goal;
+ *  `blocked`/`complete` are terminal for this objective. */
+export type GoalStatus = "active" | "paused" | "blocked" | "complete"
+
+/** The wire snapshot of a session's goal (a subset of the server's stored Goal). */
+export interface GoalSnapshot {
+  objective: string
+  status: GoalStatus
+  /** Auto-continuation turns spent so far this run. */
+  turns: number
+  /** Cap on auto-continuation turns before the goal pauses itself. */
+  maxTurns: number
+}
 
 // ---- REST shapes ----
 export interface CreateSessionResponse {
@@ -87,7 +106,27 @@ export const ROUTES = {
   events: (id: string) => `/api/sessions/${id}/events`,
   // GET ?q=&limit= -> { items: FileSearchItem[] } — FFF fuzzy search for @-mentions.
   fileSearch: `/api/files/search`,
+  // GET  -> GoalStateResponse (current goal, or null).
+  // POST GoalRequest -> GoalStateResponse. Set an objective (starts the loop) or
+  // run a lifecycle action (pause/resume/clear).
+  goal: (id: string) => `/api/sessions/${id}/goal`,
 } as const
+
+/** Body for POST ROUTES.goal. Exactly one of `objective` (set + start the goal)
+ *  or `action` (manage an existing goal) is expected. */
+export interface GoalRequest {
+  /** Set this objective and start working toward it. */
+  objective?: string
+  /** Optional cap on auto-continuation turns (defaults server-side). */
+  maxTurns?: number
+  /** Lifecycle action on the current goal. */
+  action?: "pause" | "resume" | "clear"
+}
+
+/** GET/POST ROUTES.goal response: the session's current goal snapshot, or null. */
+export interface GoalStateResponse {
+  goal: GoalSnapshot | null
+}
 
 /** One hit from GET /api/files/search (TUI @-mention autocomplete). */
 export interface FileSearchItem {

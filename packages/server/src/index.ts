@@ -1,9 +1,10 @@
 // Chunky CLI server: Bun.serve HTTP + SSE. Model via the provider registry;
 // sessions + event history persisted to sqlite so reconnecting resumes.
 import { randomUUID } from "node:crypto"
-import { DEFAULT_PORT, ROUTES, sse, type AgentEvent } from "@chunky/protocol"
-import { runAgent } from "./run.ts"
+import { DEFAULT_PORT, ROUTES, sse, type AgentEvent, type GoalRequest } from "@chunky/protocol"
+import { runAgent, type InputImage } from "./run.ts"
 import { Store } from "./store.ts"
+import { DEFAULT_MAX_TURNS, firstLine, goalKickoffPrompt, toSnapshot, type Goal } from "./goal.ts"
 import { invalidateAgent } from "./agent.ts"
 import {
   activeProviderId,
@@ -49,6 +50,24 @@ function emitTo(sessionId: string, ev: AgentEvent): void {
       // subscriber gone; cleaned up on cancel
     }
   }
+}
+
+/** Abort any in-flight turn for a session, then start a fresh agent run for
+ *  `text`, tracking the AbortController so /interrupt can cancel it. Shared by the
+ *  message route and the goal set/resume routes (a goal kickoff is just a run
+ *  whose prompt the server supplies). */
+function dispatchRun(sessionId: string, text: string, images?: InputImage[]): void {
+  running.get(sessionId)?.abort()
+  const ac = new AbortController()
+  running.set(sessionId, ac)
+  void runAgent(sessionId, text, (ev) => emitTo(sessionId, ev), images, ac)
+    .catch((err) => {
+      emitTo(sessionId, { type: "error", message: (err as Error)?.message ?? String(err) })
+      emitTo(sessionId, { type: "session.status", sessionId, status: "idle" })
+    })
+    .finally(() => {
+      if (running.get(sessionId) === ac) running.delete(sessionId)
+    })
 }
 
 const CORS = {
@@ -252,8 +271,8 @@ const server = Bun.serve({
       return json({ sessionId })
     }
 
-    // Match /api/sessions/:id/(events|messages|interrupt)
-    const m = pathname.match(/^\/api\/sessions\/([^/]+)\/(events|messages|interrupt)$/)
+    // Match /api/sessions/:id/(events|messages|interrupt|goal)
+    const m = pathname.match(/^\/api\/sessions\/([^/]+)\/(events|messages|interrupt|goal)$/)
     if (m) {
       const [, sessionId, kind] = m
       // Accept any session that exists on disk (enables resume across restart),
@@ -320,20 +339,9 @@ const server = Bun.serve({
 
         if (text) Store.setTitleIfDefault(sessionId, text) // first message becomes the resume label
 
-        // Abort any prior in-flight turn for this session, then track this one so
-        // POST /interrupt (Esc in the TUI) can cancel it.
-        running.get(sessionId)?.abort()
-        const ac = new AbortController()
-        running.set(sessionId, ac)
-
-        void runAgent(sessionId, text, (ev) => emitTo(sessionId, ev), images, ac)
-          .catch((err) => {
-            emitTo(sessionId, { type: "error", message: (err as Error)?.message ?? String(err) })
-            emitTo(sessionId, { type: "session.status", sessionId, status: "idle" })
-          })
-          .finally(() => {
-            if (running.get(sessionId) === ac) running.delete(sessionId)
-          })
+        // Abort any prior in-flight turn, then run this one (tracked so /interrupt
+        // can cancel it). If a goal is active, runAgent keeps continuing it after.
+        dispatchRun(sessionId, text, images)
 
         return new Response(null, { status: 202, headers: CORS })
       }
@@ -342,6 +350,84 @@ const server = Bun.serve({
       if (kind === "interrupt" && req.method === "POST") {
         running.get(sessionId)?.abort()
         return new Response(null, { status: 202, headers: CORS })
+      }
+
+      // .../goal — GET the current goal, or POST to set / pause / resume / clear it.
+      if (kind === "goal") {
+        // GET -> { goal: GoalSnapshot | null }
+        if (req.method === "GET") {
+          const goal = Store.getGoal(sessionId)
+          return json({ goal: goal ? toSnapshot(goal) : null })
+        }
+
+        // POST GoalRequest -> { goal: GoalSnapshot | null }
+        if (req.method === "POST") {
+          let body: GoalRequest
+          try {
+            body = (await req.json()) as GoalRequest
+          } catch {
+            return json({ error: "invalid JSON body" }, 400)
+          }
+
+          // Set a new objective and immediately start working toward it.
+          if (typeof body.objective === "string" && body.objective.trim()) {
+            const now = Date.now()
+            const maxTurns =
+              typeof body.maxTurns === "number" && Number.isFinite(body.maxTurns) && body.maxTurns > 0
+                ? Math.floor(body.maxTurns)
+                : DEFAULT_MAX_TURNS
+            const goal: Goal = {
+              sessionId,
+              objective: body.objective.trim(),
+              status: "active",
+              createdAt: now,
+              updatedAt: now,
+              turns: 0,
+              maxTurns,
+            }
+            Store.putGoal(goal)
+            emitTo(sessionId, {
+              type: "goal.update",
+              sessionId,
+              goal: toSnapshot(goal),
+              message: `◎ Goal set — ${firstLine(goal.objective)}`,
+            })
+            dispatchRun(sessionId, goalKickoffPrompt(goal))
+            return json({ goal: toSnapshot(goal) })
+          }
+
+          // Lifecycle actions on an existing goal.
+          if (body.action === "pause") {
+            running.get(sessionId)?.abort() // stop the in-flight turn; the loop halts
+            const paused = Store.updateGoal(sessionId, { status: "paused" })
+            if (paused) {
+              emitTo(sessionId, { type: "goal.update", sessionId, goal: toSnapshot(paused), message: "⏸ Goal paused." })
+            }
+            return json({ goal: paused ? toSnapshot(paused) : null })
+          }
+          if (body.action === "resume") {
+            const existing = Store.getGoal(sessionId)
+            if (!existing) return json({ error: "no goal to resume" }, 400)
+            // Resume grants a fresh turn budget and dispatches a new run.
+            const resumed = Store.updateGoal(sessionId, { status: "active", turns: 0 })!
+            emitTo(sessionId, {
+              type: "goal.update",
+              sessionId,
+              goal: toSnapshot(resumed),
+              message: `▶ Goal resumed — ${firstLine(resumed.objective)}`,
+            })
+            dispatchRun(sessionId, goalKickoffPrompt(resumed))
+            return json({ goal: toSnapshot(resumed) })
+          }
+          if (body.action === "clear") {
+            running.get(sessionId)?.abort()
+            Store.clearGoal(sessionId)
+            emitTo(sessionId, { type: "goal.update", sessionId, goal: null, message: "Goal cleared." })
+            return json({ goal: null })
+          }
+
+          return json({ error: "missing objective or action" }, 400)
+        }
       }
     }
 

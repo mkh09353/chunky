@@ -12,6 +12,8 @@ import { activeSelection, getProvider, providerRuntime } from "./providers/regis
 import { ThreadManager } from "./threads.ts"
 import { usageFromLangChainMessage, promptTokensOf } from "./usage.ts"
 import { checkCacheCold, cacheWarningEvent, noteRequest } from "./cache-watch.ts"
+import { Store } from "./store.ts"
+import { decideGoalStep, firstLine, goalContinuationPrompt, toSnapshot, type GoalStep } from "./goal.ts"
 
 export type { Emit } from "./event-emitter.ts"
 
@@ -191,6 +193,49 @@ export interface InputImage {
   mediaType: string
 }
 
+/** Pause the session's goal and announce it — but ONLY if it's currently active,
+ *  so a terminal complete/blocked (or a no-goal session) is never clobbered by an
+ *  interrupt/error race. Used on interrupt, error, and turn-budget exhaustion. */
+function pauseGoal(sessionId: string, emit: Emit, message: string): void {
+  const current = Store.getGoal(sessionId)
+  if (!current || current.status !== "active") return
+  const paused = Store.updateGoal(sessionId, { status: "paused" })
+  if (paused) emit({ type: "goal.update", sessionId, goal: toSnapshot(paused), message })
+}
+
+/** Surface a non-continue goal outcome. complete/blocked announce the terminal
+ *  state; budget/aborted pause-and-announce; no-goal/paused stay silent (a pause
+ *  was already announced at the moment it happened). */
+function emitGoalStop(sessionId: string, reason: Extract<GoalStep, { kind: "stop" }>["reason"], emit: Emit): void {
+  const goal = Store.getGoal(sessionId)
+  if (!goal) return
+  switch (reason) {
+    case "complete":
+      emit({
+        type: "goal.update",
+        sessionId,
+        goal: toSnapshot(goal),
+        message: `✓ Goal complete${goal.evidence ? " — " + firstLine(goal.evidence) : ""}`,
+      })
+      return
+    case "blocked":
+      emit({
+        type: "goal.update",
+        sessionId,
+        goal: toSnapshot(goal),
+        message: `⛔ Goal blocked${goal.blockedReason ? " — " + firstLine(goal.blockedReason) : ""}`,
+      })
+      return
+    case "budget":
+      pauseGoal(sessionId, emit, `⏸ Goal paused — reached the ${goal.maxTurns}-turn budget. Use /goal resume to keep going.`)
+      return
+    case "aborted":
+      pauseGoal(sessionId, emit, "⏸ Goal paused (interrupted). Use /goal resume to keep going.")
+      return
+    // "no-goal" and "paused": nothing to announce.
+  }
+}
+
 /** Build the user message: a plain string when there are no images, or the
  *  OpenAI-style multimodal content array (text + image_url data-URIs) when there
  *  are — which LangChain ChatOpenAI forwards to vision models (Grok 4.5, GPT-5.5). */
@@ -251,13 +296,15 @@ export async function runAgent(
   const threads = new ThreadManager(emit, sessionId, selection)
   const cache: CacheContext | undefined = model ? { conversationId: sessionId, model } : undefined
 
-  try {
+  // One turn = one full agent run (a model call + any tool loop). Both runtimes
+  // reduce to this; goal mode just calls it repeatedly with continuation nudges.
+  const runTurn = async (prompt: string, turnImages?: InputImage[]): Promise<void> => {
     if (providerRuntime(selection.provider) === "anthropic-sdk") {
       const { runAnthropicAgent } = await import("./anthropic-runner.ts")
-      await runAnthropicAgent({ selection, threadId: sessionId, prompt: text, emit, cache, abort })
+      await runAnthropicAgent({ selection, threadId: sessionId, prompt, emit, cache, abort })
     } else {
       const stream = await getAgent(selection).stream(
-        { messages: [{ role: "user", content: userMessageContent(text, images) }] } as any,
+        { messages: [{ role: "user", content: userMessageContent(prompt, turnImages) }] } as any,
         {
           configurable: { thread_id: sessionId },
           streamMode: ["updates", "messages"],
@@ -268,12 +315,45 @@ export async function runAgent(
 
       await translateStream(stream, undefined, emit, cache)
     }
+  }
+
+  try {
+    let prompt = text
+    let turnImages = images
+    // Goal-mode continuation loop. With NO goal this runs exactly once
+    // (decideGoalStep → "no-goal" → break) — identical to the pre-goal behavior.
+    // With an active goal it keeps injecting hidden continuation nudges until the
+    // model calls goal_complete/goal_blocked, the run is interrupted, or the turn
+    // budget is spent.
+    while (true) {
+      await runTurn(prompt, turnImages)
+      turnImages = undefined // pasted images ride only the first turn
+
+      const step = decideGoalStep(Store.getGoal(sessionId), abort?.signal.aborted ?? false)
+      if (step.kind === "stop") {
+        emitGoalStop(sessionId, step.reason, emit)
+        break
+      }
+      const updated = Store.updateGoal(sessionId, { turns: step.nextTurn })
+      if (!updated) break // goal was cleared mid-flight
+      emit({
+        type: "goal.update",
+        sessionId,
+        goal: toSnapshot(updated),
+        message: `↻ Goal continuing — turn ${updated.turns}/${updated.maxTurns}`,
+      })
+      prompt = goalContinuationPrompt(updated)
+    }
   } catch (err) {
     // A user interrupt aborts the stream — report it as a calm stop, not an error.
+    // Either way, pause an active goal so it never silently resumes on a later
+    // unrelated message; /goal resume restarts it deliberately.
     if (abort?.signal.aborted || (err as Error)?.name === "AbortError") {
       emit({ type: "error", message: "⏹ Interrupted." })
+      pauseGoal(sessionId, emit, "⏸ Goal paused (interrupted). Use /goal resume to keep going.")
     } else {
       emit({ type: "error", message: (err as Error)?.message ?? String(err) })
+      pauseGoal(sessionId, emit, "⏸ Goal paused after an error. Use /goal resume to retry.")
     }
   } finally {
     threads.dispose()

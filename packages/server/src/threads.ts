@@ -48,6 +48,10 @@ export function advisorConsultCount(sessionId: string): number {
 export class ThreadManager implements ThreadSpawner {
   private readonly rootId: string
   private readonly emit: Emit
+  /** The root session id (ThreadSpawner contract) — every child resolves here. */
+  get sessionId(): string {
+    return this.rootId
+  }
   private readonly agentFor: AgentForSelection
   private readonly advisorAgentFor: AgentForSelection
   private readonly selections = new Map<string, AgentSelection>()

@@ -14,6 +14,7 @@ export const COMMANDS: Command[] = [
   { name: "/login", description: "Log in to an OAuth provider (Grok / Codex)" },
   { name: "/model", description: "Pick a model (provider, model, effort/speed)" },
   { name: "/advisor", description: "Set the advisor model (a stronger model, on tap)" },
+  { name: "/goal", description: "Work autonomously toward a goal (/goal <objective>)" },
   { name: "/quit", description: "Exit Chunky CLI" },
 ]
 

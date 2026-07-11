@@ -3,7 +3,7 @@
 // spawned child thread is keyed by its own threadId and linked to its parent
 // (parentId === MAIN for a direct child of the main thread). message/tool/error
 // events carry an optional `threadId` that routes them to the owning thread.
-import type { AgentEvent } from "@chunky/protocol"
+import type { AgentEvent, GoalStatus } from "@chunky/protocol"
 
 /** Synthetic id for the main (root) session thread — events omit threadId for it. */
 export const MAIN = "main"
@@ -13,6 +13,8 @@ export type Item =
   | { kind: "assistant"; text: string; streaming: boolean }
   | { kind: "tool"; id: string; name: string; input: unknown; done: boolean; ok?: boolean; output?: string }
   | { kind: "error"; text: string }
+  /** A goal-mode lifecycle marker (set / continuing / complete / blocked / paused / cleared). */
+  | { kind: "goal"; status: GoalStatus | "cleared"; message: string }
   /** Prompt cache went cold at the start of this turn (idle past TTL / model switch). */
   | {
       kind: "cache-warning"
@@ -145,6 +147,14 @@ export function reduce(state: TranscriptState, ev: AgentEvent): TranscriptState 
           ...(ev.fromModel ? { fromModel: ev.fromModel } : {}),
           ...(ev.toModel ? { toModel: ev.toModel } : {}),
         },
+      ])
+    }
+
+    case "goal.update": {
+      // Goal-mode lifecycle marker on the main thread. `goal` is null when cleared.
+      return updateThreadItems(state, MAIN, (items) => [
+        ...items,
+        { kind: "goal", status: ev.goal?.status ?? "cleared", message: ev.message ?? "Goal updated." },
       ])
     }
 

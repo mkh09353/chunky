@@ -5,6 +5,9 @@ import {
   readSSE,
   type AgentEvent,
   type CreateSessionResponse,
+  type GoalRequest,
+  type GoalSnapshot,
+  type GoalStateResponse,
   type LoginInitiation,
 } from "@chunky/protocol"
 import { mockRun } from "@chunky/protocol/mock"
@@ -75,6 +78,8 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     effort?: string
     active: boolean
   } | null>(null)
+  // The session's current goal (drives the status line + goal transcript markers).
+  const [goal, setGoal] = useState<GoalSnapshot | null>(null)
   const sessionIdRef = useRef<string | null>(null)
   // Images pasted (Ctrl+V) onto the NEXT message. A ref mirrors it so `submit`
   // reads the latest set without going stale in its closure.
@@ -103,6 +108,9 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   const apply = useCallback((ev: AgentEvent) => {
     setState((s) => reduce(s, ev))
     if (ev.type === "session.status") setStartedAt(ev.status === "running" ? Date.now() : null)
+    // Track goal state for the status line. History replay (resume) re-runs these
+    // in order, so the last one wins and the status line reflects the true state.
+    if (ev.type === "goal.update") setGoal(ev.goal)
   }, [])
 
   // ---- live wiring: open the SSE stream BEFORE any message is sent ----
@@ -173,6 +181,13 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
 
   const submit = useCallback(
     async (text: string) => {
+      // Slash commands that take arguments arrive here (the menu only fires bare
+      // commands via onCommand). `/goal <objective>` is the one such command.
+      const command = text.trim()
+      if (command === "/goal" || command.startsWith("/goal ")) {
+        void doGoal(command.slice("/goal".length).trim())
+        return
+      }
       const images = attachmentsRef.current
       setAttachments([]) // consume the pasted images with this message
       const shown = text || (images.length ? `📎 ${images.length} image${images.length === 1 ? "" : "s"}` : text)
@@ -373,6 +388,82 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     [printLine, refreshAdvisor],
   )
 
+  // /goal — set an objective and let the agent work autonomously toward it, or
+  // manage the current one. `rest` is everything after "/goal":
+  //   ""                     -> show current goal status
+  //   pause | resume | clear -> lifecycle action
+  //   [--turns N] <text>     -> set the objective (optional turn budget) and start
+  const doGoal = useCallback(
+    async (rest: string) => {
+      if (mode !== "live") {
+        printLine("Goal mode needs the live server (run the server, then the TUI with --live).")
+        return
+      }
+      const id = sessionIdRef.current
+      if (!id) {
+        printLine("No live session yet.")
+        return
+      }
+      const url = baseUrl + ROUTES.goal(id)
+      const trimmed = rest.trim()
+
+      // Bare `/goal` -> status query (no server event, so print it here).
+      if (!trimmed) {
+        try {
+          const res = await fetch(url)
+          const body = (await res.json()) as GoalStateResponse
+          if (!body.goal) {
+            printLine(
+              "No goal set. `/goal <objective>` starts one (autonomous until done); `/goal --turns 30 <objective>` sets a turn budget; `/goal pause|resume|clear` manages it.",
+            )
+            return
+          }
+          setGoal(body.goal)
+          printLine(`Goal (${body.goal.status}, turn ${body.goal.turns}/${body.goal.maxTurns}): ${body.goal.objective}`)
+        } catch (err) {
+          printLine(`Goal status failed: ${String(err)}`)
+        }
+        return
+      }
+
+      const lower = trimmed.toLowerCase()
+      let payload: GoalRequest
+      if (lower === "pause") payload = { action: "pause" }
+      else if (lower === "resume" || lower === "continue") payload = { action: "resume" }
+      else if (lower === "clear" || lower === "stop" || lower === "cancel") payload = { action: "clear" }
+      else {
+        // Set a new objective, with an optional leading `--turns N`.
+        let objective = trimmed
+        let maxTurns: number | undefined
+        const m = objective.match(/^--turns\s+(\d+)\s+([\s\S]+)$/)
+        if (m) {
+          maxTurns = Number(m[1])
+          objective = m[2]!.trim()
+        }
+        payload = maxTurns ? { objective, maxTurns } : { objective }
+      }
+
+      try {
+        const res = await fetch(url, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(payload),
+        })
+        const body = (await res.json()) as GoalStateResponse | { error: string }
+        if ("error" in body) {
+          printLine(`Goal: ${body.error}`)
+          return
+        }
+        // set/resume/pause/clear all stream a goal.update marker into the transcript,
+        // which also updates goal state via apply() — so nothing to print here.
+        setGoal(body.goal)
+      } catch (err) {
+        printLine(`Goal request failed: ${String(err)}`)
+      }
+    },
+    [mode, baseUrl, printLine],
+  )
+
   const onCommand = useCallback(
     (name: string) => {
       switch (name) {
@@ -385,7 +476,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           break
         case "/help":
           printLine(
-            "Commands: /clear, /help, /login, /model, /advisor, /quit. Type a message and press Enter to talk to the agent.",
+            "Commands: /clear, /help, /login, /model, /advisor, /goal, /quit. Type a message and press Enter to talk to the agent. `/goal <objective>` works autonomously until the goal is done.",
           )
           break
         case "/login":
@@ -397,9 +488,12 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         case "/advisor":
           doAdvisor()
           break
+        case "/goal":
+          void doGoal("")
+          break
       }
     },
-    [printLine, doLogin, doModel, doAdvisor, exit],
+    [printLine, doLogin, doModel, doAdvisor, doGoal, exit],
   )
 
   // Mock demo turn so the transcript streams even without a TTY.
@@ -434,9 +528,13 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     advisor && advisor.enabled && advisor.model
       ? ` · advisor: ${prettyModel(advisor.model)}${effortParen(advisor.effort)}${advisor.active ? "" : " (inactive)"}`
       : " · advisor: off"
+  // Goal segment: shown only when a goal exists; active goals carry the turn count.
+  const goalPart = goal
+    ? ` · goal: ${goal.status}${goal.status === "active" ? ` ${goal.turns}/${goal.maxTurns}` : ""}`
+    : ""
   const bottomStatus =
     mode === "live"
-      ? `${prettyModel(currentSel?.model)}${effortParen(currentSel?.effort)}${advisorPart}`
+      ? `${prettyModel(currentSel?.model)}${effortParen(currentSel?.effort)}${advisorPart}${goalPart}`
       : "mock"
 
   return (

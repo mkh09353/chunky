@@ -229,6 +229,25 @@ export function ItemView({ item }: { item: DisplayItem }) {
           <Text color={WARNING}>⚠ {cacheWarningText(item)}</Text>
         </Box>
       )
+
+    case "goal": {
+      // Goal-mode marker. Color by outcome; the message already carries a glyph.
+      const color =
+        item.status === "complete"
+          ? SUCCESS
+          : item.status === "blocked"
+            ? ERROR
+            : item.status === "paused" || item.status === "cleared"
+              ? BORDER
+              : ACCENT
+      return (
+        <Box marginTop={1}>
+          <Text color={color} bold>
+            {item.message}
+          </Text>
+        </Box>
+      )
+    }
   }
 }
 

@@ -3,6 +3,7 @@
 // replays the full prior run — i.e. "resume". Kept deliberately tiny.
 import { Database } from "bun:sqlite"
 import type { AgentEvent, SessionSummary } from "@chunky/protocol"
+import type { Goal } from "./goal.ts"
 
 const DB_PATH = process.env.CHUNKY_DB || "chunky.db"
 const db = new Database(DB_PATH)
@@ -20,6 +21,17 @@ db.exec(`
     json       TEXT NOT NULL,
     PRIMARY KEY (session_id, seq)
   );
+  CREATE TABLE IF NOT EXISTS goals (
+    session_id    TEXT PRIMARY KEY,
+    objective     TEXT NOT NULL,
+    status        TEXT NOT NULL,
+    created_at    INTEGER NOT NULL,
+    updated_at    INTEGER NOT NULL,
+    turns         INTEGER NOT NULL DEFAULT 0,
+    max_turns     INTEGER NOT NULL,
+    evidence      TEXT,
+    blocked_reason TEXT
+  );
 `)
 
 const stmtCreate = db.query(
@@ -34,6 +46,41 @@ const stmtList = db.query(
 const stmtNextSeq = db.query("SELECT COALESCE(MAX(seq), -1) + 1 AS n FROM events WHERE session_id = ?")
 const stmtInsertEvent = db.query("INSERT INTO events (session_id, seq, json) VALUES (?, ?, ?)")
 const stmtHistory = db.query("SELECT json FROM events WHERE session_id = ? ORDER BY seq ASC")
+const stmtGetGoal = db.query("SELECT * FROM goals WHERE session_id = ?")
+const stmtUpsertGoal = db.query(
+  `INSERT INTO goals (session_id, objective, status, created_at, updated_at, turns, max_turns, evidence, blocked_reason)
+   VALUES ($session_id, $objective, $status, $created_at, $updated_at, $turns, $max_turns, $evidence, $blocked_reason)
+   ON CONFLICT(session_id) DO UPDATE SET
+     objective = $objective, status = $status, updated_at = $updated_at, turns = $turns,
+     max_turns = $max_turns, evidence = $evidence, blocked_reason = $blocked_reason`,
+)
+const stmtClearGoal = db.query("DELETE FROM goals WHERE session_id = ?")
+
+interface GoalRow {
+  session_id: string
+  objective: string
+  status: string
+  created_at: number
+  updated_at: number
+  turns: number
+  max_turns: number
+  evidence: string | null
+  blocked_reason: string | null
+}
+
+function rowToGoal(row: GoalRow): Goal {
+  return {
+    sessionId: row.session_id,
+    objective: row.objective,
+    status: row.status as Goal["status"],
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+    turns: row.turns,
+    maxTurns: row.max_turns,
+    evidence: row.evidence ?? undefined,
+    blockedReason: row.blocked_reason ?? undefined,
+  }
+}
 
 export const Store = {
   createSession(id: string, title = "New session"): void {
@@ -76,5 +123,40 @@ export const Store = {
       createdAt: r.created_at,
       lastActivity: r.last_activity,
     }))
+  },
+
+  // ---- Goal mode (one goal per session, persisted so it survives restart) ----
+
+  getGoal(sessionId: string): Goal | null {
+    const row = stmtGetGoal.get(sessionId) as GoalRow | null
+    return row ? rowToGoal(row) : null
+  },
+
+  /** Create-or-replace the session's goal (INSERT ... ON CONFLICT). */
+  putGoal(goal: Goal): void {
+    stmtUpsertGoal.run({
+      $session_id: goal.sessionId,
+      $objective: goal.objective,
+      $status: goal.status,
+      $created_at: goal.createdAt,
+      $updated_at: goal.updatedAt,
+      $turns: goal.turns,
+      $max_turns: goal.maxTurns,
+      $evidence: goal.evidence ?? null,
+      $blocked_reason: goal.blockedReason ?? null,
+    })
+  },
+
+  /** Merge-patch the session's goal; no-op if none exists. Returns the new goal. */
+  updateGoal(sessionId: string, patch: Partial<Omit<Goal, "sessionId" | "createdAt">>): Goal | null {
+    const current = this.getGoal(sessionId)
+    if (!current) return null
+    const next: Goal = { ...current, ...patch, updatedAt: Date.now() }
+    this.putGoal(next)
+    return next
+  },
+
+  clearGoal(sessionId: string): void {
+    stmtClearGoal.run(sessionId)
   },
 }

@@ -23,13 +23,21 @@ import { WORKSPACE } from "./workspace.ts"
 import { bash, bashInputShape } from "./tools/bash.ts"
 import { editInputShape, editTool } from "./tools/edit.ts"
 import { fffind, fffindInputShape, ffgrep, ffgrepInputShape } from "./tools/fff.ts"
+import {
+  getGoalInputShape,
+  getGoalTool,
+  goalBlockedInputShape,
+  goalBlockedTool,
+  goalCompleteInputShape,
+  goalCompleteTool,
+} from "./tools/goal.ts"
 import { read, readInputShape } from "./tools/read.ts"
 import { spawnThread, spawnThreadInputShape } from "./tools/spawn-thread.ts"
 import { write, writeInputShape } from "./tools/write.ts"
 
 const SERVER_NAME = "chunky"
 const ALLOWED_TOOLS = [`mcp__${SERVER_NAME}__*`]
-const CHUNKY_TOOLS = [read, bash, fffind, ffgrep, write, editTool, spawnThread]
+const CHUNKY_TOOLS = [read, bash, fffind, ffgrep, write, editTool, spawnThread, getGoalTool, goalCompleteTool, goalBlockedTool]
 const SDK_TOOL_NAMES = new Set(CHUNKY_TOOLS.map((chunkyTool) => `mcp__${SERVER_NAME}__${chunkyTool.name}`))
 const knownSessions = new Set<string>()
 
@@ -158,6 +166,30 @@ export function createChunkySdkMcpServer(callerThreadId: string, emitRoot: Emit,
         spawnThread.description,
         spawnThreadInputShape,
         (args) => spawnThread.invoke(args, { configurable: { thread_id: callerThreadId } }),
+        emit,
+      ),
+      // Goal-mode tools resolve the session from the caller thread the same way
+      // spawn_thread does, so goal_complete/goal_blocked reach the right goal.
+      wrapChunkyTool(
+        getGoalTool.name,
+        getGoalTool.description,
+        getGoalInputShape,
+        (args) => getGoalTool.invoke(args, { configurable: { thread_id: callerThreadId } }),
+        emit,
+        readOnly,
+      ),
+      wrapChunkyTool(
+        goalCompleteTool.name,
+        goalCompleteTool.description,
+        goalCompleteInputShape,
+        (args) => goalCompleteTool.invoke(args, { configurable: { thread_id: callerThreadId } }),
+        emit,
+      ),
+      wrapChunkyTool(
+        goalBlockedTool.name,
+        goalBlockedTool.description,
+        goalBlockedInputShape,
+        (args) => goalBlockedTool.invoke(args, { configurable: { thread_id: callerThreadId } }),
         emit,
       ),
     ],

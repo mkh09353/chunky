@@ -19,7 +19,7 @@ export const COMMANDS: Command[] = [
 
 /**
  * The slash-command popup, styled after kimi's CustomSelect: a rounded box
- * floating above the input, a terracotta pointer (❯) on the focused row,
+ * floating above the input, a violet pointer (❯) on the focused row,
  * highlighted label + dim description.
  */
 export function SlashMenu({ commands, selected }: { commands: Command[]; selected: number }) {

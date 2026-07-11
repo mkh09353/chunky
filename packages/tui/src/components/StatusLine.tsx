@@ -3,7 +3,7 @@ import { Box, Text } from "ink"
 import { ACCENT, SPINNER_FRAMES, SPINNER_VERBS } from "../theme.js"
 
 /**
- * Claude Code's running status line: an animated terracotta sparkle, a
+ * Claude Code's running status line: an animated violet sparkle, a
  * rotating verb ("Thinking…", "Working…"), and an elapsed-seconds timer.
  * Rendered only while the agent is running.
  */

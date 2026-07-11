@@ -21,7 +21,7 @@ interface Props {
 
 /**
  * The signature Claude Code input: a full-width band delimited by a horizontal
- * rule above and below, a terracotta `>` marker, and an inline block cursor.
+ * rule above and below, a violet `>` marker, and an inline block cursor.
  * When the line starts with `/`, a slash-command popup floats above the band.
  * When the cursor is inside an `@path` token, a file-search popup floats above.
  */

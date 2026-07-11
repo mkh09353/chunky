@@ -67,7 +67,7 @@ function fuzzyScore(query: string, target: string): number {
  *   2. effort — shown only for reasoning models (low/medium/high/xhigh).
  *   3. speed  — shown only for Codex (standard/fast).
  * Esc steps back (and cancels from the list). Styled after the slash menu /
- * LoginPicker (rounded terracotta box, ❯ pointer).
+ * LoginPicker (rounded violet box, ❯ pointer).
  */
 export function ModelPicker({ baseUrl, onDone, onCancel }: Props) {
   const rawSupported = Boolean(useStdin().isRawModeSupported)

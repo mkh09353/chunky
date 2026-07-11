@@ -229,6 +229,22 @@ export function ItemView({ item }: { item: DisplayItem }) {
           <Text color={WARNING}>⚠ {cacheWarningText(item)}</Text>
         </Box>
       )
+
+    case "workflow-phase":
+      return (
+        <Box marginTop={1}>
+          <Text color={ACCENT} bold>
+            ◆ {item.title}
+          </Text>
+        </Box>
+      )
+
+    case "workflow-log":
+      return (
+        <Box>
+          <Text color={MARKER}>{item.message}</Text>
+        </Box>
+      )
   }
 }
 

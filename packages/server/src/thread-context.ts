@@ -33,6 +33,18 @@ export interface ThreadSpawner {
     question: string
     pointers?: string
   }): Promise<string>
+
+  /**
+   * Run a dynamic-workflow `script` on behalf of `callerThreadId`: a JS
+   * orchestration that fans out many sub-agents (each a real child thread) via the
+   * same `spawn` machinery, and returns one synthesized string. The manager owns
+   * the event emitter and the concurrency/model-tier policy the script runs under.
+   */
+  runWorkflow(opts: {
+    callerThreadId: string
+    script: string
+    args?: unknown
+  }): Promise<string>
 }
 
 const registry = new Map<string, ThreadSpawner>()

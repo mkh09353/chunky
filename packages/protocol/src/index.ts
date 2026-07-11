@@ -47,6 +47,14 @@ export type AgentEvent =
   | { type: "tool.end"; id: string; ok: boolean; output: string; threadId?: string }
   | { type: "thread.spawn"; threadId: string; parentThreadId: string | null; title: string }
   | { type: "thread.status"; threadId: string; status: "running" | "idle"; title?: string }
+  /** A dynamic-workflow phase boundary — groups the sub-agents that follow under
+   *  `title` in the owning thread's transcript. `threadId` is the thread that ran
+   *  the `workflow` tool (omitted for the main thread). The workflow's sub-agents
+   *  themselves surface as ordinary child threads (thread.spawn/thread.status). */
+  | { type: "workflow.phase"; runId: string; threadId?: string; title: string }
+  /** A narrator line from a running workflow (start/finish, and each log() call),
+   *  rendered in the owning thread's transcript. */
+  | { type: "workflow.log"; runId: string; threadId?: string; message: string }
   | { type: "error"; message: string; threadId?: string }
 
 // ---- REST shapes ----

@@ -27,7 +27,20 @@ import {
   type Effort,
   type Speed,
 } from "./providers/registry.ts"
-import { getAdvisor, setAdvisor, getCacheGuardTokens, setCacheGuardTokens, type AdvisorConfig } from "./settings.ts"
+import {
+  currentModeSpec,
+  deleteMode,
+  getAdvisor,
+  getCacheGuardTokens,
+  getMode,
+  listModes,
+  saveMode,
+  setAdvisor,
+  setCacheGuardTokens,
+  type AdvisorConfig,
+  type ModeSpec,
+} from "./settings.ts"
+import { drainQueue, installSessionBus } from "./session-bus.ts"
 import { cacheColdPayload, checkCacheCold, exceedsGuard } from "./cache-watch.ts"
 import { getFinder } from "./fff.ts"
 import {
@@ -70,10 +83,32 @@ function emitTo(sessionId: string, ev: AgentEvent): void {
   }
 }
 
-/** Abort any in-flight turn for a session, then start a fresh agent run for
- *  `text`, tracking the AbortController so /interrupt can cancel it. Shared by the
- *  message route and the goal set/resume routes (a goal kickoff is just a run
- *  whose prompt the server supplies). */
+/** Start an agent run for `text` WITHOUT touching any in-flight turn, tracking
+ *  the AbortController so /interrupt can cancel it. Resolves when the run fully
+ *  completes (the session bus awaits this for wait_for_reply). When the run
+ *  ends, any messages other sessions queued behind it are delivered. */
+function startRun(
+  sessionId: string,
+  text: string,
+  images?: InputImage[],
+  options?: { suppressCacheWarning?: boolean },
+): Promise<void> {
+  const ac = new AbortController()
+  running.set(sessionId, ac)
+  return runAgent(sessionId, text, (ev) => emitTo(sessionId, ev), images, ac, options)
+    .catch((err) => {
+      emitTo(sessionId, { type: "error", message: (err as Error)?.message ?? String(err) })
+      emitTo(sessionId, { type: "session.status", sessionId, status: "idle" })
+    })
+    .finally(() => {
+      if (running.get(sessionId) === ac) running.delete(sessionId)
+      drainQueue(sessionId)
+    })
+}
+
+/** Abort any in-flight turn for a session, then start a fresh agent run.
+ *  Shared by the message route and the goal set/resume routes (a goal kickoff
+ *  is just a run whose prompt the server supplies). */
 function dispatchRun(
   sessionId: string,
   text: string,
@@ -81,17 +116,23 @@ function dispatchRun(
   options?: { suppressCacheWarning?: boolean },
 ): void {
   running.get(sessionId)?.abort()
-  const ac = new AbortController()
-  running.set(sessionId, ac)
-  void runAgent(sessionId, text, (ev) => emitTo(sessionId, ev), images, ac, options)
-    .catch((err) => {
-      emitTo(sessionId, { type: "error", message: (err as Error)?.message ?? String(err) })
-      emitTo(sessionId, { type: "session.status", sessionId, status: "idle" })
-    })
-    .finally(() => {
-      if (running.get(sessionId) === ac) running.delete(sessionId)
-    })
+  void startRun(sessionId, text, images, options)
 }
+
+// Wire the inter-session tools (list_sessions / send_to_session) to this
+// module's run machinery. Bus deliveries never abort in-flight turns — they
+// queue behind them (see session-bus.ts).
+installSessionBus({
+  emitUserMessage(sessionId, text, from) {
+    emitTo(sessionId, { type: "message.user", text, from })
+  },
+  dispatch(sessionId, text) {
+    return startRun(sessionId, text)
+  },
+  isRunning(sessionId) {
+    return running.has(sessionId)
+  },
+})
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
@@ -248,6 +289,71 @@ const server = Bun.serve({
       setAdvisor(patch)
       invalidateAgent()
       return json({ config: getAdvisor(), active: resolveAdvisorSelection() != null })
+    }
+
+    // ---- Modes: named executor+advisor pairings (GET/POST /api/modes,
+    // POST /api/modes/:name/apply, DELETE /api/modes/:name) ----
+
+    // GET -> ModesResponse (saved modes + the current, possibly unsaved, pairing).
+    if (req.method === "GET" && pathname === ROUTES.modes) {
+      return json({ modes: listModes(), current: currentModeSpec() })
+    }
+
+    // POST { name, spec? } -> save a mode. Omitted spec snapshots the CURRENT
+    // executor+advisor pairing under that name.
+    if (req.method === "POST" && pathname === ROUTES.modes) {
+      let body: { name?: unknown; spec?: unknown }
+      try {
+        body = (await req.json()) as typeof body
+      } catch {
+        return json({ error: "invalid JSON body" }, 400)
+      }
+      const name = typeof body.name === "string" ? body.name.trim() : ""
+      if (!/^[\w+.-]{1,40}$/.test(name)) {
+        return json({ error: "mode name must be 1-40 chars of letters, digits, _ + . -" }, 400)
+      }
+      const spec = (body.spec as ModeSpec | undefined) ?? currentModeSpec()
+      if (!spec.provider || !spec.model) {
+        return json({ error: "no model selected — pick one with /model before saving a mode" }, 400)
+      }
+      if (!getProvider(spec.provider)) return json({ error: `unknown provider "${spec.provider}"` }, 404)
+      saveMode(name, spec)
+      return json({ modes: listModes(), current: currentModeSpec() })
+    }
+
+    // POST /api/modes/:name/apply -> set executor + advisor as one unit.
+    // DELETE /api/modes/:name -> remove it.
+    const modeMatch = pathname.match(/^\/api\/modes\/([^/]+?)(\/apply)?$/)
+    if (modeMatch && pathname !== ROUTES.modes) {
+      const name = decodeURIComponent(modeMatch[1]!)
+      const isApply = Boolean(modeMatch[2])
+      if (isApply && req.method === "POST") {
+        const spec = getMode(name)
+        if (!spec) return json({ error: `unknown mode "${name}"` }, 404)
+        if (!getProvider(spec.provider)) return json({ error: `mode "${name}" uses unknown provider "${spec.provider}"` }, 400)
+        setActiveProviderId(spec.provider)
+        setSelection(spec.provider, { model: spec.model, effort: spec.effort, speed: spec.speed })
+        if (spec.advisor) {
+          setAdvisor({ enabled: true, provider: spec.advisor.provider, model: spec.advisor.model, effort: spec.advisor.effort })
+        } else {
+          setAdvisor({ enabled: false })
+        }
+        invalidateAgent()
+        const sel = selectionOf(spec.provider)
+        return json({
+          applied: name,
+          provider: spec.provider,
+          model: sel.model ?? null,
+          effort: sel.effort ?? null,
+          speed: sel.speed ?? null,
+          advisor: getAdvisor(),
+          advisorActive: resolveAdvisorSelection() != null,
+        })
+      }
+      if (!isApply && req.method === "DELETE") {
+        if (!deleteMode(name)) return json({ error: `unknown mode "${name}"` }, 404)
+        return json({ modes: listModes(), current: currentModeSpec() })
+      }
     }
 
     // GET/POST /api/cache-guard -> { tokens } — the confirm-before-resend

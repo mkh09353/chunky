@@ -26,6 +26,19 @@ export interface AdvisorConfig {
   effort?: Effort
 }
 
+/** A named executor+advisor pairing (see /mode). The advisor is part of the
+ *  mode on purpose: which advisor works depends on the executor (e.g. a Fable
+ *  executor should NOT pair with a Fable advisor — advisorFor suppresses
+ *  same-model pairs — so the Fable mode names a different advisor). */
+export interface ModeSpec {
+  provider: string
+  model: string
+  effort?: Effort
+  speed?: Speed
+  /** The paired advisor; null = advisor off in this mode. */
+  advisor?: { provider: string; model: string; effort?: Effort } | null
+}
+
 export interface Settings {
   /** Active provider id. */
   provider?: string
@@ -36,6 +49,8 @@ export interface Settings {
   /** Cold-cache send guard threshold in tokens (see getCacheGuardTokens).
    *  Absent = default; null = guard off. */
   cacheGuardTokens?: number | null
+  /** Named executor+advisor pairings, applied as one unit via /mode. */
+  modes?: Record<string, ModeSpec>
 }
 
 function settingsPath(): string {
@@ -115,6 +130,54 @@ export function setCacheGuardTokens(tokens: number | null): number | null {
   const s = loadSettings()
   save({ ...s, cacheGuardTokens: typeof tokens === "number" && tokens > 0 ? Math.floor(tokens) : null })
   return getCacheGuardTokens()
+}
+
+// ---- Modes: named executor+advisor pairings ----
+
+/** All saved modes, sorted by name. */
+export function listModes(): Array<{ name: string } & ModeSpec> {
+  const modes = loadSettings().modes ?? {}
+  return Object.keys(modes)
+    .sort()
+    .map((name) => ({ name, ...modes[name]! }))
+}
+
+export function getMode(name: string): ModeSpec | undefined {
+  return loadSettings().modes?.[name]
+}
+
+export function saveMode(name: string, spec: ModeSpec): void {
+  const s = loadSettings()
+  save({ ...s, modes: { ...(s.modes ?? {}), [name]: spec } })
+}
+
+/** Delete a mode; returns whether it existed. */
+export function deleteMode(name: string): boolean {
+  const s = loadSettings()
+  if (!s.modes?.[name]) return false
+  const modes = { ...s.modes }
+  delete modes[name]
+  save({ ...s, modes })
+  return true
+}
+
+/** The CURRENT pairing as a ModeSpec — what "/mode save <name>" would snapshot:
+ *  the active provider's selection plus the advisor (null when off/unconfigured). */
+export function currentModeSpec(): ModeSpec {
+  const s = loadSettings()
+  const provider = s.provider ?? ""
+  const sel = s.selections?.[provider] ?? {}
+  const adv = getAdvisor()
+  return {
+    provider,
+    model: sel.model ?? "",
+    ...(sel.effort ? { effort: sel.effort } : {}),
+    ...(sel.speed ? { speed: sel.speed } : {}),
+    advisor:
+      adv.enabled && adv.provider && adv.model
+        ? { provider: adv.provider, model: adv.model, ...(adv.effort ? { effort: adv.effort } : {}) }
+        : null,
+  }
 }
 
 /** The advisor config (default `{ enabled: true }` when never set — enabled but

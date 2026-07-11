@@ -50,7 +50,8 @@ ${editListLine}
 - write: create or overwrite a file
 - spawn_thread: delegate a focused subtask to an independent child agent; omit model fields to inherit, or choose another configured provider/model when it better fits the subtask
 - workflow: run a JS script that fans out many sub-agents in parallel and returns one synthesized result${advisorListLine}
-- get_goal / goal_complete / goal_blocked: goal-mode tools — only relevant when the user has set a goal with /goal
+- get_goal / create_goal / goal_complete / goal_blocked: goal-mode tools — relevant when a goal is set via /goal, or when the user explicitly asks for autonomous work-until-done (create_goal)
+- list_sessions / send_to_session: see and message the OTHER live sessions on this server (parallel repos/tasks) — hand off follow-ups or ask questions; a busy target processes your message after its current turn
 
 Guidelines:
 - Read a file before editing it; match its existing style and indentation.

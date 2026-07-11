@@ -143,9 +143,9 @@ async function main() {
   console.log("\nPASS: deterministic advisor test")
 }
 
-main()
-  .then(() => process.exit(0))
-  .catch((err) => {
-    console.error(err)
-    process.exit(1)
-  })
+// No process.exit(0) on success: under `bun test` that would kill the runner
+// and silently skip every test file that runs after this one.
+await main().catch((err) => {
+  console.error(err)
+  process.exit(1)
+})

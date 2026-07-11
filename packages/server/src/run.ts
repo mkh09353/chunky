@@ -14,7 +14,7 @@ import { usageFromLangChainMessage, promptTokensOf } from "./usage.ts"
 import { checkCacheCold, cacheWarningEvent, noteRequest } from "./cache-watch.ts"
 import { Store } from "./store.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
-import { decideGoalStep, firstLine, goalContinuationPrompt, toSnapshot, type GoalStep } from "./goal.ts"
+import { classifyGoalError, decideGoalStep, firstLine, goalContinuationPrompt, toSnapshot, type GoalStep } from "./goal.ts"
 
 export type { Emit } from "./event-emitter.ts"
 
@@ -364,8 +364,17 @@ export async function runAgent(
       emit({ type: "error", message: "⏹ Interrupted." })
       pauseGoal(sessionId, emit, "⏸ Goal paused (interrupted). Use /goal resume to keep going.")
     } else {
-      emit({ type: "error", message: (err as Error)?.message ?? String(err) })
-      pauseGoal(sessionId, emit, "⏸ Goal paused after an error. Use /goal resume to retry.")
+      const message = (err as Error)?.message ?? String(err)
+      emit({ type: "error", message })
+      // Usage/rate-limit failures are "resume later", not "something broke" —
+      // the distinction sets the right expectation in the pause marker.
+      pauseGoal(
+        sessionId,
+        emit,
+        classifyGoalError(message) === "usage-limit"
+          ? "⏸ Goal paused — hit a usage/rate limit. Use /goal resume once limits clear."
+          : "⏸ Goal paused after an error. Use /goal resume to retry.",
+      )
     }
   } finally {
     threads.dispose()

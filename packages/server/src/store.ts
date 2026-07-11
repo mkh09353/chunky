@@ -60,6 +60,7 @@ const stmtListByWorkspace = db.query(
   "SELECT id, title, created_at, last_activity FROM sessions WHERE workspace = ? ORDER BY last_activity DESC LIMIT 100",
 )
 const stmtWorkspace = db.query("SELECT workspace FROM sessions WHERE id = ?")
+const stmtTitleOf = db.query("SELECT title FROM sessions WHERE id = ?")
 const stmtNextSeq = db.query("SELECT COALESCE(MAX(seq), -1) + 1 AS n FROM events WHERE session_id = ?")
 const stmtInsertEvent = db.query("INSERT INTO events (session_id, seq, json) VALUES (?, ?, ?)")
 const stmtHistory = db.query("SELECT json FROM events WHERE session_id = ? ORDER BY seq ASC")
@@ -127,6 +128,32 @@ export const Store = {
   history(sessionId: string): AgentEvent[] {
     const rows = stmtHistory.all(sessionId) as { json: string }[]
     return rows.map((r) => JSON.parse(r.json) as AgentEvent)
+  },
+
+  titleOf(sessionId: string): string | null {
+    const row = stmtTitleOf.get(sessionId) as { title: string } | null
+    return row?.title ?? null
+  },
+
+  /** The MAIN thread's most recent completed assistant message, reassembled
+   *  from persisted delta events. Used by send_to_session's wait_for_reply to
+   *  hand the target's answer back to the sender. */
+  lastAssistantText(sessionId: string): string | null {
+    const history = this.history(sessionId)
+    let current: string | null = null
+    let last: string | null = null
+    for (const ev of history) {
+      if ("threadId" in ev && ev.threadId) continue // child threads don't count
+      if (ev.type === "message.start") current = ""
+      else if (ev.type === "message.delta") current = (current ?? "") + ev.text
+      else if (ev.type === "message.end") {
+        if (current && current.trim()) last = current
+        current = null
+      }
+    }
+    // A stream cut off mid-message still counts (message.end may be missing).
+    if (current && current.trim()) last = current
+    return last
   },
 
   /** Set a session title once (first user message makes a nice resume label). */

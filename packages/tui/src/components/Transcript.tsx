@@ -178,9 +178,16 @@ export function ItemView({ item }: { item: DisplayItem }) {
 
     case "user":
       return (
-        <Box marginTop={1}>
-          <Text color={ACCENT}>{"> "}</Text>
-          <Text>{item.text}</Text>
+        <Box marginTop={1} flexDirection="column">
+          {item.from && (
+            // A message injected by another session (send_to_session) — show
+            // provenance so it doesn't read as something the user typed.
+            <Text color={MARKER}>{`⇄ from session ${item.from}`}</Text>
+          )}
+          <Box>
+            <Text color={ACCENT}>{"> "}</Text>
+            <Text>{item.text}</Text>
+          </Box>
         </Box>
       )
 

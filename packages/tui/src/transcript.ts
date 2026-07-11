@@ -9,7 +9,8 @@ import type { AgentEvent, GoalStatus } from "@chunky/protocol"
 export const MAIN = "main"
 
 export type Item =
-  | { kind: "user"; text: string }
+  /** `from` marks a message injected by ANOTHER session via send_to_session. */
+  | { kind: "user"; text: string; from?: string }
   | { kind: "assistant"; text: string; streaming: boolean }
   | { kind: "tool"; id: string; name: string; input: unknown; done: boolean; ok?: boolean; output?: string }
   | { kind: "error"; text: string }
@@ -151,6 +152,18 @@ export function reduce(state: TranscriptState, ev: AgentEvent): TranscriptState 
           ...(ev.fromModel ? { fromModel: ev.fromModel } : {}),
           ...(ev.toModel ? { toModel: ev.toModel } : {}),
         },
+      ])
+    }
+
+    case "message.user": {
+      // Only cross-session messages render from the event: the user's OWN sends
+      // are echoed locally via pushUser (the event would double them), but an
+      // injected message has no local echo — the event is its only appearance.
+      if (!ev.from) return state
+      const threadId = ev.threadId || MAIN
+      return updateThreadItems(state, threadId, (items) => [
+        ...items,
+        { kind: "user", text: ev.text, from: ev.from },
       ])
     }
 

@@ -31,6 +31,7 @@ import {
 // active workspace anymore) — remembered locally so a relaunch restores it.
 const ACTIVE_REPO_KEY = "chunky.activeRepoId"
 import { groupSessions, relativeTime, threadLabel } from "./lib/format"
+import { MIN_NOTIFY_MS, notifyTurnEnd } from "./lib/notify"
 import { initialState, reduce, type TranscriptState } from "./lib/transcript"
 
 export default function App() {
@@ -51,8 +52,25 @@ export default function App() {
   sessionIdRef.current = sessionId
   activeRepoIdRef.current = activeRepoId
 
+  // Turn-end notification bookkeeping: when the run started (wall clock, so
+  // replayed history — processed in ms — never notifies) and the final
+  // assistant text of the turn (accumulated from main-thread deltas).
+  const runningSinceRef = useRef<number | null>(null)
+  const lastAssistantRef = useRef("")
+
   const applyEvent = useCallback((ev: Parameters<typeof reduce>[1]) => {
     setTranscript((s) => reduce(s, ev))
+    if (ev.type === "message.start" && !ev.threadId) lastAssistantRef.current = ""
+    if (ev.type === "message.delta" && !ev.threadId) lastAssistantRef.current += ev.text
+    if (ev.type === "session.status") {
+      if (ev.status === "running") {
+        runningSinceRef.current = Date.now()
+      } else {
+        const since = runningSinceRef.current
+        runningSinceRef.current = null
+        if (since != null && Date.now() - since >= MIN_NOTIFY_MS) notifyTurnEnd(lastAssistantRef.current)
+      }
+    }
   }, [])
 
   const refreshSessions = useCallback(

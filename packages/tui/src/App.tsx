@@ -12,6 +12,8 @@ import {
   type GoalSnapshot,
   type GoalStateResponse,
   type LoginInitiation,
+  type ModeSpec,
+  type ModesResponse,
   type SendBlockedResponse,
 } from "@chunky/protocol"
 import { mockRun } from "@chunky/protocol/mock"
@@ -27,6 +29,7 @@ import { ModelPicker, type ModelSelectionResult } from "./components/ModelPicker
 import { AdvisorPicker, type AdvisorSelectionResult } from "./components/AdvisorPicker.js"
 import { openBrowser } from "./openBrowser.js"
 import { grabClipboardImage, type ClipboardImage } from "./clipboardImage.js"
+import { MIN_NOTIFY_MS, notifyTurnEnd } from "./notify.js"
 
 interface Props {
   mode: "mock" | "live"
@@ -140,13 +143,35 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     { isActive: rawSupported },
   )
 
-  const apply = useCallback((ev: AgentEvent) => {
-    setState((s) => reduce(s, ev))
-    if (ev.type === "session.status") setStartedAt(ev.status === "running" ? Date.now() : null)
-    // Track goal state for the status line. History replay (resume) re-runs these
-    // in order, so the last one wins and the status line reflects the true state.
-    if (ev.type === "goal.update") setGoal(ev.goal)
-  }, [])
+  // Turn-end desktop notification bookkeeping: when the run started (wall
+  // clock — replay processes events in ms, so replayed turns never notify) and
+  // the final assistant text of the turn (accumulated from main-thread deltas).
+  const runningSinceRef = useRef<number | null>(null)
+  const lastAssistantRef = useRef("")
+
+  const apply = useCallback(
+    (ev: AgentEvent) => {
+      setState((s) => reduce(s, ev))
+      if (ev.type === "message.start" && !ev.threadId) lastAssistantRef.current = ""
+      if (ev.type === "message.delta" && !ev.threadId) lastAssistantRef.current += ev.text
+      if (ev.type === "session.status") {
+        setStartedAt(ev.status === "running" ? Date.now() : null)
+        if (ev.status === "running") {
+          runningSinceRef.current = Date.now()
+        } else {
+          const since = runningSinceRef.current
+          runningSinceRef.current = null
+          if (mode === "live" && since != null && Date.now() - since >= MIN_NOTIFY_MS) {
+            notifyTurnEnd(lastAssistantRef.current)
+          }
+        }
+      }
+      // Track goal state for the status line. History replay (resume) re-runs these
+      // in order, so the last one wins and the status line reflects the true state.
+      if (ev.type === "goal.update") setGoal(ev.goal)
+    },
+    [mode],
+  )
 
   // ---- live wiring: open the SSE stream BEFORE any message is sent ----
   // `sessionKey` re-runs this on /clear so we actually start a new thread
@@ -266,6 +291,10 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       }
       if (command === "/cacheguard" || command.startsWith("/cacheguard ")) {
         void doCacheGuard(command.slice("/cacheguard".length).trim())
+        return
+      }
+      if (command === "/mode" || command.startsWith("/mode ")) {
+        void doMode(command.slice("/mode".length).trim())
         return
       }
       const images = attachmentsRef.current
@@ -633,6 +662,95 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     [mode, baseUrl, printLine],
   )
 
+  // /mode — named executor+advisor pairings. `rest` is everything after "/mode":
+  //   ""             -> list saved modes + the current pairing
+  //   <name>         -> apply that mode (model + advisor switch as one unit)
+  //   save <name>    -> snapshot the current pairing under <name>
+  //   rm <name>      -> delete <name>
+  const doMode = useCallback(
+    async (rest: string) => {
+      if (mode !== "live") {
+        printLine("/mode needs the live server (run the server, then the TUI with --live).")
+        return
+      }
+      const effortParen = (e?: string | null) => (e ? ` (${e})` : "")
+      const fmtSpec = (spec: ModeSpec) =>
+        `${prettyModel(spec.model)}${effortParen(spec.effort)} + advisor ${
+          spec.advisor ? `${prettyModel(spec.advisor.model)}${effortParen(spec.advisor.effort)}` : "off"
+        }`
+      const trimmed = rest.trim()
+      try {
+        if (!trimmed) {
+          const res = await fetch(baseUrl + ROUTES.modes)
+          const body = (await res.json()) as ModesResponse
+          if (body.modes.length === 0) {
+            printLine(
+              `No modes saved. Current pairing: ${fmtSpec(body.current)}. \`/mode save <name>\` snapshots it; \`/mode <name>\` applies one.`,
+            )
+            return
+          }
+          const lines = body.modes.map((m) => `  ${m.name} — ${fmtSpec(m)}`)
+          printLine(`Modes:\n${lines.join("\n")}\nCurrent: ${fmtSpec(body.current)}. \`/mode <name>\` to switch.`)
+          return
+        }
+
+        const save = trimmed.match(/^save\s+(\S+)$/i)
+        if (save) {
+          const name = save[1]!
+          const cur = await fetch(baseUrl + ROUTES.modes)
+          const { current } = (await cur.json()) as ModesResponse
+          const res = await fetch(baseUrl + ROUTES.modes, {
+            method: "POST",
+            headers: { "content-type": "application/json" },
+            body: JSON.stringify({ name }),
+          })
+          const body = (await res.json()) as ModesResponse | { error: string }
+          if ("error" in body) {
+            printLine(`Mode save failed: ${body.error}`)
+            return
+          }
+          const samePair =
+            current.advisor && current.advisor.provider === current.provider && current.advisor.model === current.model
+          printLine(
+            `Mode "${name}" saved: ${fmtSpec(current)}.${
+              samePair ? " ⚠ advisor equals the executor — it will be suppressed; pick a different advisor for this mode." : ""
+            }`,
+          )
+          return
+        }
+
+        const rm = trimmed.match(/^(?:rm|delete)\s+(\S+)$/i)
+        if (rm) {
+          const res = await fetch(baseUrl + ROUTES.deleteMode(rm[1]!), { method: "DELETE" })
+          const body = (await res.json()) as ModesResponse | { error: string }
+          printLine("error" in body ? `Mode delete failed: ${body.error}` : `Mode "${rm[1]}" deleted.`)
+          return
+        }
+
+        // Anything else is a mode name to apply.
+        const res = await fetch(baseUrl + ROUTES.applyMode(trimmed), { method: "POST" })
+        const body = (await res.json()) as
+          | { applied: string; provider: string; model: string | null; effort?: string | null; speed?: string | null }
+          | { error: string }
+        if ("error" in body) {
+          printLine(`Mode: ${body.error} — \`/mode\` lists what's saved.`)
+          return
+        }
+        setCurrentSel({
+          provider: body.provider,
+          model: body.model,
+          effort: body.effort ?? null,
+          speed: body.speed ?? null,
+        })
+        void refreshAdvisor()
+        printLine(`Mode "${body.applied}" applied: ${prettyModel(body.model)}${effortParen(body.effort)} · ${body.provider}.`)
+      } catch (err) {
+        printLine(`Mode request failed: ${String(err)}`)
+      }
+    },
+    [mode, baseUrl, printLine, refreshAdvisor],
+  )
+
   const onCommand = useCallback(
     (name: string) => {
       switch (name) {
@@ -660,7 +778,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           break
         case "/help":
           printLine(
-            "Commands: /clear, /help, /login, /model, /advisor, /goal, /cacheguard, /quit. Type a message and press Enter to talk to the agent. `/goal <objective>` works autonomously until the goal is done. `/cacheguard <tokens|off>` sets when a cold-cache re-send needs confirmation.",
+            "Commands: /clear, /help, /login, /model, /advisor, /mode, /goal, /cacheguard, /quit. Type a message and press Enter to talk to the agent. `/goal <objective>` works autonomously until the goal is done. `/mode <name>` switches a saved model+advisor pairing. `/cacheguard <tokens|off>` sets when a cold-cache re-send needs confirmation.",
           )
           break
         case "/login":
@@ -678,9 +796,12 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         case "/cacheguard":
           void doCacheGuard("")
           break
+        case "/mode":
+          void doMode("")
+          break
       }
     },
-    [printLine, doLogin, doModel, doAdvisor, doGoal, doCacheGuard, exit, mode, baseUrl],
+    [printLine, doLogin, doModel, doAdvisor, doGoal, doCacheGuard, doMode, exit, mode, baseUrl],
   )
 
   // Mock demo turn so the transcript streams even without a TTY.

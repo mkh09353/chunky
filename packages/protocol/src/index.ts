@@ -42,8 +42,11 @@ export type AgentEvent =
     }
   /** A user turn, echoed by the server so it is persisted and replayed on
    * resume. Clients render it as the user's own message (single source of
-   * truth — no optimistic local echo needed). */
-  | { type: "message.user"; text: string; threadId?: string }
+   * truth — no optimistic local echo needed). `from` is set when the message
+   * was injected by ANOTHER session via send_to_session (a short human label,
+   * e.g. `fix tests (0f3a21c9)`) — clients render provenance instead of a
+   * plain user bubble. */
+  | { type: "message.user"; text: string; threadId?: string; from?: string }
   | { type: "message.start"; role: "assistant"; threadId?: string }
   | { type: "message.delta"; text: string; threadId?: string }
   | { type: "message.end"; threadId?: string }
@@ -164,6 +167,40 @@ export interface AddRepoRequest {
   path: string
 }
 
+// ---- Modes (named executor + advisor pairings) ----
+
+/** The advisor half of a mode. */
+export interface ModeAdvisor {
+  provider: string
+  model: string
+  effort?: string
+}
+/** A named pairing of executor model + advisor model, applied as one unit via
+ *  /mode. Captures which combinations actually work well (e.g. Grok 4.5 with a
+ *  Fable advisor) so switching is one command, not two pickers. */
+export interface ModeSpec {
+  provider: string
+  model: string
+  effort?: string
+  speed?: string
+  /** The paired advisor; null = advisor explicitly off in this mode. */
+  advisor?: ModeAdvisor | null
+}
+export interface ModeInfo extends ModeSpec {
+  name: string
+}
+/** GET ROUTES.modes: saved modes + the CURRENT (possibly unsaved) pairing. */
+export interface ModesResponse {
+  modes: ModeInfo[]
+  current: ModeSpec
+}
+/** POST ROUTES.modes — save a mode. Omitted `spec` snapshots the current
+ *  executor+advisor pairing under `name`. */
+export interface SaveModeRequest {
+  name: string
+  spec?: ModeSpec
+}
+
 /** Result of starting a provider login flow. The shape makes it explicit
  * whether the client should open a URL, wait for a provider-opened browser, or
  * stop because credentials are already ready. */
@@ -205,6 +242,12 @@ export const ROUTES = {
   // POST GoalRequest -> GoalStateResponse. Set an objective (starts the loop) or
   // run a lifecycle action (pause/resume/clear).
   goal: (id: string) => `/api/sessions/${id}/goal`,
+  // GET -> ModesResponse. POST SaveModeRequest -> ModesResponse (save/snapshot).
+  modes: `/api/modes`,
+  // POST -> the applied selection + advisor (also invalidates the agent cache).
+  applyMode: (name: string) => `/api/modes/${encodeURIComponent(name)}/apply`,
+  // DELETE -> ModesResponse.
+  deleteMode: (name: string) => `/api/modes/${encodeURIComponent(name)}`,
 } as const
 
 /** Body for POST ROUTES.goal. Exactly one of `objective` (set + start the goal)

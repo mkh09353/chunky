@@ -17,6 +17,9 @@ interface Props {
   attachmentCount?: number
   /** Server base URL for FFF file search (live mode). Absent → no @ autocomplete. */
   baseUrl?: string
+  /** When the nonce changes, replace the buffer with `text` — used to hand a
+   *  message back after a canceled cache-guard confirm so nothing is lost. */
+  prefill?: { text: string; nonce: number } | null
 }
 
 /**
@@ -33,6 +36,7 @@ export function PromptInput({
   onPasteImage,
   attachmentCount = 0,
   baseUrl,
+  prefill,
 }: Props) {
   // isRawModeSupported is stdin.isTTY, `undefined` (not false) in a non-TTY.
   // Ink's useInput only bails on a strict === false, so coerce to a real bool.
@@ -47,6 +51,12 @@ export function PromptInput({
   bufRef.current = buf
   const { value, cursor } = buf
   const [selected, setSelected] = useState(0)
+
+  // Restore a handed-back message (canceled cache-guard confirm). Keyed on the
+  // nonce so the same text can be handed back more than once.
+  useEffect(() => {
+    if (prefill) setBuf({ value: prefill.text, cursor: prefill.text.length })
+  }, [prefill?.nonce])
 
   // ---- Slash commands ----
   const slashActive = value.startsWith("/") && !value.includes(" ")

@@ -33,6 +33,9 @@ export interface Settings {
   selections?: Record<string, ModelSelection>
   /** The advisor's model + on/off state. */
   advisor?: AdvisorConfig
+  /** Cold-cache send guard threshold in tokens (see getCacheGuardTokens).
+   *  Absent = default; null = guard off. */
+  cacheGuardTokens?: number | null
 }
 
 function settingsPath(): string {
@@ -93,6 +96,25 @@ export function setSelectionFor(id: string, sel: ModelSelection): void {
     ...(sel.speed !== undefined ? { speed: sel.speed } : {}),
   }
   save({ ...s, selections })
+}
+
+/** A send that would re-send at least this many tokens on a cold cache is
+ *  refused until the user confirms. Configurable via /cacheguard in the TUI. */
+export const DEFAULT_CACHE_GUARD_TOKENS = 100_000
+
+/** The cache-guard threshold: tokens (>0), or null when the guard is off.
+ *  Never-set falls back to DEFAULT_CACHE_GUARD_TOKENS. */
+export function getCacheGuardTokens(): number | null {
+  const v = loadSettings().cacheGuardTokens
+  if (v === undefined) return DEFAULT_CACHE_GUARD_TOKENS
+  return typeof v === "number" && v > 0 ? Math.floor(v) : null
+}
+
+/** Persist the cache-guard threshold (null or <=0 disables the guard). */
+export function setCacheGuardTokens(tokens: number | null): number | null {
+  const s = loadSettings()
+  save({ ...s, cacheGuardTokens: typeof tokens === "number" && tokens > 0 ? Math.floor(tokens) : null })
+  return getCacheGuardTokens()
 }
 
 /** The advisor config (default `{ enabled: true }` when never set — enabled but

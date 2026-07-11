@@ -2,8 +2,10 @@ import { describe, expect, test, beforeEach } from "bun:test"
 import {
   CACHE_TTL_MS,
   NOTICE_MIN_TOKENS,
+  cacheColdPayload,
   cacheWarningEvent,
   checkCacheCold,
+  exceedsGuard,
   noteRequest,
   resetCacheWatch,
 } from "./cache-watch.ts"
@@ -106,5 +108,36 @@ describe("cacheWarningEvent", () => {
     expect(ev.toModel).toBe("b")
     expect(ev.threadId).toBe("thr-1")
     expect("idleMs" in ev).toBe(false)
+  })
+})
+
+describe("exceedsGuard", () => {
+  const warning = { reason: "idle" as const, idleMs: 600_000, approxTokens: 90_000 }
+
+  test("blocks a cold send at or above the threshold", () => {
+    expect(exceedsGuard(warning, 90_000)).toBe(true)
+    expect(exceedsGuard(warning, 50_000)).toBe(true)
+  })
+
+  test("lets a cold send below the threshold through (post-hoc notice only)", () => {
+    expect(exceedsGuard(warning, 90_001)).toBe(false)
+  })
+
+  test("never blocks with a warm cache or a disabled guard", () => {
+    expect(exceedsGuard(undefined, 50_000)).toBe(false)
+    expect(exceedsGuard(warning, null)).toBe(false)
+  })
+})
+
+describe("cacheColdPayload", () => {
+  test("omits empty optional fields on the REST shape too", () => {
+    expect(cacheColdPayload({ reason: "idle", idleMs: 600_000, approxTokens: 90_000 })).toEqual({
+      reason: "idle",
+      idleMs: 600_000,
+      approxTokens: 90_000,
+    })
+    const sw = cacheColdPayload({ reason: "model-switch", approxTokens: 90_000, fromModel: "a", toModel: "b" })
+    expect(sw).toEqual({ reason: "model-switch", approxTokens: 90_000, fromModel: "a", toModel: "b" })
+    expect("idleMs" in sw).toBe(false)
   })
 })

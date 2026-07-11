@@ -4,17 +4,22 @@ import {
   ROUTES,
   readSSE,
   type AgentEvent,
+  type CacheCold,
+  type CacheGuardResponse,
+  type CacheStatusResponse,
   type CreateSessionResponse,
   type GoalRequest,
   type GoalSnapshot,
   type GoalStateResponse,
   type LoginInitiation,
+  type SendBlockedResponse,
 } from "@chunky/protocol"
 import { mockRun } from "@chunky/protocol/mock"
 import { mockThreadsRun } from "./mockThreads.js"
 import { initialState, pushUser, reduce, type TranscriptState } from "./transcript.js"
+import { WARNING } from "./theme.js"
 import { WelcomeBanner } from "./components/WelcomeBanner.js"
-import { Transcript } from "./components/Transcript.js"
+import { Transcript, fmtTokens } from "./components/Transcript.js"
 import { StatusLine } from "./components/StatusLine.js"
 import { PromptInput } from "./components/PromptInput.js"
 import { LoginPicker, type ProviderRow } from "./components/LoginPicker.js"
@@ -56,6 +61,25 @@ interface CurrentSelection {
   speed?: string | null
 }
 
+/** Short human phrase for WHY the cache is cold: "42m idle" / "model switch". */
+function coldReason(w: CacheCold): string {
+  if (w.reason === "model-switch") {
+    const models = w.fromModel && w.toModel ? ` (${w.fromModel} → ${w.toModel})` : ""
+    return `model switch${models}`
+  }
+  const mins = w.idleMs != null ? Math.round(w.idleMs / 60_000) : 0
+  return `${mins}m idle`
+}
+
+/** A send the server refused via the cache guard, parked until the user decides. */
+interface PendingSend {
+  text: string
+  shown: string
+  images: ClipboardImage[]
+  warning: CacheCold
+  guardTokens: number
+}
+
 export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Props) {
   const { exit } = useApp()
   const [state, setState] = useState<TranscriptState>(initialState)
@@ -80,6 +104,14 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   } | null>(null)
   // The session's current goal (drives the status line + goal transcript markers).
   const [goal, setGoal] = useState<GoalSnapshot | null>(null)
+  // A send the cache guard blocked (409): held with its images until the user
+  // confirms (enter → resend with force) or cancels (esc → text back in input).
+  const [pendingSend, setPendingSend] = useState<PendingSend | null>(null)
+  // Passive cold-cache indicator: while idle, the NEXT send would re-send this
+  // much context. Shown above the input so the warning lands BEFORE you send.
+  const [cacheCold, setCacheCold] = useState<CacheCold | null>(null)
+  // Hands a canceled pending send's text back to the input (nonce = re-trigger).
+  const [prefill, setPrefill] = useState<{ text: string; nonce: number } | null>(null)
   const sessionIdRef = useRef<string | null>(null)
   // Images pasted (Ctrl+V) onto the NEXT message. A ref mirrors it so `submit`
   // reads the latest set without going stale in its closure.
@@ -88,7 +120,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   attachmentsRef.current = attachments
   const rawSupported = Boolean(useStdin().isRawModeSupported)
 
-  const pickerOpen = loginPicker != null || modelPickerOpen || advisorPickerOpen
+  const pickerOpen = loginPicker != null || modelPickerOpen || advisorPickerOpen || pendingSend != null
 
   // Ctrl+T collapses/expands child-thread bodies (the tree view stays; only
   // spawned threads' contents fold to their header lines).
@@ -179,42 +211,119 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     void refreshAdvisor()
   }, [refreshAdvisor])
 
-  const submit = useCallback(
-    async (text: string) => {
-      // Slash commands that take arguments arrive here (the menu only fires bare
-      // commands via onCommand). `/goal <objective>` is the one such command.
-      const command = text.trim()
-      if (command === "/goal" || command.startsWith("/goal ")) {
-        void doGoal(command.slice("/goal".length).trim())
-        return
-      }
-      const images = attachmentsRef.current
-      setAttachments([]) // consume the pasted images with this message
-      const shown = text || (images.length ? `📎 ${images.length} image${images.length === 1 ? "" : "s"}` : text)
-      setState((s) => pushUser(s, shown))
-      setStartedAt(Date.now())
-      if (mode === "mock") {
-        const gen = demo === "threads" ? mockThreadsRun(text) : mockRun(text)
-        for await (const ev of gen) apply(ev)
-        return
-      }
+  // POST one user message to the live server. On a cache-guard 409 the send is
+  // parked in pendingSend (nothing ran server-side); otherwise echo the user
+  // line locally and start the turn timer.
+  const postMessage = useCallback(
+    async (text: string, shown: string, images: ClipboardImage[], force: boolean) => {
       const id = sessionIdRef.current
       if (!id) {
         apply({ type: "error", message: "no live session yet" })
         return
       }
       try {
-        await fetch(baseUrl + ROUTES.sendMessage(id), {
+        const res = await fetch(baseUrl + ROUTES.sendMessage(id), {
           method: "POST",
           headers: { "content-type": "application/json" },
-          body: JSON.stringify(images.length ? { text, images } : { text }),
+          body: JSON.stringify({
+            text,
+            ...(images.length ? { images } : {}),
+            ...(force ? { force: true } : {}),
+          }),
         })
+        if (res.status === 409) {
+          const body = (await res.json()) as SendBlockedResponse
+          setPendingSend({ text, shown, images, warning: body.warning, guardTokens: body.guardTokens })
+          return
+        }
+        setState((s) => pushUser(s, shown))
+        setStartedAt(Date.now())
+        setCacheCold(null)
       } catch (err) {
         apply({ type: "error", message: `send failed: ${String(err)}` })
       }
     },
-    [mode, baseUrl, apply, demo],
+    [baseUrl, apply],
   )
+
+  const submit = useCallback(
+    async (text: string) => {
+      // Slash commands that take arguments arrive here (the menu only fires bare
+      // commands via onCommand): `/goal <objective>`, `/cacheguard <tokens|off>`.
+      const command = text.trim()
+      if (command === "/goal" || command.startsWith("/goal ")) {
+        void doGoal(command.slice("/goal".length).trim())
+        return
+      }
+      if (command === "/cacheguard" || command.startsWith("/cacheguard ")) {
+        void doCacheGuard(command.slice("/cacheguard".length).trim())
+        return
+      }
+      const images = attachmentsRef.current
+      setAttachments([]) // consume the pasted images with this message
+      const shown = text || (images.length ? `📎 ${images.length} image${images.length === 1 ? "" : "s"}` : text)
+      if (mode === "mock") {
+        setState((s) => pushUser(s, shown))
+        setStartedAt(Date.now())
+        const gen = demo === "threads" ? mockThreadsRun(text) : mockRun(text)
+        for await (const ev of gen) apply(ev)
+        return
+      }
+      // The user line is echoed only once the server ACCEPTS: a cache-guard 409
+      // parks the message instead, and nothing should look sent.
+      await postMessage(text, shown, images, false)
+    },
+    [mode, apply, demo, postMessage],
+  )
+
+  // Cache-guard confirm bar: enter/y sends anyway (force), esc/n hands the
+  // message (text + attachments) back to the input untouched.
+  const confirmPendingSend = useCallback(() => {
+    if (!pendingSend) return
+    setPendingSend(null)
+    void postMessage(pendingSend.text, pendingSend.shown, pendingSend.images, true)
+  }, [pendingSend, postMessage])
+
+  const cancelPendingSend = useCallback(() => {
+    if (!pendingSend) return
+    setPendingSend(null)
+    setAttachments(pendingSend.images)
+    if (pendingSend.text) setPrefill((p) => ({ text: pendingSend.text, nonce: (p?.nonce ?? 0) + 1 }))
+  }, [pendingSend])
+
+  useInput(
+    (input, key) => {
+      if (!pendingSend) return
+      if (key.return || input === "y" || input === "Y") return confirmPendingSend()
+      if (key.escape || input === "n" || input === "N") cancelPendingSend()
+    },
+    { isActive: rawSupported && pendingSend != null },
+  )
+
+  // Passive cold-cache watch: while the session is idle, ask the server whether
+  // the NEXT send would rebuild a cold cache, and show the warning above the
+  // input — BEFORE any tokens are spent — instead of after the turn starts.
+  useEffect(() => {
+    if (mode !== "live" || state.status === "running") return
+    let cancelled = false
+    const check = async () => {
+      const id = sessionIdRef.current
+      if (!id) return
+      try {
+        const res = await fetch(baseUrl + ROUTES.cacheStatus(id))
+        const body = (await res.json()) as CacheStatusResponse
+        if (!cancelled) setCacheCold(body.cold)
+      } catch {
+        // keep the last known state; this is advisory only
+      }
+    }
+    void check()
+    const t = setInterval(check, 30_000)
+    return () => {
+      cancelled = true
+      clearInterval(t)
+    }
+  }, [mode, baseUrl, state.status])
 
   // Print a one-shot assistant line into the transcript (used by slash commands).
   const printLine = useCallback(
@@ -464,6 +573,57 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     [mode, baseUrl, printLine],
   )
 
+  // /cacheguard — show or set the confirm-before-resend threshold. `rest` is
+  // everything after "/cacheguard":
+  //   ""                -> show the current guard
+  //   <N | Nk | Nm | off> -> set the threshold in tokens, or disable the guard
+  const doCacheGuard = useCallback(
+    async (rest: string) => {
+      if (mode !== "live") {
+        printLine("/cacheguard needs the live server (run the server, then the TUI with --live).")
+        return
+      }
+      const trimmed = rest.trim().toLowerCase()
+      try {
+        if (!trimmed) {
+          const res = await fetch(baseUrl + ROUTES.cacheGuard)
+          const body = (await res.json()) as CacheGuardResponse
+          printLine(
+            body.tokens == null
+              ? "Cache guard: off — cold-cache sends go through without confirmation. `/cacheguard <tokens>` (e.g. 100k) to enable."
+              : `Cache guard: a send that would re-send ≥${fmtTokens(body.tokens)} tokens on a cold cache asks for confirmation first. \`/cacheguard <tokens|off>\` to change.`,
+          )
+          return
+        }
+        let tokens: number | null
+        if (trimmed === "off" || trimmed === "none" || trimmed === "0") {
+          tokens = null
+        } else {
+          const m = trimmed.match(/^(\d+(?:\.\d+)?)(k|m)?$/)
+          if (!m) {
+            printLine("Usage: /cacheguard <tokens|off> — e.g. /cacheguard 100k, /cacheguard 50000, /cacheguard off")
+            return
+          }
+          tokens = Math.round(Number(m[1]) * (m[2] === "m" ? 1_000_000 : m[2] === "k" ? 1_000 : 1))
+        }
+        const res = await fetch(baseUrl + ROUTES.cacheGuard, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ tokens }),
+        })
+        const body = (await res.json()) as CacheGuardResponse
+        printLine(
+          body.tokens == null
+            ? "Cache guard off — cold-cache sends go through without confirmation."
+            : `Cache guard set: confirm before re-sending ≥${fmtTokens(body.tokens)} tokens on a cold cache.`,
+        )
+      } catch (err) {
+        printLine(`Cache guard request failed: ${String(err)}`)
+      }
+    },
+    [mode, baseUrl, printLine],
+  )
+
   const onCommand = useCallback(
     (name: string) => {
       switch (name) {
@@ -476,7 +636,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           break
         case "/help":
           printLine(
-            "Commands: /clear, /help, /login, /model, /advisor, /goal, /quit. Type a message and press Enter to talk to the agent. `/goal <objective>` works autonomously until the goal is done.",
+            "Commands: /clear, /help, /login, /model, /advisor, /goal, /cacheguard, /quit. Type a message and press Enter to talk to the agent. `/goal <objective>` works autonomously until the goal is done. `/cacheguard <tokens|off>` sets when a cold-cache re-send needs confirmation.",
           )
           break
         case "/login":
@@ -491,9 +651,12 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         case "/goal":
           void doGoal("")
           break
+        case "/cacheguard":
+          void doCacheGuard("")
+          break
       }
     },
-    [printLine, doLogin, doModel, doAdvisor, doGoal, exit],
+    [printLine, doLogin, doModel, doAdvisor, doGoal, doCacheGuard, exit],
   )
 
   // Mock demo turn so the transcript streams even without a TTY.
@@ -550,6 +713,33 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         {advisorPickerOpen && (
           <AdvisorPicker baseUrl={baseUrl} onDone={onAdvisorDone} onCancel={() => setAdvisorPickerOpen(false)} />
         )}
+        {pendingSend ? (
+          // The cache guard held this send: nothing ran server-side yet.
+          <Box flexDirection="column">
+            <Text color={WARNING}>
+              {"⚠ Cache cold after "}
+              {coldReason(pendingSend.warning)}
+              {" — sending will re-send ~"}
+              {fmtTokens(pendingSend.warning.approxTokens)}
+              {" tokens (guard: "}
+              {fmtTokens(pendingSend.guardTokens)}
+              {")."}
+            </Text>
+            <Text dimColor>{"  enter to send anyway · esc to keep the message unsent · /cacheguard to tune"}</Text>
+          </Box>
+        ) : (
+          cacheCold &&
+          !running && (
+            // Early heads-up while idle: the next send would rebuild a cold cache.
+            <Text color={WARNING}>
+              {"⚠ Cache cold ("}
+              {coldReason(cacheCold)}
+              {") — next message re-sends ~"}
+              {fmtTokens(cacheCold.approxTokens)}
+              {" tokens. Consider a fresh thread."}
+            </Text>
+          )
+        )}
         <PromptInput
           disabled={running || pickerOpen}
           onSubmit={submit}
@@ -558,6 +748,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           onPasteImage={onPasteImage}
           attachmentCount={attachments.length}
           baseUrl={mode === "live" ? baseUrl : undefined}
+          prefill={prefill}
         />
         <Text dimColor>
           {"  / for commands · @ for files · ctrl+v paste image · ctrl+c to quit"}

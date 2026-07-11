@@ -1,13 +1,22 @@
 // Chunky CLI server: Bun.serve HTTP + SSE. Model via the provider registry;
 // sessions + event history persisted to sqlite so reconnecting resumes.
 import { randomUUID } from "node:crypto"
-import { DEFAULT_PORT, ROUTES, sse, type AgentEvent, type GoalRequest } from "@chunky/protocol"
+import {
+  DEFAULT_PORT,
+  ROUTES,
+  sse,
+  type AgentEvent,
+  type CacheStatusResponse,
+  type GoalRequest,
+  type SendBlockedResponse,
+} from "@chunky/protocol"
 import { runAgent, type InputImage } from "./run.ts"
 import { Store } from "./store.ts"
 import { DEFAULT_MAX_TURNS, firstLine, goalKickoffPrompt, toSnapshot, type Goal } from "./goal.ts"
 import { invalidateAgent } from "./agent.ts"
 import {
   activeProviderId,
+  activeSelection,
   getProvider,
   listModelsFor,
   listProviders,
@@ -18,8 +27,22 @@ import {
   type Effort,
   type Speed,
 } from "./providers/registry.ts"
-import { getAdvisor, setAdvisor, type AdvisorConfig } from "./settings.ts"
+import { getAdvisor, setAdvisor, getCacheGuardTokens, setCacheGuardTokens, type AdvisorConfig } from "./settings.ts"
+import { cacheColdPayload, checkCacheCold, exceedsGuard } from "./cache-watch.ts"
 import { getFinder } from "./fff.ts"
+import {
+  activeRepo,
+  addRepo,
+  initRepos,
+  listRepos,
+  removeRepo,
+  repoById,
+  selectRepo,
+} from "./repos.ts"
+
+// Restore the persisted active repo (sticky across restarts). Runs after the
+// Store import has backfilled pre-existing sessions to the launch workspace.
+initRepos()
 
 type Subscriber = ReadableStreamDefaultController<Uint8Array>
 
@@ -56,11 +79,16 @@ function emitTo(sessionId: string, ev: AgentEvent): void {
  *  `text`, tracking the AbortController so /interrupt can cancel it. Shared by the
  *  message route and the goal set/resume routes (a goal kickoff is just a run
  *  whose prompt the server supplies). */
-function dispatchRun(sessionId: string, text: string, images?: InputImage[]): void {
+function dispatchRun(
+  sessionId: string,
+  text: string,
+  images?: InputImage[],
+  options?: { suppressCacheWarning?: boolean },
+): void {
   running.get(sessionId)?.abort()
   const ac = new AbortController()
   running.set(sessionId, ac)
-  void runAgent(sessionId, text, (ev) => emitTo(sessionId, ev), images, ac)
+  void runAgent(sessionId, text, (ev) => emitTo(sessionId, ev), images, ac, options)
     .catch((err) => {
       emitTo(sessionId, { type: "error", message: (err as Error)?.message ?? String(err) })
       emitTo(sessionId, { type: "session.status", sessionId, status: "idle" })
@@ -72,7 +100,7 @@ function dispatchRun(sessionId: string, text: string, images?: InputImage[]): vo
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 }
 
@@ -227,6 +255,25 @@ const server = Bun.serve({
       return json({ config: getAdvisor(), active: resolveAdvisorSelection() != null })
     }
 
+    // GET/POST /api/cache-guard -> { tokens } — the confirm-before-resend
+    // threshold: a send that would re-send ≥ tokens on a cold prompt cache is
+    // refused (409) until confirmed. tokens: null disables the guard.
+    if (pathname === ROUTES.cacheGuard) {
+      if (req.method === "GET") return json({ tokens: getCacheGuardTokens() })
+      if (req.method === "POST") {
+        let body: { tokens?: unknown }
+        try {
+          body = (await req.json()) as typeof body
+        } catch {
+          return json({ error: "invalid JSON body" }, 400)
+        }
+        if (body.tokens !== null && typeof body.tokens !== "number") {
+          return json({ error: "tokens must be a number or null" }, 400)
+        }
+        return json({ tokens: setCacheGuardTokens(body.tokens) })
+      }
+    }
+
     // GET /api/files/search?q=...&limit=20
     //   -> { items: [{ path, name, kind: "file"|"directory" }] }
     // FFF-backed fuzzy search for the TUI's @-mention autocomplete.
@@ -258,21 +305,62 @@ const server = Bun.serve({
       }
     }
 
-    // GET /api/sessions -> ListSessionsResponse (resume picker)
-    if (req.method === "GET" && pathname === ROUTES.listSessions) {
-      return json({ sessions: Store.list() })
+    // GET /api/repos -> ReposResponse (list of folders + which is active)
+    if (req.method === "GET" && pathname === ROUTES.repos) {
+      return json(listRepos())
     }
 
-    // POST /api/sessions -> { sessionId }
+    // POST /api/repos { path } -> add a folder, make it active, return the list.
+    if (req.method === "POST" && pathname === ROUTES.repos) {
+      let body: { path?: unknown }
+      try {
+        body = (await req.json()) as typeof body
+      } catch {
+        return json({ error: "invalid JSON body" }, 400)
+      }
+      const path = typeof body.path === "string" ? body.path.trim() : ""
+      if (!path) return json({ error: "missing path" }, 400)
+      try {
+        const repo = addRepo(path)
+        selectRepo(repo.id) // adding a repo activates it — you added it to use it
+        return json(listRepos())
+      } catch (err) {
+        return json({ error: (err as Error)?.message ?? String(err) }, 400)
+      }
+    }
+
+    // POST /api/repos/:id/select -> make a repo active. DELETE /api/repos/:id -> remove.
+    const repoMatch = pathname.match(/^\/api\/repos\/([^/]+?)(\/select)?$/)
+    if (repoMatch) {
+      const [, repoId, isSelect] = repoMatch
+      if (isSelect && req.method === "POST") {
+        if (!repoById(repoId!)) return json({ error: `unknown repo "${repoId}"` }, 404)
+        selectRepo(repoId!)
+        return json(listRepos())
+      }
+      if (!isSelect && req.method === "DELETE") {
+        return json(removeRepo(repoId!))
+      }
+    }
+
+    // GET /api/sessions?repo=<id> -> ListSessionsResponse for that repo (or the
+    // active one). Threads are scoped per repo so each folder has its own list.
+    if (req.method === "GET" && pathname === ROUTES.listSessions) {
+      const repoId = url.searchParams.get("repo")
+      const repo = repoId ? repoById(repoId) : activeRepo()
+      return json({ sessions: Store.list(repo?.path) })
+    }
+
+    // POST /api/sessions -> { sessionId } (created in the active repo)
     if (req.method === "POST" && pathname === ROUTES.createSession) {
       const sessionId = randomUUID()
-      Store.createSession(sessionId)
+      Store.createSession(sessionId, undefined, activeRepo()?.path)
       subscribers(sessionId) // pre-create the fan-out set
       return json({ sessionId })
     }
 
-    // Match /api/sessions/:id/(events|messages|interrupt|goal)
-    const m = pathname.match(/^\/api\/sessions\/([^/]+)\/(events|messages|interrupt|goal)$/)
+    // Match /api/sessions/:id/(events|messages|interrupt|goal|cache)
+    const m = pathname.match(/^\/api\/sessions\/([^/]+)\/(events|messages|interrupt|goal|cache)$/)
     if (m) {
       const [, sessionId, kind] = m
       // Accept any session that exists on disk (enables resume across restart),
@@ -319,13 +407,26 @@ const server = Bun.serve({
         })
       }
 
-      // POST .../messages { text } -> 202, run agent in background
+      // GET .../cache -> CacheStatusResponse. Read-only preflight: would a send
+      // right now rebuild a cold cache? Lets the TUI warn BEFORE the user sends.
+      if (kind === "cache" && req.method === "GET") {
+        const model = activeSelection().model
+        const cold = model ? checkCacheCold(sessionId, model, Date.now()) : undefined
+        return json({
+          cold: cold ? cacheColdPayload(cold) : null,
+          guardTokens: getCacheGuardTokens(),
+        } satisfies CacheStatusResponse)
+      }
+
+      // POST .../messages { text, force? } -> 202, run agent in background
       if (kind === "messages" && req.method === "POST") {
         let text = ""
+        let force = false
         let images: { base64: string; mediaType: string }[] | undefined
         try {
-          const body = (await req.json()) as { text?: unknown; images?: unknown }
+          const body = (await req.json()) as { text?: unknown; images?: unknown; force?: unknown }
           text = typeof body?.text === "string" ? body.text : ""
+          force = body?.force === true
           if (Array.isArray(body?.images)) {
             images = body.images.filter(
               (i): i is { base64: string; mediaType: string } =>
@@ -337,11 +438,36 @@ const server = Bun.serve({
         }
         if (!text && !(images && images.length)) return json({ error: "missing text or image" }, 400)
 
+        // Cache guard: BEFORE running (or billing) anything, refuse a send that
+        // would rebuild a big cold cache. 409 carries the details; the client
+        // asks the user and re-POSTs with force: true (or starts a fresh thread).
+        if (!force) {
+          const model = activeSelection().model
+          const guardTokens = getCacheGuardTokens()
+          const cold = model ? checkCacheCold(sessionId, model, Date.now()) : undefined
+          if (guardTokens != null && exceedsGuard(cold, guardTokens)) {
+            return json(
+              {
+                blocked: "cache-cold",
+                warning: cacheColdPayload(cold),
+                guardTokens,
+              } satisfies SendBlockedResponse,
+              409,
+            )
+          }
+        }
+
         if (text) Store.setTitleIfDefault(sessionId, text) // first message becomes the resume label
+
+        // Echo the user turn into the event stream so it is persisted and
+        // replayed on resume (clients render it instead of an optimistic local
+        // echo). Emitted before the run so it lands ahead of the assistant reply.
+        if (text) emitTo(sessionId, { type: "message.user", text })
 
         // Abort any prior in-flight turn, then run this one (tracked so /interrupt
         // can cancel it). If a goal is active, runAgent keeps continuing it after.
-        dispatchRun(sessionId, text, images)
+        // A force-confirmed send skips the redundant turn-start cache notice.
+        dispatchRun(sessionId, text, images, { suppressCacheWarning: force })
 
         return new Response(null, { status: 202, headers: CORS })
       }

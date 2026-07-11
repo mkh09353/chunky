@@ -1,0 +1,488 @@
+@import "@astryxdesign/core/reset.css";
+@import "@astryxdesign/core/astryx.css";
+@import "@astryxdesign/theme-neutral/theme.css";
+
+html,
+body,
+#root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+  background: var(--color-background-body);
+  color: var(--color-text-primary);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+/* Chunky brand — https://chunky.to. These overrides are intentionally left
+   *unlayered*: the Astryx neutral theme defines its tokens inside
+   `@layer astryx-theme`, so an unlayered rule wins the cascade without a
+   specificity fight. We target `[data-astryx-theme]` (not just `:root`) because
+   AppShell re-opens a nested theme scope on its own wrapper `<div>` that
+   re-declares the accent for the whole app subtree — a `:root`-only override
+   would stop at `<html>` and never reach the composer, buttons, or nav. This is
+   how we tint the monochrome theme with the purple gorilla identity while
+   keeping every Astryx component intact. */
+:root,
+[data-astryx-theme] {
+  /* Width of the readable content column shared by transcript and composer. */
+  --chunky-readable: 46rem;
+
+  /* Brand palette lifted verbatim from chunky.to. */
+  --chunky-purple: #7c4ddb;
+  --chunky-purple-deep: #5f35b8;
+  --chunky-purple-soft: #b9a3f0;
+  --chunky-purple-circle: #a98fe8;
+  --chunky-ink: #23263a;
+
+  /* Retint Astryx's accent (used for primary buttons, selected nav, focus)
+     from near-white to Chunky purple. Text/icon accents run lighter so they
+     stay legible on the dark body. */
+  --color-accent: var(--chunky-purple);
+  --color-accent-muted: #251d3d;
+  --color-on-accent: #ffffff;
+  --color-text-accent: var(--chunky-purple-soft);
+  --color-icon-accent: var(--chunky-purple-soft);
+  --color-focus: var(--chunky-purple);
+}
+
+.chunky-shell {
+  height: 100%;
+  min-height: 0;
+}
+
+/* Frameless (Codex-style) chrome: the window runs `titleBarStyle: "hiddenInset"`
+   so there's no OS title bar and our webview fills to the very top edge. The
+   native macOS traffic lights float inset over the top-left of the TopNav, so we
+   reserve horizontal clearance for them on the app-shell header — otherwise the
+   "Chunky" logo would sit underneath the close/minimise/zoom buttons. Tune this
+   in tandem with `trafficLightOffset` in src/bun/index.ts. */
+:root,
+[data-astryx-theme] {
+  --chunky-traffic-clearance: 4.5rem;
+}
+
+.chunky-shell .astryx-app-shell-header {
+  padding-inline-start: var(--chunky-traffic-clearance);
+}
+
+.chunky-chat-wrap {
+  height: 100%;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Center transcript + composer in a comfortable reading measure instead of
+   letting lines run the full width of the pane. */
+.chunky-readable {
+  width: 100%;
+  max-width: var(--chunky-readable);
+  margin-inline: auto;
+}
+
+.chunky-transcript {
+  width: 100%;
+  max-width: var(--chunky-readable);
+  margin-inline: auto;
+  padding-block: var(--spacing-6) var(--spacing-4);
+  padding-inline: var(--spacing-4);
+}
+
+/* ---- Empty state ---------------------------------------------------------- */
+
+.chunky-empty {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-4);
+  padding: var(--spacing-8);
+  text-align: center;
+}
+
+.chunky-empty-art {
+  width: 5.5rem;
+  height: 5.5rem;
+  object-fit: contain;
+  filter: drop-shadow(0 8px 20px rgba(124, 77, 219, 0.28));
+  margin-bottom: var(--spacing-1);
+}
+
+.chunky-empty-title {
+  font-size: var(--font-size-2xl);
+  font-weight: var(--font-weight-semibold);
+  letter-spacing: -0.02em;
+  color: var(--color-text-primary);
+  margin: 0;
+}
+
+.chunky-empty-sub {
+  color: var(--color-text-secondary);
+  max-width: 30rem;
+  margin: 0;
+  line-height: 1.55;
+}
+
+.chunky-suggestion-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 13rem));
+  gap: var(--spacing-2);
+  margin-top: var(--spacing-2);
+}
+
+.chunky-suggestion {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  text-align: left;
+  padding: var(--spacing-3) var(--spacing-3);
+  border-radius: var(--radius-container);
+  border: 1px solid var(--color-border);
+  background: var(--color-background-surface);
+  color: var(--color-text-primary);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--font-size-sm);
+  line-height: 1.35;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.chunky-suggestion:hover {
+  background: var(--color-overlay-hover);
+  border-color: var(--chunky-purple-soft);
+}
+
+.chunky-suggestion:hover .chunky-suggestion-icon {
+  color: var(--chunky-purple-soft);
+}
+
+/* Purple period echoing the chunky.to "Chunky." wordmark. */
+.chunky-brand-dot {
+  color: var(--chunky-purple-soft);
+}
+
+.chunky-suggestion-icon {
+  display: inline-flex;
+  color: var(--color-text-secondary);
+  flex-shrink: 0;
+}
+
+/* ---- Messages ------------------------------------------------------------- */
+
+/* Chunky's gorilla mark in the assistant gutter and top-nav logo. The art
+   already carries its own purple circle, so we just frame it as a clean disc. */
+.chunky-avatar {
+  display: inline-flex;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--radius-full);
+  overflow: hidden;
+  flex-shrink: 0;
+  background: var(--chunky-purple-circle);
+}
+
+.chunky-mark {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+}
+
+.chunky-avatar-spacer {
+  display: inline-block;
+  width: 1.75rem;
+  flex-shrink: 0;
+}
+
+/* A subtle sender label above a message body. */
+.chunky-sender {
+  font-size: var(--font-size-2xs);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-secondary);
+}
+
+.chunky-thinking {
+  color: var(--color-text-secondary);
+  font-style: italic;
+}
+
+.chunky-callout-error {
+  padding: var(--spacing-2) var(--spacing-3);
+  border-radius: var(--radius-container);
+  background: var(--color-background-red);
+  border: 1px solid var(--color-border-red);
+  color: var(--color-text-red);
+  font-size: var(--font-size-sm);
+  line-height: 1.5;
+  word-break: break-word;
+}
+
+.chunky-tool-detail {
+  margin: 0;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: var(--font-family-code);
+  font-size: var(--font-size-2xs);
+  line-height: 1.5;
+  max-height: 14rem;
+  overflow: auto;
+  color: var(--color-text-secondary);
+}
+
+/* ---- Scrollbars ----------------------------------------------------------- */
+
+/* The SideNav list defaults to the fat native scrollbar, which ends in a hard
+   flat cut against the collapse footer. Give it a thin, rounded, floating thumb
+   instead: the transparent border + padding-box clip insets the pill so it never
+   butts flat against an edge.
+
+   Only the middle (threads) zone of the SideNav scrolls: "New thread" / "Search"
+   are pinned in `topContent` (first child) and the collapse control is pinned at
+   the bottom (last child), so the scroll container is always the middle child.
+   `scrollbar-width` is *not* inherited, so the standard props have to sit on that
+   container directly; the webkit pseudo-elements (real WKWebView) match whichever
+   descendant actually scrolls — only the threads list does. */
+.astryx-side-nav > div:nth-child(2) {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-overlay-pressed) transparent;
+}
+
+.astryx-side-nav ::-webkit-scrollbar {
+  width: 11px;
+}
+
+.astryx-side-nav ::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+.astryx-side-nav ::-webkit-scrollbar-thumb {
+  background-color: var(--color-overlay-pressed);
+  background-clip: padding-box;
+  border: 3px solid transparent;
+  border-radius: var(--radius-full);
+}
+
+.astryx-side-nav ::-webkit-scrollbar-thumb:hover {
+  background-color: var(--chunky-purple-soft);
+}
+
+/* ---- Repo tabs (top nav) -------------------------------------------------- */
+
+.chunky-repotabs {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-1);
+  min-width: 0;
+  max-width: 60vw;
+}
+
+/* Astryx TabList scrolls horizontally when there are more repos than fit. */
+.chunky-repotabs [role="tablist"] {
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.chunky-repotabs [role="tablist"]::-webkit-scrollbar {
+  display: none;
+}
+
+/* Hover-close on a tab (an endContent affordance, so not a nested <button>). */
+.chunky-repotab-close {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
+  margin-inline-start: var(--spacing-1);
+  border-radius: var(--radius-full);
+  color: var(--color-text-secondary);
+  opacity: 0.5;
+  cursor: pointer;
+  transition: opacity 120ms ease, background 120ms ease, color 120ms ease;
+}
+
+.chunky-repotab-close:hover {
+  opacity: 1;
+  color: var(--color-text-primary);
+  background: var(--color-overlay-hover);
+}
+
+.chunky-repotab-addwrap {
+  position: relative;
+  display: inline-flex;
+  flex-shrink: 0;
+}
+
+.chunky-repotab-add {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.75rem;
+  height: 1.75rem;
+  border-radius: var(--radius-element);
+  border: 1px solid var(--color-border);
+  background: var(--color-background-surface);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: border-color 120ms ease, color 120ms ease;
+}
+
+.chunky-repotab-add:hover:not(:disabled) {
+  border-color: var(--chunky-purple-soft);
+  color: var(--color-text-primary);
+}
+
+.chunky-repotab-add:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+/* Add-repo popover, anchored under the "+" button. */
+.chunky-repo-menu {
+  position: absolute;
+  top: calc(100% + 6px);
+  left: 0;
+  z-index: 50;
+  min-width: 22rem;
+  max-width: 28rem;
+  padding: var(--spacing-2);
+  border-radius: var(--radius-container);
+  background: var(--color-background-popover);
+  border: 1px solid var(--color-border);
+  box-shadow: var(--shadow-lift, 0 16px 36px rgba(0, 0, 0, 0.4));
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-2);
+}
+
+.chunky-repo-menu-label {
+  font-size: var(--font-size-2xs);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-secondary);
+  padding: 0 var(--spacing-1);
+}
+
+.chunky-repo-input {
+  width: 100%;
+  font: inherit;
+  font-size: var(--font-size-sm);
+  font-family: var(--font-family-code);
+  color: var(--color-text-primary);
+  background: var(--color-background-body);
+  border: 1px solid var(--color-border-emphasized);
+  border-radius: var(--radius-element);
+  padding: var(--spacing-2) var(--spacing-2-5);
+  outline: none;
+}
+
+.chunky-repo-input:focus {
+  border-color: var(--chunky-purple);
+}
+
+.chunky-repo-error {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-red);
+  padding: 0 var(--spacing-1);
+  word-break: break-word;
+}
+
+.chunky-repo-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+}
+
+.chunky-repo-btn {
+  font: inherit;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-primary);
+  padding: var(--spacing-1) var(--spacing-3);
+  border-radius: var(--radius-element);
+  border: 1px solid var(--color-border);
+  background: var(--color-background-surface);
+  cursor: pointer;
+  transition: background 120ms ease, border-color 120ms ease;
+}
+
+.chunky-repo-btn:hover:not(:disabled) {
+  border-color: var(--color-border-emphasized);
+}
+
+.chunky-repo-btn:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.chunky-repo-btn-primary {
+  background: var(--color-accent);
+  color: var(--color-on-accent);
+  border-color: transparent;
+}
+
+.chunky-repo-btn-primary:hover:not(:disabled) {
+  background: var(--chunky-purple-deep);
+  border-color: transparent;
+}
+
+/* ---- Chrome --------------------------------------------------------------- */
+
+.chunky-status-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--spacing-1);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  padding: var(--spacing-0-5) var(--spacing-2);
+  border-radius: var(--radius-full);
+  background: var(--color-background-surface);
+  white-space: nowrap;
+}
+
+.chunky-status-live {
+  color: var(--color-text-primary);
+}
+
+.chunky-status-live::before {
+  content: "";
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: var(--radius-full);
+  background: var(--color-success);
+  animation: chunky-pulse 1.4s ease-in-out infinite;
+}
+
+@keyframes chunky-pulse {
+  0%,
+  100% {
+    opacity: 0.35;
+  }
+  50% {
+    opacity: 1;
+  }
+}
+
+/* Right-aligned relative time on a sidebar thread row. */
+.chunky-thread-time {
+  font-size: var(--font-size-2xs);
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.chunky-conn-error {
+  max-width: var(--chunky-readable);
+  margin: var(--spacing-3) auto 0;
+  padding: var(--spacing-2) var(--spacing-3);
+  border-radius: var(--radius-container);
+  background: var(--color-background-red);
+  border: 1px solid var(--color-border-red);
+  color: var(--color-text-red);
+  font-size: var(--font-size-sm);
+  line-height: 1.45;
+}

@@ -260,6 +260,11 @@ export async function runAgent(
   emit: Emit,
   images?: InputImage[],
   abort?: AbortController,
+  options?: {
+    /** Skip the turn-start cold-cache notice — the user already confirmed this
+     *  re-send through the cache guard, so repeating the warning is noise. */
+    suppressCacheWarning?: boolean
+  },
 ): Promise<void> {
   emit({ type: "session.status", sessionId, status: "running" })
 
@@ -286,7 +291,7 @@ export async function runAgent(
   // the last turn (idle past the TTL, or a model switch) — a cue to start fresh.
   // Only meaningful when the model is known (needed to detect a switch).
   const model = selection.model
-  if (model) {
+  if (model && !options?.suppressCacheWarning) {
     const cold = checkCacheCold(sessionId, model, Date.now())
     if (cold) emit(cacheWarningEvent(sessionId, cold))
   }

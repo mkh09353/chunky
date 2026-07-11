@@ -40,6 +40,10 @@ export type AgentEvent =
       fromModel?: string
       toModel?: string
     }
+  /** A user turn, echoed by the server so it is persisted and replayed on
+   * resume. Clients render it as the user's own message (single source of
+   * truth — no optimistic local echo needed). */
+  | { type: "message.user"; text: string; threadId?: string }
   | { type: "message.start"; role: "assistant"; threadId?: string }
   | { type: "message.delta"; text: string; threadId?: string }
   | { type: "message.end"; threadId?: string }
@@ -74,6 +78,47 @@ export interface CreateSessionResponse {
 }
 export interface SendMessageRequest {
   text: string
+  /** Send even if the cache guard would block (the user confirmed the re-send). */
+  force?: boolean
+}
+
+/** Why a thread's prompt cache is (or would be) cold, and how much a send now
+ *  would re-send. Same fields the `cache.warning` event carries; used by the
+ *  pre-send guard's 409 response and by GET cacheStatus. */
+export interface CacheCold {
+  reason: "idle" | "model-switch"
+  idleMs?: number
+  approxTokens: number
+  fromModel?: string
+  toModel?: string
+}
+
+/** 409 body from POST sendMessage when the cache guard blocks: the turn did NOT
+ *  run and nothing was billed — re-POST with `force: true` once the user
+ *  confirms, or start a fresh thread instead. */
+export interface SendBlockedResponse {
+  blocked: "cache-cold"
+  warning: CacheCold
+  /** The guard threshold (approx tokens) that tripped. */
+  guardTokens: number
+}
+
+/** GET ROUTES.cacheStatus: would sending on this thread right now rebuild a
+ *  cold cache? Lets clients warn BEFORE the user spends the tokens. */
+export interface CacheStatusResponse {
+  cold: CacheCold | null
+  /** Current guard threshold in tokens; null = guard off. */
+  guardTokens: number | null
+}
+
+/** GET/POST ROUTES.cacheGuard — the confirm-before-resend threshold. A send
+ *  that would re-send at least `tokens` on a cold cache is refused (409) until
+ *  confirmed with `force`. null disables the guard. */
+export interface CacheGuardResponse {
+  tokens: number | null
+}
+export interface SetCacheGuardRequest {
+  tokens: number | null
 }
 /** One row in the resume picker: a persisted session the client can reattach to. */
 export interface SessionSummary {
@@ -86,6 +131,21 @@ export interface ListSessionsResponse {
   sessions: SessionSummary[]
 }
 
+/** A local folder Chunky can operate in. Threads are scoped per repo. */
+export interface Repo {
+  id: string
+  path: string
+  name: string
+  addedAt: number
+}
+export interface ReposResponse {
+  repos: Repo[]
+  activeId: string | null
+}
+export interface AddRepoRequest {
+  path: string
+}
+
 /** Result of starting a provider login flow. The shape makes it explicit
  * whether the client should open a URL, wait for a provider-opened browser, or
  * stop because credentials are already ready. */
@@ -96,9 +156,21 @@ export type LoginInitiation =
 
 // ---- Endpoints (relative to http://localhost:<port>) ----
 export const ROUTES = {
-  createSession: `/api/sessions`, // POST -> CreateSessionResponse
-  listSessions: `/api/sessions`, // GET  -> ListSessionsResponse (resume picker)
-  sendMessage: (id: string) => `/api/sessions/${id}/messages`, // POST SendMessageRequest -> 202
+  createSession: `/api/sessions`, // POST -> CreateSessionResponse (in the active repo)
+  listSessions: `/api/sessions`, // GET ?repo=<id> -> ListSessionsResponse (that repo's threads)
+  // GET  -> ReposResponse. POST AddRepoRequest -> ReposResponse (add + activate a folder).
+  repos: `/api/repos`,
+  // POST -> ReposResponse. Make a repo active (retargets the workspace).
+  selectRepo: (id: string) => `/api/repos/${id}/select`,
+  // DELETE -> ReposResponse. Remove a repo from the list (does not delete files).
+  removeRepo: (id: string) => `/api/repos/${id}`,
+  // POST SendMessageRequest -> 202, or 409 SendBlockedResponse when the cache
+  // guard blocks (resend with force: true after the user confirms).
+  sendMessage: (id: string) => `/api/sessions/${id}/messages`,
+  // GET -> CacheStatusResponse. Would a send right now re-send a cold cache?
+  cacheStatus: (id: string) => `/api/sessions/${id}/cache`,
+  // GET -> CacheGuardResponse. POST SetCacheGuardRequest -> CacheGuardResponse.
+  cacheGuard: `/api/cache-guard`,
   // POST -> 202. Abort the session's in-flight turn (user interrupt / Esc).
   interrupt: (id: string) => `/api/sessions/${id}/interrupt`,
   // GET -> SSE stream of AgentEvent. Replays persisted history first, so opening

@@ -34,10 +34,16 @@ export const SPARKLE = "✻"
 export const DOT = "⏺"
 
 /**
- * Spinner frames, verbatim from kimi's getDefaultCharacters() on darwin.
+ * Spinner frames, adapted from kimi's getDefaultCharacters() on darwin.
  * Claude Code animates through these to make its "breathing" sparkle.
+ *
+ * Every frame must be a plain text glyph WITHOUT the Unicode Emoji property:
+ * Terminal.app (and others) draw emoji-property glyphs with the color-emoji
+ * font at two cells wide while Ink budgets one, so the text after the spinner
+ * jitters sideways on those frames. That's why U+2733 ✳ (kimi's original
+ * third frame, the only emoji in the set) is replaced with U+2731 ✱.
  */
-const BASE_FRAMES = ["·", "✢", "✳", "✶", "✻", "✽"]
+const BASE_FRAMES = ["·", "✢", "✱", "✶", "✻", "✽"]
 export const SPINNER_FRAMES = [...BASE_FRAMES, ...[...BASE_FRAMES].reverse()]
 
 /** A small, on-brand slice of kimi's spinner verb list. */

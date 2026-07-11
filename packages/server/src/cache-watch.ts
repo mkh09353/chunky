@@ -8,7 +8,7 @@
 // running server, which covers the real case (you walked away for 40 minutes,
 // the server stayed up). After a server restart the watch is cold and the first
 // turn won't warn — acceptable; it re-arms from that turn on.
-import type { AgentEvent, UsageDelta } from "@chunky/protocol"
+import type { AgentEvent, CacheCold, UsageDelta } from "@chunky/protocol"
 import { promptTokensOf } from "./usage.ts"
 
 /** Anthropic's default prompt-cache TTL is 5 minutes; idle gaps past this evict
@@ -94,6 +94,29 @@ export function checkCacheCold(
   return undefined
 }
 
+/**
+ * True when a cold-cache send is big enough that the guard should refuse it and
+ * ask the user first (before any tokens are spent). `guardTokens === null`
+ * means the guard is off.
+ */
+export function exceedsGuard(
+  warning: CacheWarning | undefined,
+  guardTokens: number | null,
+): warning is CacheWarning {
+  return warning != null && guardTokens != null && warning.approxTokens >= guardTokens
+}
+
+/** The REST-shaped warning (the same fields the cache.warning event carries). */
+export function cacheColdPayload(warning: CacheWarning): CacheCold {
+  return {
+    reason: warning.reason,
+    approxTokens: warning.approxTokens,
+    ...(warning.idleMs != null ? { idleMs: warning.idleMs } : {}),
+    ...(warning.fromModel ? { fromModel: warning.fromModel } : {}),
+    ...(warning.toModel ? { toModel: warning.toModel } : {}),
+  }
+}
+
 /** Assemble the wire event from a warning (main-session convId === sessionId). */
 export function cacheWarningEvent(
   sessionId: string,
@@ -103,11 +126,7 @@ export function cacheWarningEvent(
   return {
     type: "cache.warning",
     sessionId,
-    reason: warning.reason,
-    approxTokens: warning.approxTokens,
-    ...(warning.idleMs != null ? { idleMs: warning.idleMs } : {}),
-    ...(warning.fromModel ? { fromModel: warning.fromModel } : {}),
-    ...(warning.toModel ? { toModel: warning.toModel } : {}),
+    ...cacheColdPayload(warning),
     ...(threadId ? { threadId } : {}),
   }
 }

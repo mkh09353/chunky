@@ -4,6 +4,7 @@
 import { Database } from "bun:sqlite"
 import type { AgentEvent, SessionSummary } from "@chunky/protocol"
 import type { Goal } from "./goal.ts"
+import { WORKSPACE } from "./workspace.ts"
 
 const DB_PATH = process.env.CHUNKY_DB || "chunky.db"
 const db = new Database(DB_PATH)
@@ -34,14 +35,30 @@ db.exec(`
   );
 `)
 
+// Migration: sessions gained a `workspace` column so each repo has its own
+// thread list. Add it if an older db predates it, and backfill existing rows to
+// the launch workspace — they all ran there before repos existed. (This runs at
+// import, before repos.initRepos() may switch the active workspace, so the
+// backfill correctly uses the original launch dir.)
+{
+  const cols = db.query("PRAGMA table_info(sessions)").all() as { name: string }[]
+  if (!cols.some((c) => c.name === "workspace")) {
+    db.exec("ALTER TABLE sessions ADD COLUMN workspace TEXT")
+    db.query("UPDATE sessions SET workspace = ? WHERE workspace IS NULL").run(WORKSPACE)
+  }
+}
+
 const stmtCreate = db.query(
-  "INSERT INTO sessions (id, title, created_at, last_activity) VALUES (?, ?, ?, ?)",
+  "INSERT INTO sessions (id, title, created_at, last_activity, workspace) VALUES (?, ?, ?, ?, ?)",
 )
 const stmtTouch = db.query("UPDATE sessions SET last_activity = ? WHERE id = ?")
 const stmtTitle = db.query("UPDATE sessions SET title = ? WHERE id = ?")
 const stmtExists = db.query("SELECT 1 FROM sessions WHERE id = ?")
-const stmtList = db.query(
+const stmtListAll = db.query(
   "SELECT id, title, created_at, last_activity FROM sessions ORDER BY last_activity DESC LIMIT 100",
+)
+const stmtListByWorkspace = db.query(
+  "SELECT id, title, created_at, last_activity FROM sessions WHERE workspace = ? ORDER BY last_activity DESC LIMIT 100",
 )
 const stmtNextSeq = db.query("SELECT COALESCE(MAX(seq), -1) + 1 AS n FROM events WHERE session_id = ?")
 const stmtInsertEvent = db.query("INSERT INTO events (session_id, seq, json) VALUES (?, ?, ?)")
@@ -83,9 +100,9 @@ function rowToGoal(row: GoalRow): Goal {
 }
 
 export const Store = {
-  createSession(id: string, title = "New session"): void {
+  createSession(id: string, title = "New session", workspace: string = WORKSPACE): void {
     const now = Date.now()
-    stmtCreate.run(id, title, now, now)
+    stmtCreate.run(id, title, now, now, workspace)
   },
 
   exists(id: string): boolean {
@@ -110,8 +127,10 @@ export const Store = {
     if (trimmed) stmtTitle.run(trimmed, sessionId)
   },
 
-  list(): SessionSummary[] {
-    const rows = stmtList.all() as {
+  /** List sessions, optionally scoped to one workspace (repo). Omit `workspace`
+   *  to list across all repos. */
+  list(workspace?: string): SessionSummary[] {
+    const rows = (workspace ? stmtListByWorkspace.all(workspace) : stmtListAll.all()) as {
       id: string
       title: string
       created_at: number

@@ -1,19 +1,30 @@
 // Claude-Code-look palette + glyphs, lifted from kimi's design-system.
 // Terminals inherit the user's font — we only ever set ANSI color + box-drawing.
 
-/** Violet brand accent (prompt marker, spinner, sparkle, ⏺ dots). Bright purple that
- *  pops on dark terminals — kimi's dark-theme "bright purple" rgb(178,102,255). */
-export const ACCENT = "#b266ff"
-/** Deeper purple (kimi's Purple 600, rgb(147,51,234)) — secondary rail / highlights. */
-export const ACCENT_DEEP = "#9333ea"
+/** Lavender brand accent (prompt marker, spinner, sparkle, ⏺ dots). Lightened
+ *  two steps from Purple 600 so it holds ~9:1 contrast on dark terminals
+ *  instead of ~3:1 — same family, no more squinting. */
+export const ACCENT = "#c4b1f9"
+/** One step deeper lavender (violet-400) — secondary rail / highlights. */
+export const ACCENT_DEEP = "#a78bfa"
+/** Markdown headings. Kept on the accent hue; a separate token so headings
+ *  and glyph accents can diverge without touching the renderer again. */
+export const HEADING = "#c4b1f9"
+/** Numbered-list markers (1.) — quiet gray so list structure reads without
+ *  shouting; the accent is reserved for prompt/dots/headings. */
+export const MARKER = "#6b7280"
+/** Bullet circles (•) — the marker gray nudged a step toward the lavender
+ *  accent: still quiet, but visibly kin to the brand hue. */
+export const MARKER_BULLET = "#766e91"
 /** Dim gray for the input border, meta text, and tool result summaries. */
-export const BORDER = "gray"
+export const BORDER = "#767e89"
 export const SUCCESS = "green"
 export const ERROR = "red"
 /** Amber for advisory notices like a cold prompt-cache warning. */
 export const WARNING = "yellow"
-/** Inline `code` and fenced code body — readable on dark and light terminals. */
-export const CODE = "cyan"
+/** Inline `code` and fenced code body — soft teal, cool counterpart to the
+ *  lavender accent so code and chrome separate at a glance. */
+export const CODE = "#7fd0ca"
 /** Fenced-code rail / language tag — quieter than CODE. */
 export const CODE_MUTED = "gray"
 

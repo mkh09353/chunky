@@ -12,6 +12,9 @@ import {
   CODE_MUTED,
   DOT,
   ERROR,
+  HEADING,
+  MARKER,
+  MARKER_BULLET,
   SPINNER_FRAMES,
   SUCCESS,
   WARNING,
@@ -253,7 +256,7 @@ function Markdown({ text }: { text: string }) {
 
           case "heading":
             return (
-              <Text key={i} bold color={ACCENT}>
+              <Text key={i} bold color={HEADING}>
                 <Inline text={b.text} />
               </Text>
             )
@@ -262,7 +265,7 @@ function Markdown({ text }: { text: string }) {
             return (
               <Text key={i}>
                 {" ".repeat(b.indent)}
-                <Text color={ACCENT}>• </Text>
+                <Text color={MARKER_BULLET}>• </Text>
                 <Inline text={b.text} />
               </Text>
             )
@@ -271,7 +274,7 @@ function Markdown({ text }: { text: string }) {
             return (
               <Text key={i}>
                 {" ".repeat(b.indent)}
-                <Text color={ACCENT}>{b.n}. </Text>
+                <Text color={MARKER}>{b.n}. </Text>
                 <Inline text={b.text} />
               </Text>
             )

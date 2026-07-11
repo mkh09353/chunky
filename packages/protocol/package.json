@@ -5,6 +5,12 @@
   "main": "src/index.ts",
   "exports": {
     ".": "./src/index.ts",
-    "./mock": "./src/mock.ts"
+    "./mock": "./src/mock.ts",
+    "./relay": "./src/relay.ts",
+    "./relay-crypto": "./src/relay-crypto.ts",
+    "./relay-client": "./src/relay-client.ts"
+  },
+  "dependencies": {
+    "tweetnacl": "^1.0.3"
   }
 }

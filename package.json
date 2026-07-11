@@ -13,6 +13,7 @@
     "app:dev": "bun run --cwd packages/app dev",
     "app:hmr": "bun run --cwd packages/app dev",
     "chunky": "bun run chunky.ts",
+    "pair": "bun run packages/server/src/relay/pair.ts",
     "install:cli": "bash scripts/install.sh",
     "typecheck": "tsc -b"
   },

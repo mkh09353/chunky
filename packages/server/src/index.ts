@@ -33,6 +33,7 @@ import {
   getAdvisor,
   getCacheGuardTokens,
   getMode,
+  getServerToken,
   listModes,
   saveMode,
   setAdvisor,
@@ -51,6 +52,8 @@ import {
   repoById,
   selectRepo,
 } from "./repos.ts"
+import { loadRelayConfig } from "./relay/config.ts"
+import { startUplink } from "./relay/uplink.ts"
 
 type Subscriber = ReadableStreamDefaultController<Uint8Array>
 
@@ -152,7 +155,17 @@ const port = Number(process.env.CHUNKY_PORT) || DEFAULT_PORT
 const server = Bun.serve({
   port,
   idleTimeout: 0, // never time out SSE connections
-  async fetch(req) {
+  async fetch(req, server) {
+    // Bearer auth for anything NOT from loopback. Loopback is exempt because
+    // the TUI, the app, and the relay uplink all dial 127.0.0.1 — they keep
+    // working with zero setup, while the token gates direct LAN/remote access
+    // (remote clients go through the E2E relay instead; docs/relay-design.md).
+    const ip = server.requestIP(req)?.address
+    const loopback = ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1"
+    if (!loopback && req.headers.get("authorization") !== `Bearer ${getServerToken()}`) {
+      return json({ error: "unauthorized" }, 401)
+    }
+
     const url = new URL(req.url)
     const { pathname } = url
 
@@ -683,3 +696,18 @@ const server = Bun.serve({
 console.log(
   `[@chunky/server] listening on http://localhost:${server.port} (provider=${activeProviderId()})`,
 )
+
+// Relay uplink: when this computer has been paired (`bun run pair` wrote
+// relay.json), dial out to the relay so paired phones can reach this server —
+// E2E-encrypted, the relay only ever sees ciphertext. CHUNKY_RELAY=0 skips
+// the uplink for a boot without unpairing.
+if (process.env.CHUNKY_RELAY !== "0") {
+  const relayConfig = loadRelayConfig()
+  if (relayConfig) {
+    startUplink({
+      config: relayConfig,
+      localBaseUrl: `http://127.0.0.1:${server.port}`,
+      log: (s) => console.log(`[relay] ${s}`),
+    })
+  }
+}

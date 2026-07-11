@@ -6,6 +6,7 @@
 // per-provider means switching provider and back restores that provider's last
 // model + knobs. Missing/corrupt file → defaults (never throws).
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { randomBytes } from "node:crypto"
 
 export type Effort = "low" | "medium" | "high" | "xhigh"
 export type Speed = "standard" | "fast"
@@ -51,6 +52,9 @@ export interface Settings {
   cacheGuardTokens?: number | null
   /** Named executor+advisor pairings, applied as one unit via /mode. */
   modes?: Record<string, ModeSpec>
+  /** Bearer token required from non-loopback HTTP clients (see index.ts).
+   *  Generated on first use; settings.json is gitignored, so it stays local. */
+  serverToken?: string
 }
 
 function settingsPath(): string {
@@ -130,6 +134,20 @@ export function setCacheGuardTokens(tokens: number | null): number | null {
   const s = loadSettings()
   save({ ...s, cacheGuardTokens: typeof tokens === "number" && tokens > 0 ? Math.floor(tokens) : null })
   return getCacheGuardTokens()
+}
+
+// ---- Server token: bearer auth for non-loopback clients ----
+
+/** The token non-loopback HTTP requests must present as `Authorization: Bearer
+ *  <token>` (index.ts enforces this). Generated once — 32 random bytes, hex —
+ *  and persisted so it survives restarts. Loopback clients never need it, so
+ *  the TUI/app keep working with zero setup. */
+export function getServerToken(): string {
+  const s = loadSettings()
+  if (typeof s.serverToken === "string" && s.serverToken.length > 0) return s.serverToken
+  const token = randomBytes(32).toString("hex")
+  save({ ...s, serverToken: token })
+  return token
 }
 
 // ---- Modes: named executor+advisor pairings ----

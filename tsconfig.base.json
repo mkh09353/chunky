@@ -13,7 +13,10 @@
     "types": ["node", "bun"],
     "paths": {
       "@chunky/protocol": ["./packages/protocol/src/index.ts"],
-      "@chunky/protocol/mock": ["./packages/protocol/src/mock.ts"]
+      "@chunky/protocol/mock": ["./packages/protocol/src/mock.ts"],
+      "@chunky/protocol/relay": ["./packages/protocol/src/relay.ts"],
+      "@chunky/protocol/relay-crypto": ["./packages/protocol/src/relay-crypto.ts"],
+      "@chunky/protocol/relay-client": ["./packages/protocol/src/relay-client.ts"]
     }
   }
 }

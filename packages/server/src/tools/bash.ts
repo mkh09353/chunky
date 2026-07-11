@@ -1,4 +1,4 @@
-// bash — run a shell command in WORKSPACE via `bash -lc`. This is the agent's
+// bash — run a shell command in the run's workspace via `bash -lc`. This is the agent's
 // one navigation/inspection primitive: it deliberately SUBSUMES ls / grep / rg /
 // find / cat, so the harness ships four tools instead of a dozen.
 //
@@ -13,7 +13,7 @@ import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { tool } from "@langchain/core/tools"
 import { z } from "zod"
-import { WORKSPACE } from "../workspace.ts"
+import { workspaceFromConfig } from "../workspace.ts"
 import { MAX_BYTES, MAX_LINES } from "./fs-util.ts"
 import { compressBashOutput } from "./compress.ts"
 
@@ -23,9 +23,9 @@ export const bashInputShape = {
 }
 
 export const bash = tool(
-  async ({ command, timeout }: { command: string; timeout?: number }) => {
+  async ({ command, timeout }: { command: string; timeout?: number }, config?: unknown) => {
     const proc = Bun.spawn(["bash", "-lc", command], {
-      cwd: WORKSPACE,
+      cwd: workspaceFromConfig(config),
       stdout: "pipe",
       stderr: "pipe",
     })

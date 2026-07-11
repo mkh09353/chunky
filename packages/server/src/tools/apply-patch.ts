@@ -16,15 +16,15 @@
 //   *** Delete File: relative/old.ext
 //   *** End Patch
 //
-// All paths are resolved against WORKSPACE and may not escape it (no `..`,
-// no absolute paths). The whole patch is validated and computed fully
+// All paths are resolved against the run's workspace and may not escape it (no
+// `..`, no absolute paths). The whole patch is validated and computed fully
 // in-memory before anything is written to disk — either every file in the
 // patch applies cleanly, or nothing is written (no partial/corrupted edits).
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { dirname, isAbsolute, relative, resolve } from "node:path"
 import { tool } from "@langchain/core/tools"
 import { z } from "zod"
-import { WORKSPACE } from "../workspace.ts"
+import { LAUNCH_WORKSPACE, workspaceFromConfig } from "../workspace.ts"
 
 const BEGIN = "*** Begin Patch"
 const END = "*** End Patch"
@@ -57,13 +57,13 @@ type PatchOp = UpdateOp | AddOp | DeleteOp
 
 class PatchError extends Error {}
 
-/** Resolve a patch-relative path against WORKSPACE, rejecting any escape. */
-function resolveInWorkspace(relPath: string): string {
+/** Resolve a patch-relative path against `workspace`, rejecting any escape. */
+function resolveInWorkspace(relPath: string, workspace: string): string {
   const p = relPath.trim()
   if (!p) throw new PatchError("empty path in patch")
   if (isAbsolute(p)) throw new PatchError(`absolute paths are not allowed: ${p}`)
-  const full = resolve(WORKSPACE, p)
-  const rel = relative(WORKSPACE, full)
+  const full = resolve(workspace, p)
+  const rel = relative(workspace, full)
   if (rel.startsWith("..") || isAbsolute(rel)) {
     throw new PatchError(`path escapes the workspace: ${p}`)
   }
@@ -245,7 +245,7 @@ export interface ApplyPatchOutcome {
 /** Apply a parsed+validated patch, computing every file's new content
  *  in-memory first so a single bad hunk aborts the whole patch before any
  *  write hits disk. */
-export function applyPatchText(patch: string): ApplyPatchOutcome {
+export function applyPatchText(patch: string, workspace: string = LAUNCH_WORKSPACE): ApplyPatchOutcome {
   const ops = parsePatch(patch)
 
   const writes: Array<{ path: string; content: string }> = []
@@ -255,22 +255,22 @@ export function applyPatchText(patch: string): ApplyPatchOutcome {
 
   for (const op of ops) {
     if (op.kind === "add") {
-      const full = resolveInWorkspace(op.path)
+      const full = resolveInWorkspace(op.path, workspace)
       if (existsSync(full)) throw new PatchError(`Add File "${op.path}" already exists`)
       writes.push({ path: full, content: op.content })
       changed.push(`add ${op.path}`)
     } else if (op.kind === "delete") {
-      const full = resolveInWorkspace(op.path)
+      const full = resolveInWorkspace(op.path, workspace)
       if (!existsSync(full)) throw new PatchError(`Delete File "${op.path}" does not exist`)
       deletes.push(full)
       changed.push(`delete ${op.path}`)
     } else {
-      const full = resolveInWorkspace(op.path)
+      const full = resolveInWorkspace(op.path, workspace)
       if (!existsSync(full)) throw new PatchError(`Update File "${op.path}" does not exist`)
       const original = readFileSync(full, "utf8")
       const next = applyUpdate(op, original)
       if (op.moveTo) {
-        const dest = resolveInWorkspace(op.moveTo)
+        const dest = resolveInWorkspace(op.moveTo, workspace)
         deletes.push(full)
         writes.push({ path: dest, content: next })
         renames.push({ from: op.path, to: op.moveTo })
@@ -295,8 +295,8 @@ export function applyPatchText(patch: string): ApplyPatchOutcome {
 }
 
 export const applyPatch = tool(
-  async ({ patch }: { patch: string }) => {
-    const { summary, changed } = applyPatchText(patch)
+  async ({ patch }: { patch: string }, config?: unknown) => {
+    const { summary, changed } = applyPatchText(patch, workspaceFromConfig(config))
     return `Applied patch (${changed.length} file${changed.length === 1 ? "" : "s"} changed):\n${summary}`
   },
   {

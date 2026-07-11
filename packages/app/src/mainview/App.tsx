@@ -365,6 +365,7 @@ export default function App() {
         <ChatPane
           state={transcript}
           workspaceName={workspaceName}
+          baseUrl={config?.baseUrl}
           draft={draft}
           onDraftChange={setDraft}
           onSubmit={(t) => void handleSubmit(t)}

@@ -1,30 +1,24 @@
-// The real, on-disk directory the agent's filesystem tools operate on. Every
-// tool (read / bash / write / edit and apply_patch) is rooted here, and none of
-// them may escape it (see tools/fs-util.ts's resolveInWorkspace).
-//
-// WORKSPACE is a *live* binding, not a frozen const: switching repos in the GUI
-// calls setWorkspace() to retarget it at runtime. ES module live bindings mean
-// every `import { WORKSPACE }` importer sees the new value on its next read (all
-// tools read it inside their execute functions, so they pick it up immediately).
-// Callers that cache derived state MUST refresh on switch: the repo switcher
-// invalidates the agent cache (prompt embeds the cwd) and getFinder() rebuilds
-// its index when the base path changes.
+// Workspace resolution. There is NO mutable global workspace: every session
+// stores its own workspace path (Store), every run threads it through LangGraph's
+// `configurable` (run.ts / threads.ts / anthropic-runner.ts), and every tool
+// resolves it per-call via workspaceFromConfig. That's what lets sessions in
+// different repos run concurrently on one server — an in-flight run can never be
+// retargeted by another client switching folders.
 import { resolve } from "node:path"
 
-export let WORKSPACE = resolve(process.env.CHUNKY_WORKSPACE || process.cwd())
+/** The directory the server was launched in — the default workspace for
+ *  sessions created without an explicit repo, and the guaranteed fallback for
+ *  anything that predates per-session workspaces. */
+export const LAUNCH_WORKSPACE = resolve(process.env.CHUNKY_WORKSPACE || process.cwd())
 
-/** The directory the server was launched in — captured once and never mutated.
- *  The repo registry uses it as the guaranteed, un-removable fallback repo
- *  (WORKSPACE itself moves as repos are switched, so it can't serve that role). */
-export const LAUNCH_WORKSPACE = WORKSPACE
-
-/** Retarget the workspace root. Returns the resolved absolute path. */
-export function setWorkspace(path: string): string {
-  WORKSPACE = resolve(path)
-  return WORKSPACE
-}
-
-/** Current workspace root (function form for callers that prefer a getter). */
-export function getWorkspace(): string {
-  return WORKSPACE
+/**
+ * The workspace for the run a tool is executing inside. Tools receive the
+ * LangGraph RunnableConfig as their 2nd argument; run dispatch puts the session's
+ * workspace in `configurable.workspace`. Falls back to LAUNCH_WORKSPACE for
+ * direct invocations (tests, ad-hoc use) that carry no run config.
+ */
+export function workspaceFromConfig(config: unknown): string {
+  const ws = (config as { configurable?: { workspace?: unknown } } | undefined)?.configurable
+    ?.workspace
+  return typeof ws === "string" && ws.length > 0 ? resolve(ws) : LAUNCH_WORKSPACE
 }

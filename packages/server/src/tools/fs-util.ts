@@ -1,13 +1,12 @@
 // Shared filesystem helpers for the lean tools (read/write/edit/bash). Two jobs:
-//  1. resolveInWorkspace — jail every path to WORKSPACE so a tool can never touch
-//     (or reveal) a file outside the project root. Unlike apply-patch's variant,
-//     this one ACCEPTS absolute paths that are already inside WORKSPACE, because
-//     models routinely pass absolute paths back after a `read`.
+//  1. resolveInWorkspace — jail every path to the run's workspace so a tool can
+//     never touch (or reveal) a file outside the project root. Unlike apply-patch's
+//     variant, this one ACCEPTS absolute paths that are already inside the
+//     workspace, because models routinely pass absolute paths back after a `read`.
 //  2. truncateOutput — cap tool output by lines OR bytes (whichever hits first),
 //     keeping either the head (file reads) or the tail (shell output). Big outputs
 //     are the other half of the token bill, so every tool truncates.
 import { isAbsolute, relative, resolve } from "node:path"
-import { WORKSPACE } from "../workspace.ts"
 
 /** Line/byte caps shared by read (head) and bash (tail). Kept modest so a single
  *  tool result can't flood the working set and slow every later model call — the
@@ -16,15 +15,15 @@ export const MAX_LINES = 1200
 export const MAX_BYTES = 40_000
 
 /**
- * Resolve `p` (relative OR absolute) against WORKSPACE and reject any escape.
- * Relative paths resolve under WORKSPACE; absolute paths are accepted only when
- * they already live inside WORKSPACE. Throws on an empty path or any escape.
+ * Resolve `p` (relative OR absolute) against `workspace` and reject any escape.
+ * Relative paths resolve under the workspace; absolute paths are accepted only
+ * when they already live inside it. Throws on an empty path or any escape.
  */
-export function resolveInWorkspace(p: string): string {
+export function resolveInWorkspace(p: string, workspace: string): string {
   const trimmed = p.trim()
   if (!trimmed) throw new Error("empty path")
-  const full = isAbsolute(trimmed) ? resolve(trimmed) : resolve(WORKSPACE, trimmed)
-  const rel = relative(WORKSPACE, full)
+  const full = isAbsolute(trimmed) ? resolve(trimmed) : resolve(workspace, trimmed)
+  const rel = relative(workspace, full)
   if (rel.startsWith("..") || isAbsolute(rel)) {
     throw new Error(`path escapes the workspace: ${p}`)
   }

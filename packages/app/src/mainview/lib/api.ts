@@ -3,6 +3,8 @@ import {
   readSSE,
   type AgentEvent,
   type CreateSessionResponse,
+  type FileSearchItem,
+  type FileSearchResponse,
   type ListSessionsResponse,
   type Repo,
   type ReposResponse,
@@ -13,6 +15,8 @@ import {
 export type { SendBlockedResponse } from "@chunky/protocol"
 
 export type { Repo } from "@chunky/protocol"
+
+export type { FileSearchItem } from "@chunky/protocol"
 
 export interface AppConfig {
   baseUrl: string
@@ -128,6 +132,23 @@ export async function sendMessage(
 
 export async function interruptSession(baseUrl: string, sessionId: string): Promise<void> {
   await fetch(baseUrl + ROUTES.interrupt(sessionId), { method: "POST" }).catch(() => {})
+}
+
+/** FFF fuzzy file/dir search powering the composer's `@`-mention autocomplete.
+ *  Pass an AbortSignal so a superseded keystroke's request can be cancelled. */
+export async function searchFiles(
+  baseUrl: string,
+  query: string,
+  signal?: AbortSignal,
+  limit = 12,
+): Promise<FileSearchItem[]> {
+  const url = new URL(baseUrl + ROUTES.fileSearch)
+  url.searchParams.set("q", query)
+  url.searchParams.set("limit", String(limit))
+  const res = await fetch(url, { signal })
+  if (!res.ok) throw new Error(`file search failed (${res.status})`)
+  const data = (await res.json()) as FileSearchResponse
+  return data.items ?? []
 }
 
 export async function openEventStream(

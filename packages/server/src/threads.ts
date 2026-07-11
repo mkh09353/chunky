@@ -22,6 +22,7 @@ import {
   type AgentSelectionOverride,
 } from "./providers/registry.ts"
 import { registerThread, unregisterThread, type ThreadSpawner } from "./thread-context.ts"
+import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { runWorkflowScript, workflowConcurrency, type WorkflowHost, type WorkflowTier } from "./workflow/engine.ts"
 
 /** The narrow part of a compiled agent that ThreadManager needs. Keeping this
@@ -31,7 +32,7 @@ export interface StreamableAgent {
   stream(...args: any[]): Promise<AsyncIterable<unknown>>
 }
 
-export type AgentForSelection = (selection: AgentSelection) => StreamableAgent
+export type AgentForSelection = (selection: AgentSelection, workspace: string) => StreamableAgent
 
 /** Per-session advisor-consult tally, keyed by root session id. A fresh
  *  ThreadManager is built per turn (run.ts), so this lives module-level to
@@ -56,6 +57,9 @@ export class ThreadManager implements ThreadSpawner {
   private readonly agentFor: AgentForSelection
   private readonly advisorAgentFor: AgentForSelection
   private readonly selections = new Map<string, AgentSelection>()
+  /** The session's workspace: every child thread and advisor consult runs here —
+   *  a child can never escape into another repo's folder. */
+  readonly workspace: string
 
   constructor(
     emit: Emit,
@@ -63,11 +67,13 @@ export class ThreadManager implements ThreadSpawner {
     rootSelection: AgentSelection = activeSelection(),
     agentFor: AgentForSelection = getAgent,
     advisorAgentFor: AgentForSelection = getAdvisorAgent,
+    workspace: string = LAUNCH_WORKSPACE,
   ) {
     this.emit = emit
     this.rootId = rootId
     this.agentFor = agentFor
     this.advisorAgentFor = advisorAgentFor
+    this.workspace = workspace
     this.selections.set(rootId, rootSelection)
     // The root (main session) thread resolves to this manager, so the main
     // model's spawn_thread calls are routed here.
@@ -118,6 +124,7 @@ export class ThreadManager implements ThreadSpawner {
           emit: this.emit,
           eventThreadId: childThreadId,
           freshSession: true,
+          workspace: this.workspace,
         })
       }
 
@@ -127,10 +134,10 @@ export class ThreadManager implements ThreadSpawner {
       // stream with a cleared async-local store so it is fully isolated: the
       // child streams only through its OWN iterator, tagged with its threadId.
       const stream = await AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () =>
-        this.agentFor(selection).stream(
+        this.agentFor(selection, this.workspace).stream(
           { messages: [{ role: "user", content: opts.instructions }] },
           {
-            configurable: { thread_id: childThreadId },
+            configurable: { thread_id: childThreadId, workspace: this.workspace },
             streamMode: ["updates", "messages"],
             recursionLimit: RECURSION_LIMIT,
           } as any,
@@ -240,6 +247,7 @@ export class ThreadManager implements ThreadSpawner {
           eventThreadId: advisorThreadId,
           systemPrompt: ADVISOR_SYSTEM_PROMPT,
           allowedTools: ["mcp__chunky__read", "mcp__chunky__bash"],
+          workspace: this.workspace,
         })
       } else {
         // Same async-local isolation as spawn(): a cleared store so the advisor's

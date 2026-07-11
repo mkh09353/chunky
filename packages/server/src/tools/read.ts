@@ -2,10 +2,11 @@
 // `cat -n` gutter is the single biggest per-read token win: the model reads the
 // same bytes it will later paste back into an `edit`/`apply_patch` oldText, so
 // there is nothing to strip. Reads default to the first 2000 lines / 50KB (head);
-// offset/limit page through larger files. All paths are jailed to WORKSPACE.
+// offset/limit page through larger files. All paths are jailed to the run's workspace.
 import { readFileSync } from "node:fs"
 import { tool } from "@langchain/core/tools"
 import { z } from "zod"
+import { workspaceFromConfig } from "../workspace.ts"
 import { MAX_BYTES, MAX_LINES, resolveInWorkspace, truncateOutput } from "./fs-util.ts"
 
 export const readInputShape = {
@@ -15,8 +16,8 @@ export const readInputShape = {
 }
 
 export const read = tool(
-  async ({ path, offset, limit }: { path: string; offset?: number; limit?: number }) => {
-    const full = resolveInWorkspace(path)
+  async ({ path, offset, limit }: { path: string; offset?: number; limit?: number }, config?: unknown) => {
+    const full = resolveInWorkspace(path, workspaceFromConfig(config))
     const text = readFileSync(full, "utf-8")
     if (text.length === 0) return "[File is empty]"
 

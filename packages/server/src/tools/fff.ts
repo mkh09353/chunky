@@ -3,6 +3,7 @@
 import { tool } from "@langchain/core/tools"
 import { z } from "zod"
 import { buildFffQuery, getFinder, gitAnnotation } from "../fff.ts"
+import { workspaceFromConfig } from "../workspace.ts"
 
 const DEFAULT_FIND_LIMIT = 30
 const DEFAULT_GREP_LIMIT = 20
@@ -33,8 +34,8 @@ export const fffind = tool(
     path?: string
     exclude?: string | string[]
     limit?: number
-  }) => {
-    const f = await getFinder()
+  }, config?: unknown) => {
+    const f = await getFinder(workspaceFromConfig(config))
     const pageSize = Math.max(1, Math.min(limit ?? DEFAULT_FIND_LIMIT, 200))
     const query = buildFffQuery(pattern ?? "", path, exclude)
     const result = f.fileSearch(query, { pageSize })
@@ -108,14 +109,14 @@ export const ffgrep = tool(
     regex?: boolean
     context?: number
     limit?: number
-  }) => {
+  }, config?: unknown) => {
     if (!pattern || !pattern.trim()) throw new Error("pattern is required")
     // Reject pure-wildcard regex that would dump the whole repo.
     if (regex && /^\.\**$/.test(pattern.trim())) {
       throw new Error("Pattern matches everything; use a more specific pattern or fffind for listing files.")
     }
 
-    const f = await getFinder()
+    const f = await getFinder(workspaceFromConfig(config))
     const pageSize = Math.max(1, Math.min(limit ?? DEFAULT_GREP_LIMIT, 200))
     const query = buildFffQuery(pattern, path, exclude)
     const ctx = Math.max(0, Math.min(context ?? 0, 5))

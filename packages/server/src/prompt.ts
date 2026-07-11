@@ -3,7 +3,7 @@
 // gives a handful of behavior guidelines, and adapts the edit line to whichever
 // edit tool the active model gets (edit for most models, apply_patch for
 // GPT/Codex — see agent.ts's editToolsForModel).
-import { WORKSPACE } from "./workspace.ts"
+import { LAUNCH_WORKSPACE } from "./workspace.ts"
 
 export type EditToolName = "edit" | "apply_patch"
 
@@ -11,7 +11,11 @@ export type EditToolName = "edit" | "apply_patch"
  *  persistent side thread. Terse on purpose. */
 export const ADVISOR_SYSTEM_PROMPT = `You are an expert software-engineering advisor to a coding agent working in this repository. You have read-only tools (read, bash, fffind, ffgrep) — use them to inspect exactly what you're pointed at before answering; read the actual code, don't guess. You must NOT modify anything: no edits, no writes, no mutating shell commands — use bash only for read-only inspection (ls, cat, git). Prefer fffind for paths and ffgrep for content over shell grep/find. The executor applies changes, not you. Reply with concise, specific, actionable guidance: the decision, the why, the concrete next step, and any risks or better alternatives. Be direct.`
 
-export function buildSystemPrompt(activeEditToolName: EditToolName, hasAdvisor = false): string {
+export function buildSystemPrompt(
+  activeEditToolName: EditToolName,
+  hasAdvisor = false,
+  workspace: string = LAUNCH_WORKSPACE,
+): string {
   const date = new Date().toISOString().slice(0, 10)
   const isEdit = activeEditToolName === "edit"
 
@@ -59,5 +63,5 @@ ${editGuideline}
 - Goal mode: if a message is prefixed "[goal mode]", you're working autonomously toward a set goal. Do the work directly without asking for confirmation; when it's fully done and verified call goal_complete with evidence, or goal_blocked if you hit a real impasse.
 
 Current date: ${date}
-Working directory: ${WORKSPACE}`
+Working directory: ${workspace}`
 }

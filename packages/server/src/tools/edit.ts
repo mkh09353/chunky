@@ -7,6 +7,7 @@
 import { readFileSync, writeFileSync } from "node:fs"
 import { tool } from "@langchain/core/tools"
 import { z } from "zod"
+import { workspaceFromConfig } from "../workspace.ts"
 import { resolveInWorkspace } from "./fs-util.ts"
 import {
   applyEditsToNormalizedContent,
@@ -75,8 +76,8 @@ const editSchema = z.preprocess(
 )
 
 export const editTool = tool(
-  async ({ path, edits }: { path: string; edits: Edit[] }) => {
-    const full = resolveInWorkspace(path)
+  async ({ path, edits }: { path: string; edits: Edit[] }, config?: unknown) => {
+    const full = resolveInWorkspace(path, workspaceFromConfig(config))
     const rawContent = readFileSync(full, "utf-8")
 
     // Strip the BOM before matching (the model won't include an invisible BOM in

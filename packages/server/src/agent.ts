@@ -7,8 +7,9 @@
 // DeepAgents' heavy defaults (BASE_AGENT_PROMPT, write_todos, the 6 verbose
 // filesystem tools, the `task` tool) and replaces them with our own ~300-token
 // system prompt and four lean tools (read/bash/write/edit) that operate directly
-// on WORKSPACE via node:fs. Checkpointer, streaming, threads, and providers are
-// all unchanged — only the agent-construction call differs.
+// on the run's workspace (resolved per-call from `configurable.workspace`) via
+// node:fs. Checkpointer, streaming, threads, and providers are all unchanged —
+// only the agent-construction call differs.
 import { tool } from "@langchain/core/tools"
 import { z } from "zod"
 import { createAgent, summarizationMiddleware } from "langchain"
@@ -20,6 +21,7 @@ import {
   type AgentSelection,
 } from "./providers/registry.ts"
 import { threadContextFor } from "./thread-context.ts"
+import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { ADVISOR_SYSTEM_PROMPT, buildSystemPrompt, type EditToolName } from "./prompt.ts"
 import { applyPatch } from "./tools/apply-patch.ts"
 import { bash } from "./tools/bash.ts"
@@ -149,10 +151,15 @@ export function executorToolsFor(selection: AgentSelection) {
  *  (run.ts, threads.ts). Override with CHUNKY_RECURSION_LIMIT. */
 export const RECURSION_LIMIT = Number(process.env.CHUNKY_RECURSION_LIMIT) || 500
 
-/** Build the lean agent for one explicit provider/model selection. Tools
- * read/bash/write/edit operate directly on WORKSPACE via node:fs; the system
- * prompt is ~300 tokens. */
-export function buildAgent(selection: AgentSelection = activeSelection(), _opts: BuildAgentOpts = {}) {
+/** Build the lean agent for one explicit provider/model selection + workspace.
+ * Tools resolve the run's workspace from `configurable.workspace` at execute
+ * time; the workspace here only feeds the system prompt (working directory).
+ * The system prompt is ~300 tokens. */
+export function buildAgent(
+  selection: AgentSelection = activeSelection(),
+  workspace: string = LAUNCH_WORKSPACE,
+  _opts: BuildAgentOpts = {},
+) {
   const providerId = selection.provider
   const modelId = selection.model
   const model = resolveModel(selection)
@@ -164,7 +171,7 @@ export function buildAgent(selection: AgentSelection = activeSelection(), _opts:
   return createAgent({
     model,
     tools,
-    systemPrompt: buildSystemPrompt(editToolNameForModel(modelId, providerId), hasAdvisor),
+    systemPrompt: buildSystemPrompt(editToolNameForModel(modelId, providerId), hasAdvisor, workspace),
     checkpointer: makeCheckpointer(),
     // Auto-compaction — the context-management half of Pi's efficiency win (a
     // "tighter working set" so long sessions don't grow unbounded, which is what we
@@ -185,20 +192,24 @@ export function buildAgent(selection: AgentSelection = activeSelection(), _opts:
 }
 
 // Cache one agent per full SELECTION signature (provider + model + effort +
-// speed) so switching provider, model, OR a reasoning knob rebuilds the model,
-// while an unchanged selection reuses its agent (keeping live thread state). The
+// speed) AND workspace — the workspace is baked into the system prompt, so each
+// repo gets its own agent instance (OpenCode's per-directory instance pattern)
+// and sessions in different repos run concurrently without sharing a cwd. The
 // durable sqlite checkpointer is keyed by thread_id, so even a rebuilt agent
 // resumes prior memory from disk.
 // Agents are intentionally lazy: deterministic thread tests can inject a fake
 // stream without requiring any provider credentials at module-import time.
 const agentCache = new Map<string, ReturnType<typeof buildAgent>>()
 
-/** The agent for one explicit selection, rebuilt on first use per signature. */
-export function getAgent(selection: AgentSelection = activeSelection()): ReturnType<typeof buildAgent> {
-  const sig = selectionSignature(selection)
+/** The agent for one selection + workspace, rebuilt on first use per key. */
+export function getAgent(
+  selection: AgentSelection = activeSelection(),
+  workspace: string = LAUNCH_WORKSPACE,
+): ReturnType<typeof buildAgent> {
+  const sig = `${selectionSignature(selection)}@@${workspace}`
   let a = agentCache.get(sig)
   if (!a) {
-    a = buildAgent(selection)
+    a = buildAgent(selection, workspace)
     agentCache.set(sig, a)
   }
   return a
@@ -236,7 +247,9 @@ export function buildAdvisorAgent(selection: AgentSelection) {
 }
 
 /** The advisor agent for one selection, cached in the SAME agentCache (keyed
- *  "advisor::<sig>") so invalidateAgent() clears it too. ThreadManager's default
+ *  "advisor::<sig>") so invalidateAgent() clears it too. Its prompt embeds no
+ *  working directory (tools resolve the run's workspace per-call), so one
+ *  instance per selection serves every repo. ThreadManager's default
  *  advisorAgentFor injectable. */
 export function getAdvisorAgent(selection: AgentSelection = activeSelection()): ReturnType<typeof buildAgent> {
   const sig = "advisor::" + selectionSignature(selection)

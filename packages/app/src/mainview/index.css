@@ -272,6 +272,36 @@ body,
   background-color: var(--chunky-purple-soft);
 }
 
+/* ---- @-mention file menu -------------------------------------------------- */
+
+/* One row in the composer's `@`-mention popover: a dimmed file/dir glyph plus
+   the workspace-relative path, which truncates rather than wrapping so long
+   paths keep the menu tidy. The row sits inside Astryx's trigger-menu item, so
+   padding/hover come from there. */
+.chunky-mention-item {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  min-width: 0;
+  width: 100%;
+}
+
+.chunky-mention-icon {
+  width: 1rem;
+  height: 1rem;
+  flex-shrink: 0;
+  color: var(--color-text-secondary);
+}
+
+.chunky-mention-path {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-family: var(--font-family-code);
+  font-size: var(--font-size-sm);
+}
+
 /* ---- Repo tabs (top nav) -------------------------------------------------- */
 
 .chunky-repotabs {

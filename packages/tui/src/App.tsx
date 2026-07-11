@@ -112,6 +112,9 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   const [cacheCold, setCacheCold] = useState<CacheCold | null>(null)
   // Hands a canceled pending send's text back to the input (nonce = re-trigger).
   const [prefill, setPrefill] = useState<{ text: string; nonce: number } | null>(null)
+  // Bumped by /clear so the live-session effect creates a brand-new server
+  // session (fresh prompt cache + empty transcript) instead of only wiping UI.
+  const [sessionKey, setSessionKey] = useState(0)
   const sessionIdRef = useRef<string | null>(null)
   // Images pasted (Ctrl+V) onto the NEXT message. A ref mirrors it so `submit`
   // reads the latest set without going stale in its closure.
@@ -146,14 +149,20 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   }, [])
 
   // ---- live wiring: open the SSE stream BEFORE any message is sent ----
+  // `sessionKey` re-runs this on /clear so we actually start a new thread
+  // (new sessionId → empty cache-watch → no stale "Cache cold" banner).
   useEffect(() => {
     if (mode !== "live") return
     let cancelled = false
+    sessionIdRef.current = null
     ;(async () => {
       try {
         const res = await fetch(baseUrl + ROUTES.createSession, { method: "POST" })
         const { sessionId } = (await res.json()) as CreateSessionResponse
+        if (cancelled) return
         sessionIdRef.current = sessionId
+        // New conversation: nothing tracked yet, so the cold banner must go.
+        setCacheCold(null)
         const evRes = await fetch(baseUrl + ROUTES.events(sessionId))
         for await (const ev of readSSE(evRes)) {
           if (cancelled) break
@@ -166,7 +175,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     return () => {
       cancelled = true
     }
-  }, [mode, baseUrl, apply])
+  }, [mode, baseUrl, apply, sessionKey])
 
   // ---- live: load the current model selection so the status line is accurate ----
   useEffect(() => {
@@ -627,10 +636,25 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   const onCommand = useCallback(
     (name: string) => {
       switch (name) {
-        case "/clear":
+        case "/clear": {
+          // Local wipe + (in live mode) a real new server session. Keeping the
+          // old sessionId would leave the cache-watch armed and keep showing
+          // "Cache cold" on an empty-looking thread.
           setState(initialState)
           setStartedAt(null)
+          setCacheCold(null)
+          setPendingSend(null)
+          setGoal(null)
+          setAttachments([])
+          setPrefill(null)
+          if (mode === "live") {
+            const old = sessionIdRef.current
+            if (old) void fetch(baseUrl + ROUTES.interrupt(old), { method: "POST" }).catch(() => {})
+            sessionIdRef.current = null
+            setSessionKey((k) => k + 1)
+          }
           break
+        }
         case "/quit":
           exit()
           break
@@ -656,7 +680,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           break
       }
     },
-    [printLine, doLogin, doModel, doAdvisor, doGoal, doCacheGuard, exit],
+    [printLine, doLogin, doModel, doAdvisor, doGoal, doCacheGuard, exit, mode, baseUrl],
   )
 
   // Mock demo turn so the transcript streams even without a TTY.

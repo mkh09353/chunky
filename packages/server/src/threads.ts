@@ -32,6 +32,19 @@ export interface StreamableAgent {
 
 export type AgentForSelection = (selection: AgentSelection) => StreamableAgent
 
+/** Per-session advisor-consult tally, keyed by root session id. A fresh
+ *  ThreadManager is built per turn (run.ts), so this lives module-level to
+ *  survive across turns and count how often the executor reaches for the advisor
+ *  over a whole session — the signal for whether the prompt nudge is calibrated
+ *  (used for hard calls, not for everything). Entries are tiny (id → count) and
+ *  a session-scoped local tool, so the map is never pruned. */
+const advisorConsultsBySession = new Map<string, number>()
+
+/** How many times the advisor has been consulted in this session so far. */
+export function advisorConsultCount(sessionId: string): number {
+  return advisorConsultsBySession.get(sessionId) ?? 0
+}
+
 export class ThreadManager implements ThreadSpawner {
   private readonly rootId: string
   private readonly emit: Emit
@@ -149,6 +162,12 @@ export class ThreadManager implements ThreadSpawner {
     if (!advisorSel) {
       return "error: no advisor is configured — ask the user to set one (/advisor)."
     }
+
+    // Tally the consult before running it — measures how often the model reaches
+    // for the advisor, independent of whether the consult itself succeeds.
+    const consultNo = (advisorConsultsBySession.get(this.rootId) ?? 0) + 1
+    advisorConsultsBySession.set(this.rootId, consultNo)
+    console.log(`[@chunky/server] advisor consult #${consultNo} this session (${this.rootId})`)
 
     const advisorThreadId = `${this.rootId}:advisor`
     const content = opts.pointers

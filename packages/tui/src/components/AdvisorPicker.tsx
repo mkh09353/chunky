@@ -13,7 +13,7 @@ export interface ModelInfo {
   reasoning: boolean
   contextLimit?: number
 }
-type Effort = "low" | "medium" | "high" | "xhigh"
+type Effort = "low" | "medium" | "high" | "xhigh" | "max"
 
 interface Row {
   provider: string
@@ -34,7 +34,7 @@ interface Props {
   onCancel: () => void
 }
 
-const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh"]
+const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"]
 const WINDOW = 10 // visible rows in the scrolling list
 
 /** Case-insensitive subsequence fuzzy match (same scorer as ModelPicker). */

@@ -1,6 +1,6 @@
 // Browser port of packages/tui/src/transcript.ts — reduce AgentEvents into a
 // thread tree the chat UI can render.
-import type { AgentEvent, GoalStatus } from "@chunky/protocol"
+import type { AgentEvent, GoalStatus, MessageEndReason } from "@chunky/protocol"
 
 export const MAIN = "main"
 
@@ -8,7 +8,7 @@ export type Item =
   /** `from` marks a message injected by ANOTHER session (send_to_session) —
    *  rendered with provenance instead of as something the user typed. */
   | { kind: "user"; text: string; from?: string }
-  | { kind: "assistant"; text: string; streaming: boolean }
+  | { kind: "assistant"; text: string; streaming: boolean; endReason?: MessageEndReason }
   | {
       kind: "tool"
       id: string
@@ -96,7 +96,7 @@ function reduceItems(items: Item[], ev: AgentEvent): Item[] {
       for (let i = next.length - 1; i >= 0; i--) {
         const it = next[i]!
         if (it.kind === "assistant" && it.streaming) {
-          next[i] = { ...it, streaming: false }
+          next[i] = { ...it, streaming: false, ...(ev.reason ? { endReason: ev.reason } : {}) }
           break
         }
       }

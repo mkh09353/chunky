@@ -71,11 +71,26 @@ export function Transcript({
   // `Ctrl+O` toggles the focused thread (the newest one when nothing is focused).
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const [focusedId, setFocusedId] = useState<string | null>(null)
+  const [copyNotice, setCopyNotice] = useState<string | null>(null)
 
   const threadIds = state.order.filter((id) => id !== MAIN)
 
   useInput(
     (input, key) => {
+      if (key.ctrl && (input === "y" || input === "Y")) {
+        const target = focusedId ? state.threads[focusedId] : main
+        const text = [...(target?.items ?? [])]
+          .reverse()
+          .find((item) => item.kind === "assistant" && item.text.trim())
+        if (text?.kind === "assistant") {
+          const proc = Bun.spawn(["pbcopy"], { stdin: "pipe" })
+          proc.stdin.write(text.text)
+          proc.stdin.end()
+          setCopyNotice("Copied latest assistant message")
+          setTimeout(() => setCopyNotice(null), 1500)
+        }
+        return
+      }
       if (threadIds.length === 0) return
       // Default focus = the NEWEST thread, so a bare Ctrl+O expands the latest.
       const curIdx = focusedId && threadIds.includes(focusedId) ? threadIds.indexOf(focusedId) : threadIds.length - 1
@@ -107,6 +122,7 @@ export function Transcript({
   const effectiveFocus = focusedId && threadIds.includes(focusedId) ? focusedId : (threadIds[threadIds.length - 1] ?? null)
   return (
     <box flexDirection="column">
+      {copyNotice ? <text fg={SUCCESS} attributes={DIM}>✓ {copyNotice}</text> : null}
       <ParentBody
         items={main.items}
         parentId={MAIN}
@@ -334,13 +350,18 @@ export function ItemView({ item }: { item: DisplayItem }) {
 
     case "assistant":
       return (
-        <box marginTop={1} flexDirection="row" width="100%">
-          <text fg={ACCENT}>{DOT} </text>
-          {/* flexGrow so long lines wrap inside the remaining columns instead of
-              overflowing and reflowing under the sparkle marker. */}
-          <box flexDirection="column" flexGrow={1} flexShrink={1}>
-            <Markdown text={item.text} />
+        <box marginTop={1} flexDirection="column" width="100%">
+          <box flexDirection="row" width="100%">
+            <text fg={ACCENT}>{DOT} </text>
+            {/* flexGrow so long lines wrap inside the remaining columns instead of
+                overflowing and reflowing under the sparkle marker. */}
+            <box flexDirection="column" flexGrow={1} flexShrink={1}>
+              <Markdown text={item.text} />
+            </box>
           </box>
+          {item.endReason === "max_tokens" ? <text fg={WARNING}>⚠ Response stopped at the output limit.</text> : null}
+          {item.endReason === "interrupted" ? <text attributes={DIM}>⏹ Response interrupted.</text> : null}
+          {item.endReason === "error" ? <text fg={ERROR}>✗ Response ended unexpectedly.</text> : null}
         </box>
       )
 

@@ -19,6 +19,7 @@ export function usageFromLangChainMessage(msg: unknown): UsageDelta | null {
       input_tokens?: number
       output_tokens?: number
       input_token_details?: { cache_read?: number; cache_creation?: number }
+      output_token_details?: { reasoning?: number }
     }
     response_metadata?: {
       usage?: {
@@ -26,6 +27,7 @@ export function usageFromLangChainMessage(msg: unknown): UsageDelta | null {
         completion_tokens?: number
         total_tokens?: number
         prompt_tokens_details?: { cached_tokens?: number }
+        completion_tokens_details?: { reasoning_tokens?: number }
       }
       tokenUsage?: {
         promptTokens?: number
@@ -39,21 +41,25 @@ export function usageFromLangChainMessage(msg: unknown): UsageDelta | null {
   if (um && (typeof um.input_tokens === "number" || typeof um.output_tokens === "number")) {
     const cacheRead = um.input_token_details?.cache_read
     const cacheWrite = um.input_token_details?.cache_creation
+    const reasoning = um.output_token_details?.reasoning
     return {
       inputTokens: um.input_tokens ?? 0,
       outputTokens: um.output_tokens ?? 0,
       ...(typeof cacheRead === "number" ? { cacheReadTokens: cacheRead } : {}),
       ...(typeof cacheWrite === "number" ? { cacheWriteTokens: cacheWrite } : {}),
+      ...(typeof reasoning === "number" ? { reasoningTokens: reasoning } : {}),
     }
   }
 
   const u = m.response_metadata?.usage
   if (u && (typeof u.prompt_tokens === "number" || typeof u.completion_tokens === "number")) {
     const cached = u.prompt_tokens_details?.cached_tokens
+    const reasoning = u.completion_tokens_details?.reasoning_tokens
     return {
       inputTokens: u.prompt_tokens ?? 0,
       outputTokens: u.completion_tokens ?? 0,
       ...(typeof cached === "number" ? { cacheReadTokens: cached } : {}),
+      ...(typeof reasoning === "number" ? { reasoningTokens: reasoning } : {}),
     }
   }
 
@@ -75,6 +81,7 @@ export function usageFromAnthropicResult(message: {
     output_tokens?: number
     cache_creation_input_tokens?: number | null
     cache_read_input_tokens?: number | null
+    reasoning_tokens?: number | null
   }
   modelUsage?: Record<
     string,
@@ -83,6 +90,7 @@ export function usageFromAnthropicResult(message: {
       outputTokens?: number
       cacheReadInputTokens?: number
       cacheCreationInputTokens?: number
+      reasoningTokens?: number
     }
   >
 }): UsageDelta {
@@ -92,6 +100,7 @@ export function usageFromAnthropicResult(message: {
   let outputTokens = 0
   let cacheReadTokens = 0
   let cacheWriteTokens = 0
+  let reasoningTokens = 0
   let model: string | undefined
 
   const models = message.modelUsage ? Object.entries(message.modelUsage) : []
@@ -101,6 +110,7 @@ export function usageFromAnthropicResult(message: {
       outputTokens += mu.outputTokens ?? 0
       cacheReadTokens += mu.cacheReadInputTokens ?? 0
       cacheWriteTokens += mu.cacheCreationInputTokens ?? 0
+      reasoningTokens += mu.reasoningTokens ?? 0
       if (!model) model = id
     }
   } else if (message.usage) {
@@ -108,6 +118,7 @@ export function usageFromAnthropicResult(message: {
     outputTokens = message.usage.output_tokens ?? 0
     cacheReadTokens = message.usage.cache_read_input_tokens ?? 0
     cacheWriteTokens = message.usage.cache_creation_input_tokens ?? 0
+    reasoningTokens = message.usage.reasoning_tokens ?? 0
   }
 
   return {
@@ -115,6 +126,7 @@ export function usageFromAnthropicResult(message: {
     outputTokens,
     ...(cacheReadTokens ? { cacheReadTokens } : {}),
     ...(cacheWriteTokens ? { cacheWriteTokens } : {}),
+    ...(reasoningTokens ? { reasoningTokens } : {}),
     ...(model ? { model } : {}),
   }
 }

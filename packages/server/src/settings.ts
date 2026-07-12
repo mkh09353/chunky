@@ -8,7 +8,7 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { randomBytes } from "node:crypto"
 
-export type Effort = "low" | "medium" | "high" | "xhigh"
+export type Effort = "low" | "medium" | "high" | "xhigh" | "max"
 export type Speed = "standard" | "fast"
 
 /** Per-provider selection: which model + reasoning knobs. */

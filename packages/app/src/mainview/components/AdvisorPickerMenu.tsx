@@ -8,14 +8,15 @@ import {
   type ModelRow,
 } from "../lib/api"
 
-type Effort = "low" | "medium" | "high" | "xhigh"
-const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh"]
+type Effort = "low" | "medium" | "high" | "xhigh" | "max"
+const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"]
 
 const KNOB_LABEL: Record<string, string> = {
   low: "Low",
   medium: "Medium",
   high: "High",
   xhigh: "Extra High",
+  max: "Max",
 }
 
 /** Same case-insensitive subsequence fuzzy match as ModelPickerMenu. */

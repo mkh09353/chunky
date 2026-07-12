@@ -97,6 +97,16 @@ const scenario: AgentEvent[] = [
 // --- empty items + no children → empty plan ---
 eq(buildRenderPlan([], []), [], "empty items + no children → empty plan")
 
+// --- output-limit reason survives reduction for visible incomplete-state UI ---
+{
+  const state = fold([
+    { type: "message.start", role: "assistant" },
+    { type: "message.delta", text: "partial" },
+    { type: "message.end", reason: "max_tokens" },
+  ])
+  eq(state.threads[MAIN]!.items[0], { kind: "assistant", text: "partial", streaming: false, endReason: "max_tokens" }, "output-limit reason is retained")
+}
+
 // --- anchorless thread falls back to the end ---
 {
   const items: Item[] = [

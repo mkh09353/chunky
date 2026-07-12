@@ -12,6 +12,7 @@ import {
 } from "@anthropic-ai/claude-agent-sdk"
 import { createHash, randomUUID } from "node:crypto"
 import { z } from "zod"
+import type { MessageEndReason } from "@chunky/protocol"
 import { taggedEmitter, type Emit } from "./event-emitter.ts"
 import { buildSystemPrompt } from "./prompt.ts"
 import type { AgentSelection } from "./providers/registry.ts"
@@ -303,6 +304,7 @@ export async function translateAnthropicMessages(
   let assistantOpen = false
   const textChunks: string[] = []
   let sawInit = false
+  let pendingEndReason: MessageEndReason = "complete"
 
   const openAssistant = () => {
     if (!assistantOpen) {
@@ -310,10 +312,11 @@ export async function translateAnthropicMessages(
       emit({ type: "message.start", role: "assistant" })
     }
   }
-  const closeAssistant = () => {
+  const closeAssistant = (reason: MessageEndReason = pendingEndReason) => {
     if (assistantOpen) {
       assistantOpen = false
-      emit({ type: "message.end" })
+      emit({ type: "message.end", reason })
+      pendingEndReason = "complete"
     }
   }
   const appendText = (text: string) => {
@@ -335,6 +338,9 @@ export async function translateAnthropicMessages(
         const event = message.event as any
         if (event?.type === "content_block_delta" && event?.delta?.type === "text_delta") {
           appendText(event.delta.text ?? "")
+        } else if (event?.type === "message_delta") {
+          const stopReason = event?.delta?.stop_reason
+          pendingEndReason = stopReason === "max_tokens" ? "max_tokens" : "complete"
         } else if (event?.type === "message_stop") {
           closeAssistant()
         }
@@ -358,12 +364,16 @@ export async function translateAnthropicMessages(
         // Result carries the turn's usage; arm the cache watch with its prompt
         // size so the next turn can detect a cold cache. Works on subscription
         // OAuth too (token counts are reported even when cost is 0).
+        const delta = usageFromAnthropicResult(message as any)
         if (cache) {
-          const delta = usageFromAnthropicResult(message as any)
           noteRequest(cache.conversationId, delta, delta.model ?? cache.model, Date.now())
         }
+        emit({ type: "usage.update", usage: delta })
       }
     }
+  } catch (error) {
+    closeAssistant((error as Error)?.name === "AbortError" ? "interrupted" : "error")
+    throw error
   } finally {
     closeAssistant()
   }

@@ -275,7 +275,7 @@ const server = Bun.serve({
       const model = typeof body.model === "string" && body.model.length > 0 ? body.model : undefined
       if (!model) return json({ error: "missing model" }, 400)
 
-      const EFFORTS = ["low", "medium", "high", "xhigh"]
+      const EFFORTS = ["low", "medium", "high", "xhigh", "max"]
       const SPEEDS = ["standard", "fast"]
       const effort =
         typeof body.effort === "string" && EFFORTS.includes(body.effort) ? (body.effort as Effort) : undefined
@@ -304,7 +304,7 @@ const server = Bun.serve({
       } catch {
         return json({ error: "invalid JSON body" }, 400)
       }
-      const EFFORTS = ["low", "medium", "high", "xhigh"]
+      const EFFORTS = ["low", "medium", "high", "xhigh", "max"]
       const patch: Partial<AdvisorConfig> = {}
       if (typeof body.enabled === "boolean") patch.enabled = body.enabled
       if (typeof body.provider === "string") patch.provider = body.provider

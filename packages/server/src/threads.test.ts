@@ -173,6 +173,7 @@ async function main() {
     ["medium", "medium"],
     ["high", "medium"],
     ["xhigh", "medium"],
+    ["max", "medium"],
     [undefined, "medium"],
   ] as const) {
     if (capEffortAtMedium(given) !== want) {

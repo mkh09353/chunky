@@ -15,11 +15,15 @@ export const DEFAULT_PORT = 4599
 export interface UsageDelta {
   inputTokens: number
   outputTokens: number
+  /** Provider-reported hidden reasoning/thinking tokens, when available. */
+  reasoningTokens?: number
   cacheReadTokens?: number
   cacheWriteTokens?: number
   /** Model id that produced this usage, when known. */
   model?: string
 }
+
+export type MessageEndReason = "complete" | "max_tokens" | "interrupted" | "error"
 
 export type AgentEvent =
   | { type: "session.status"; sessionId: string; status: "idle" | "running" }
@@ -49,7 +53,10 @@ export type AgentEvent =
   | { type: "message.user"; text: string; threadId?: string; from?: string }
   | { type: "message.start"; role: "assistant"; threadId?: string }
   | { type: "message.delta"; text: string; threadId?: string }
-  | { type: "message.end"; threadId?: string }
+  | { type: "message.end"; reason?: MessageEndReason; threadId?: string }
+  /** Provider usage for a completed model request. Persisted for diagnostics and
+   *  future cost/context reporting; clients may ignore it. */
+  | { type: "usage.update"; usage: UsageDelta; threadId?: string }
   | { type: "tool.start"; id: string; name: string; input: unknown; threadId?: string }
   | { type: "tool.end"; id: string; ok: boolean; output: string; threadId?: string }
   /** `model` is the child's EFFECTIVE model id (inherited or overridden) so the

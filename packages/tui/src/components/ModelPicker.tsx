@@ -13,7 +13,7 @@ export interface ModelInfo {
   reasoning: boolean
   contextLimit?: number
 }
-type Effort = "low" | "medium" | "high" | "xhigh"
+type Effort = "low" | "medium" | "high" | "xhigh" | "max"
 type Speed = "standard" | "fast"
 
 interface Row {
@@ -35,7 +35,7 @@ interface Props {
   onCancel: () => void
 }
 
-const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh"]
+const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"]
 const SPEEDS: Speed[] = ["standard", "fast"]
 const WINDOW = 10 // visible rows in the scrolling list
 
@@ -67,7 +67,7 @@ function fuzzyScore(query: string, target: string): number {
 /**
  * The fuzzy model picker opened by /model. Three steps:
  *   1. list  — provider/model rows; type to filter, ↑/↓, enter to choose.
- *   2. effort — shown only for reasoning models (low/medium/high/xhigh).
+ *   2. effort — shown only for reasoning models (low/medium/high/xhigh/max).
  *   3. speed  — shown only for Codex (standard/fast).
  * Esc steps back (and cancels from the list). Styled after the slash menu /
  * LoginPicker (rounded violet box, ❯ pointer).

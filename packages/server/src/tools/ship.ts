@@ -80,7 +80,7 @@ export const shipGoalInputShape = {
     .optional()
     .describe("Optional model id for the orchestrator (with orchestrator_provider, or alone to switch model on the default provider)."),
   orchestrator_effort: z
-    .enum(["low", "medium", "high", "xhigh"])
+    .enum(["low", "medium", "high", "xhigh", "max"])
     .optional()
     .describe("Optional reasoning effort for the orchestrator."),
 }

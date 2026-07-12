@@ -89,6 +89,7 @@ async function main() {
         type: "stream_event",
         event: { type: "content_block_delta", delta: { type: "text_delta", text: "oauth" } },
       },
+      { type: "stream_event", event: { type: "message_delta", delta: { stop_reason: "max_tokens" } } },
       { type: "stream_event", event: { type: "message_stop" } },
       { type: "result", subtype: "success", result: "hello oauth" },
     ]),
@@ -98,7 +99,7 @@ async function main() {
   assert(final === "hello oauth", "streamed text must be returned")
   assert(events.some((event) => event.type === "message.start" && event.threadId === "child-thread"), "child start tagged")
   assert(events.some((event) => event.type === "message.delta" && event.text === "oauth"), "text delta emitted")
-  assert(events.some((event) => event.type === "message.end" && event.threadId === "child-thread"), "child end tagged")
+  assert(events.some((event) => event.type === "message.end" && event.threadId === "child-thread" && event.reason === "max_tokens"), "child end reason tagged")
 
   let rejectedApiKey = false
   try {

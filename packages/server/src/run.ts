@@ -5,7 +5,7 @@
 // SAME logic drives the main session run AND every spawned child thread (see
 // threads.ts). Events are tagged with `threadId` for children; the main thread
 // omits it (so the wire is identical to the pre-threads prototype).
-import type { UsageDelta } from "@chunky/protocol"
+import type { MessageEndReason, UsageDelta } from "@chunky/protocol"
 import { getAgent, RECURSION_LIMIT } from "./agent.ts"
 import { taggedEmitter, type Emit } from "./event-emitter.ts"
 import { activeSelection, getProvider, providerRuntime } from "./providers/registry.ts"
@@ -83,6 +83,15 @@ export async function translateStream(
   // message — prefer updates, fall back to the stashed chunk.
   let lastRequestUsage: UsageDelta | null = null
   let pendingChunkUsage: UsageDelta | null = null
+  let pendingEndReason: MessageEndReason = "complete"
+
+  const endReasonOf = (message: any): MessageEndReason => {
+    const raw =
+      message?.response_metadata?.finish_reason ??
+      message?.response_metadata?.stop_reason ??
+      message?.finish_reason
+    return raw === "length" || raw === "max_tokens" || raw === "max_output_tokens" ? "max_tokens" : "complete"
+  }
 
   const openAssistant = () => {
     if (!assistantOpen) {
@@ -90,10 +99,11 @@ export async function translateStream(
       emitT({ type: "message.start", role: "assistant" })
     }
   }
-  const closeAssistant = () => {
+  const closeAssistant = (reason: MessageEndReason = pendingEndReason) => {
     if (assistantOpen) {
       assistantOpen = false
-      emitT({ type: "message.end" })
+      emitT({ type: "message.end", reason })
+      pendingEndReason = "complete"
     }
   }
 
@@ -105,6 +115,7 @@ export async function translateStream(
         // data === [messageChunk, metadata]
         const [chunk] = data as [any, unknown]
         if (getType(chunk) === "ai") {
+          pendingEndReason = endReasonOf(chunk)
           const t = contentToText(chunk?.content)
           if (t) {
             sawAssistantOrTool = true
@@ -131,6 +142,7 @@ export async function translateStream(
             const kind = getType(msg)
             if (kind === "ai") {
               // A completed assistant message closes any open streamed text turn.
+              pendingEndReason = endReasonOf(msg)
               closeAssistant()
               const u = usageFromLangChainMessage(msg)
               if (u && promptTokensOf(u) > 0) {
@@ -174,6 +186,9 @@ export async function translateStream(
         continue
       }
     }
+  } catch (error) {
+    closeAssistant((error as Error)?.name === "AbortError" ? "interrupted" : "error")
+    throw error
   } finally {
     closeAssistant()
     // Stream ended mid-message: the stashed chunk is then the last request.
@@ -188,6 +203,7 @@ export async function translateStream(
   if (cache && lastRequestUsage) {
     noteRequest(cache.conversationId, lastRequestUsage, lastRequestUsage.model ?? cache.model, Date.now())
   }
+  if (lastRequestUsage) emitT({ type: "usage.update", usage: lastRequestUsage })
 
   if (!sawAssistantOrTool) {
     throw new Error("provider returned an empty response — retry the turn or switch models")

@@ -15,10 +15,10 @@ import {
   type ModelSelection,
 } from "../lib/api"
 
-type Effort = "low" | "medium" | "high" | "xhigh"
+type Effort = "low" | "medium" | "high" | "xhigh" | "max"
 type Speed = "standard" | "fast"
 
-const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh"]
+const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"]
 const SPEEDS: Speed[] = ["standard", "fast"]
 
 // Display names for the raw knob values the server accepts ("Extra High"
@@ -28,6 +28,7 @@ const KNOB_LABEL: Record<string, string> = {
   medium: "Medium",
   high: "High",
   xhigh: "Extra High",
+  max: "Max",
   standard: "Standard",
   fast: "Fast",
 }

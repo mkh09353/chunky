@@ -28,7 +28,7 @@ import { runWorkflowScript, workflowConcurrency, type WorkflowHost, type Workflo
 
 /** Reasoning-effort cap for `big`-tier workflow agents: keep a lower configured
  *  effort, clamp anything at/above medium (or unset) to medium. */
-const EFFORT_RANK: Record<string, number> = { low: 0, medium: 1, high: 2, xhigh: 3 }
+const EFFORT_RANK: Record<string, number> = { low: 0, medium: 1, high: 2, xhigh: 3, max: 4 }
 export function capEffortAtMedium(effort: string | undefined): "low" | "medium" {
   return effort && (EFFORT_RANK[effort] ?? 1) < 1 ? (effort as "low") : "medium"
 }

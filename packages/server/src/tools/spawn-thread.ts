@@ -26,7 +26,7 @@ export const spawnThreadInputShape = {
         "Omit to inherit this thread's provider — don't invent one.",
     ),
   model: z.string().optional().describe("Optional model id for the child; defaults to the inherited/provider selection."),
-  effort: z.enum(["low", "medium", "high", "xhigh"]).optional().describe("Optional reasoning effort for the child."),
+  effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional().describe("Optional reasoning effort for the child."),
   speed: z.enum(["standard", "fast"]).optional().describe("Optional speed setting for the child."),
 }
 

@@ -103,6 +103,7 @@ function AvatarSpacer() {
 /** Render a run of grouped items as chat messages, with avatar/burst logic scoped
  *  to this run (a thread block naturally breaks a burst). */
 function MessageGroups({ groups }: { groups: Group[] }) {
+  const copyMessage = useCallback((text: string) => void navigator.clipboard.writeText(text), [])
   const senders = groups.map(senderOf)
   return (
     <>
@@ -148,6 +149,26 @@ function MessageGroups({ groups }: { groups: Group[] }) {
                     <Markdown isStreaming={item.streaming}>{item.text}</Markdown>
                   ) : item.streaming ? (
                     <span className="chunky-thinking">Chunky's thinking…</span>
+                  ) : null}
+                  {item.text && !item.streaming ? (
+                    <button
+                      className="chunky-copy-message"
+                      type="button"
+                      title="Copy message"
+                      aria-label="Copy assistant message"
+                      onClick={() => copyMessage(item.text)}
+                    >
+                      Copy
+                    </button>
+                  ) : null}
+                  {item.endReason === "max_tokens" ? (
+                    <div className="chunky-response-warning">⚠ Response stopped at the output limit.</div>
+                  ) : null}
+                  {item.endReason === "interrupted" ? (
+                    <div className="chunky-response-warning">⏹ Response interrupted.</div>
+                  ) : null}
+                  {item.endReason === "error" ? (
+                    <div className="chunky-callout-error">Response ended unexpectedly.</div>
                   ) : null}
                 </ChatMessageBubble>
               </ChatMessage>
@@ -331,6 +352,22 @@ export function TranscriptView({ state }: { state: TranscriptState }) {
       return next
     })
   }, [])
+
+  // Ctrl+Shift+C copies the latest main-thread assistant reply. The per-message
+  // Copy button remains available for older replies and child threads.
+  useEffect(() => {
+    const onCopy = (e: KeyboardEvent) => {
+      if (!e.ctrlKey || !e.shiftKey || e.metaKey || e.altKey || e.key.toLowerCase() !== "c") return
+      const latest = [...(state.threads[MAIN]?.items ?? [])]
+        .reverse()
+        .find((item) => item.kind === "assistant" && item.text.trim())
+      if (latest?.kind !== "assistant") return
+      e.preventDefault()
+      void navigator.clipboard.writeText(latest.text)
+    }
+    document.addEventListener("keydown", onCopy)
+    return () => document.removeEventListener("keydown", onCopy)
+  }, [state])
 
   // Ctrl+T folds every expanded thread back to its preview line (TUI parity).
   useEffect(() => {

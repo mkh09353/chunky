@@ -24,6 +24,7 @@ describe("usageFromLangChainMessage", () => {
         input_tokens: 120,
         output_tokens: 40,
         input_token_details: { cache_read: 80, cache_creation: 10 },
+        output_token_details: { reasoning: 12 },
       },
     })
     expect(delta).toEqual({
@@ -31,6 +32,7 @@ describe("usageFromLangChainMessage", () => {
       outputTokens: 40,
       cacheReadTokens: 80,
       cacheWriteTokens: 10,
+      reasoningTokens: 12,
     })
   })
 
@@ -41,6 +43,7 @@ describe("usageFromLangChainMessage", () => {
           prompt_tokens: 50,
           completion_tokens: 10,
           prompt_tokens_details: { cached_tokens: 20 },
+          completion_tokens_details: { reasoning_tokens: 4 },
         },
       },
     })
@@ -48,6 +51,7 @@ describe("usageFromLangChainMessage", () => {
       inputTokens: 50,
       outputTokens: 10,
       cacheReadTokens: 20,
+      reasoningTokens: 4,
     })
   })
 
@@ -66,6 +70,7 @@ describe("usageFromAnthropicResult", () => {
           outputTokens: 200,
           cacheReadInputTokens: 400,
           cacheCreationInputTokens: 50,
+          reasoningTokens: 30,
         },
         "claude-opus-4-6": { inputTokens: 100, outputTokens: 50 },
       },
@@ -74,6 +79,7 @@ describe("usageFromAnthropicResult", () => {
     expect(delta.outputTokens).toBe(250)
     expect(delta.cacheReadTokens).toBe(400)
     expect(delta.cacheWriteTokens).toBe(50)
+    expect(delta.reasoningTokens).toBe(30)
     expect(delta.model).toBe("claude-sonnet-4-5")
   })
 
@@ -84,12 +90,14 @@ describe("usageFromAnthropicResult", () => {
         output_tokens: 7,
         cache_read_input_tokens: 10,
         cache_creation_input_tokens: null,
+        reasoning_tokens: 3,
       },
     })
     expect(delta).toEqual({
       inputTokens: 42,
       outputTokens: 7,
       cacheReadTokens: 10,
+      reasoningTokens: 3,
     })
   })
 })

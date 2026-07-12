@@ -226,6 +226,24 @@ body,
   font-style: italic;
 }
 
+.chunky-copy-message {
+  margin-top: var(--spacing-1);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-2xs);
+  cursor: pointer;
+}
+
+.chunky-copy-message:hover { color: var(--color-text-primary); }
+
+.chunky-response-warning {
+  margin-top: var(--spacing-2);
+  color: var(--color-text-yellow, #b7791f);
+  font-size: var(--font-size-xs);
+}
+
 .chunky-callout-error {
   padding: var(--spacing-2) var(--spacing-3);
   border-radius: var(--radius-container);

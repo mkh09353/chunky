@@ -3,7 +3,7 @@
 // spawned child thread is keyed by its own threadId and linked to its parent
 // (parentId === MAIN for a direct child of the main thread). message/tool/error
 // events carry an optional `threadId` that routes them to the owning thread.
-import type { AgentEvent, GoalStatus } from "@chunky/protocol"
+import type { AgentEvent, GoalStatus, MessageEndReason } from "@chunky/protocol"
 
 /** Synthetic id for the main (root) session thread — events omit threadId for it. */
 export const MAIN = "main"
@@ -11,7 +11,7 @@ export const MAIN = "main"
 export type Item =
   /** `from` marks a message injected by ANOTHER session via send_to_session. */
   | { kind: "user"; text: string; from?: string }
-  | { kind: "assistant"; text: string; streaming: boolean }
+  | { kind: "assistant"; text: string; streaming: boolean; endReason?: MessageEndReason }
   | { kind: "tool"; id: string; name: string; input: unknown; done: boolean; ok?: boolean; output?: string }
   | { kind: "error"; text: string }
   /** A goal-mode lifecycle marker (set / continuing / complete / blocked / paused / cleared). */
@@ -85,7 +85,7 @@ function reduceItems(items: Item[], ev: AgentEvent): Item[] {
       for (let i = next.length - 1; i >= 0; i--) {
         const it = next[i]!
         if (it.kind === "assistant" && it.streaming) {
-          next[i] = { ...it, streaming: false }
+          next[i] = { ...it, streaming: false, ...(ev.reason ? { endReason: ev.reason } : {}) }
           break
         }
       }

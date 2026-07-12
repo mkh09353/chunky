@@ -1,4 +1,4 @@
-import { BrowserWindow, Updater, createRPC, Utils } from "electrobun/bun"
+import { BrowserWindow, Updater, createRPC, Utils, ApplicationMenu } from "electrobun/bun"
 
 const DEV_SERVER_PORT = 5173
 const DEV_SERVER_URL = process.env.VITE_DEV_URL ?? `http://localhost:${DEV_SERVER_PORT}`
@@ -41,6 +41,50 @@ const workspaceName = workspace.split(/[\\/]/).filter(Boolean).pop() || "workspa
 // HMR nor the views:// server ever reads. The static public/chunky-config.json
 // stays as a dev-browser fallback only.)
 const config = { baseUrl, workspace, workspaceName }
+
+// macOS routes ⌘C/⌘V/⌘X/⌘A through the app menu's key-equivalents — the standard
+// Edit → Copy item fires `copy:` on the focused WKWebView. Electrobun (unlike
+// Electron) installs NO default menu, so without this, ⌘C is a no-op and users
+// can't copy selected transcript text. The `role`s below map to the native
+// NSResponder selectors that make selection editing "just work".
+ApplicationMenu.setApplicationMenu([
+  {
+    label: "Chunky",
+    submenu: [
+      { role: "about" },
+      { type: "separator" },
+      { role: "hide", accelerator: "CommandOrControl+H" },
+      { role: "hideOthers", accelerator: "CommandOrControl+Alt+H" },
+      { role: "showAll" },
+      { type: "separator" },
+      { role: "quit", accelerator: "CommandOrControl+Q" },
+    ],
+  },
+  {
+    label: "Edit",
+    submenu: [
+      { role: "undo", accelerator: "CommandOrControl+Z" },
+      { role: "redo", accelerator: "CommandOrControl+Shift+Z" },
+      { type: "separator" },
+      { role: "cut", accelerator: "CommandOrControl+X" },
+      { role: "copy", accelerator: "CommandOrControl+C" },
+      { role: "paste", accelerator: "CommandOrControl+V" },
+      { role: "pasteAndMatchStyle", accelerator: "CommandOrControl+Shift+V" },
+      { role: "delete" },
+      { role: "selectAll", accelerator: "CommandOrControl+A" },
+    ],
+  },
+  {
+    label: "Window",
+    submenu: [
+      { role: "minimize", accelerator: "CommandOrControl+M" },
+      { role: "zoom" },
+      { role: "close", accelerator: "CommandOrControl+W" },
+      { type: "separator" },
+      { role: "toggleFullScreen" },
+    ],
+  },
+])
 
 const url = await getMainViewUrl()
 

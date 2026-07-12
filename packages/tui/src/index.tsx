@@ -28,7 +28,14 @@ if (wantThreads || wantMock) mode = "mock"
 else if (wantLive) mode = "live"
 else mode = (await serverIsUp()) ? "live" : "mock"
 
-const renderer = await createCliRenderer({ exitOnCtrlC: true })
+// Mouse tracking is ON by default so OpenTUI's own selection layer works
+// (drag-to-copy, clickable UI). Copy happens the moment a drag finishes — see
+// copySelection in App.tsx. Set CHUNKY_DISABLE_MOUSE=1 to hand selection back to
+// the terminal emulator (native ⌥-drag select + its own ⌘C) if you prefer that.
+const renderer = await createCliRenderer({
+  exitOnCtrlC: true,
+  useMouse: !process.env.CHUNKY_DISABLE_MOUSE,
+})
 // CHUNKY_NO_DEMO skips the mock auto-run turn so the input starts idle (handy for
 // manually exercising the prompt, e.g. paste, without racing the demo).
 const autoDemo = !process.env.CHUNKY_NO_DEMO

@@ -24,7 +24,7 @@ import {
 import { mockRun } from "@chunky/protocol/mock"
 import { mockThreadsRun } from "./mockThreads.js"
 import { initialState, pushUser, reduce, type TranscriptState } from "./transcript.js"
-import { WARNING } from "./theme.js"
+import { SUCCESS, WARNING } from "./theme.js"
 import { WelcomeBanner } from "./components/WelcomeBanner.js"
 import { Transcript, fmtTokens } from "./components/Transcript.js"
 import { StatusLine } from "./components/StatusLine.js"
@@ -35,6 +35,7 @@ import { ModelPicker, type ModelSelectionResult } from "./components/ModelPicker
 import { AdvisorPicker, type AdvisorSelectionResult } from "./components/AdvisorPicker.js"
 import { openBrowser } from "./openBrowser.js"
 import { grabClipboardImage, type ClipboardImage } from "./clipboardImage.js"
+import { writeClipboard } from "./clipboard.js"
 import { MIN_NOTIFY_MS, notifyTurnEnd } from "./notify.js"
 
 interface Props {
@@ -96,6 +97,39 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     renderer.destroy()
     process.exit(0)
   }, [renderer])
+
+  // Copy-on-select. OpenTUI holds the mouse (useMouse defaults on), so a drag
+  // builds OUR selection, not a native terminal one — the emulator's ⌘C would
+  // copy nothing. So when a drag finishes we grab the selected text, put it on
+  // the system clipboard ourselves (OSC 52 + native tool), and flash a notice.
+  const [copyNotice, setCopyNotice] = useState<string | null>(null)
+  const copyNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const flashCopied = useCallback((chars: number) => {
+    setCopyNotice(`Copied ${chars} char${chars === 1 ? "" : "s"} to clipboard`)
+    if (copyNoticeTimer.current) clearTimeout(copyNoticeTimer.current)
+    copyNoticeTimer.current = setTimeout(() => setCopyNotice(null), 1500)
+  }, [])
+  const copySelection = useCallback(() => {
+    const text = renderer.getSelection()?.getSelectedText() ?? ""
+    if (!text) return // a plain click (no drag) selects nothing — ignore
+    void writeClipboard(text)
+    renderer.clearSelection()
+    flashCopied(text.length)
+  }, [renderer, flashCopied])
+
+  // The debug console overlay (opened on error) keeps its own selection; route
+  // its copy through the same clipboard path. Clear the notice timer on unmount.
+  useEffect(() => {
+    renderer.console.onCopySelection = (text: string) => {
+      if (!text) return
+      void writeClipboard(text)
+      flashCopied(text.length)
+    }
+    return () => {
+      renderer.console.onCopySelection = undefined
+      if (copyNoticeTimer.current) clearTimeout(copyNoticeTimer.current)
+    }
+  }, [renderer, flashCopied])
   const [state, setState] = useState<TranscriptState>(initialState)
   const [startedAt, setStartedAt] = useState<number | null>(null)
   const [threadsCollapsed, setThreadsCollapsed] = useState(false)
@@ -1063,7 +1097,16 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       : "mock"
 
   return (
-    <box flexDirection="column" width="100%" height="100%">
+    <box
+      flexDirection="column"
+      width="100%"
+      height="100%"
+      // Finishing a drag anywhere copies the selection (see copySelection).
+      // Both events fire the same idempotent handler — it no-ops once the
+      // selection is cleared, so a double-fire copies once.
+      onMouseUp={copySelection}
+      onMouseDragEnd={copySelection}
+    >
       {/* OpenTUI owns the whole screen (no terminal scrollback), so the
           transcript lives in a scrollbox pinned to the bottom like a chat. */}
       <scrollbox
@@ -1126,8 +1169,13 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           baseUrl={mode === "live" ? baseUrl : undefined}
           prefill={prefill}
         />
+        {copyNotice ? (
+          <text fg={SUCCESS} attributes={TextAttributes.DIM}>
+            {"  ✓ " + copyNotice}
+          </text>
+        ) : null}
         <text attributes={TextAttributes.DIM}>
-          {"  / commands · @ files · ctrl+v image · ctrl+y copy reply · ctrl+c quit"}
+          {"  / commands · @ files · drag to copy · ctrl+v image · ctrl+y copy reply · ctrl+c quit"}
           {hasThreads ? "  ·  ctrl+t to " + (threadsCollapsed ? "expand" : "collapse") + " threads" : ""}
         </text>
       </box>

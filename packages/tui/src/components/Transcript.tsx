@@ -3,6 +3,7 @@ import { TextAttributes } from "@opentui/core"
 import type { Item, ThreadNode, TranscriptState } from "../transcript.js"
 import { MAIN } from "../transcript.js"
 import { rawModeSupported, useInput } from "../useInput.js"
+import { writeClipboard } from "../clipboard.js"
 import type { DisplayItem } from "../collapseToolRuns.js"
 import { buildRenderPlan } from "../renderPlan.js"
 import { parseBlocks, parseInline, type MdSpan } from "../markdown.js"
@@ -83,9 +84,7 @@ export function Transcript({
           .reverse()
           .find((item) => item.kind === "assistant" && item.text.trim())
         if (text?.kind === "assistant") {
-          const proc = Bun.spawn(["pbcopy"], { stdin: "pipe" })
-          proc.stdin.write(text.text)
-          proc.stdin.end()
+          void writeClipboard(text.text)
           setCopyNotice("Copied latest assistant message")
           setTimeout(() => setCopyNotice(null), 1500)
         }

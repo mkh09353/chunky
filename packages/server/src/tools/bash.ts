@@ -62,6 +62,16 @@ function terminateProcessTree(rootPid: number): void {
   setTimeout(() => signalPids(pids, "SIGKILL"), 250)
 }
 
+async function readPipe(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<string> {
+  const decoder = new TextDecoder()
+  let text = ""
+  while (true) {
+    const { done, value } = await reader.read()
+    if (done) return text + decoder.decode()
+    text += decoder.decode(value, { stream: true })
+  }
+}
+
 export const bash = tool(
   async ({ command, timeout }: { command: string; timeout?: number }, config?: unknown) => {
     const proc = Bun.spawn(["bash", "-lc", command], {
@@ -70,18 +80,26 @@ export const bash = tool(
       stderr: "pipe",
     })
 
+    const stdoutReader = proc.stdout.getReader()
+    const stderrReader = proc.stderr.getReader()
+
     let timedOut = false
     let timer: ReturnType<typeof setTimeout> | undefined
     if (timeout && timeout > 0) {
       timer = setTimeout(() => {
         timedOut = true
         terminateProcessTree(proc.pid)
+        // A shell can exit after backgrounding a compound command, leaving an
+        // orphan with the pipe open. There is then no descendant left to find
+        // at timeout, so stop waiting on our side as well.
+        void stdoutReader.cancel()
+        void stderrReader.cancel()
       }, timeout * 1000)
     }
 
     const [stdout, stderr] = await Promise.all([
-      new Response(proc.stdout).text(),
-      new Response(proc.stderr).text(),
+      readPipe(stdoutReader),
+      readPipe(stderrReader),
     ])
     const exitCode = await proc.exited
     if (timer) clearTimeout(timer)

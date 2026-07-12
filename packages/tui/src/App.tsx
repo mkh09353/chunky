@@ -24,7 +24,7 @@ import {
 import { mockRun } from "@chunky/protocol/mock"
 import { mockThreadsRun } from "./mockThreads.js"
 import { initialState, pushUser, reduce, type TranscriptState } from "./transcript.js"
-import { SUCCESS, WARNING } from "./theme.js"
+import { WARNING } from "./theme.js"
 import { WelcomeBanner } from "./components/WelcomeBanner.js"
 import { Transcript, fmtTokens } from "./components/Transcript.js"
 import { StatusLine } from "./components/StatusLine.js"
@@ -101,35 +101,46 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   // Copy-on-select. OpenTUI holds the mouse (useMouse defaults on), so a drag
   // builds OUR selection, not a native terminal one — the emulator's ⌘C would
   // copy nothing. So when a drag finishes we grab the selected text, put it on
-  // the system clipboard ourselves (OSC 52 + native tool), and flash a notice.
-  const [copyNotice, setCopyNotice] = useState<string | null>(null)
-  const copyNoticeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const flashCopied = useCallback((chars: number) => {
-    setCopyNotice(`Copied ${chars} char${chars === 1 ? "" : "s"} to clipboard`)
-    if (copyNoticeTimer.current) clearTimeout(copyNoticeTimer.current)
-    copyNoticeTimer.current = setTimeout(() => setCopyNotice(null), 1500)
+  // the system clipboard ourselves (OSC 52 + native tool), and pop a bright
+  // badge RIGHT where the mouse was released — next to the selection, not off in
+  // the footer where it's easy to miss.
+  const [copyBadge, setCopyBadge] = useState<{ label: string; x: number; y: number } | null>(null)
+  const copyBadgeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const showCopyBadge = useCallback((chars: number, x: number, y: number) => {
+    setCopyBadge({ label: `✓ Copied ${chars} char${chars === 1 ? "" : "s"}`, x, y })
+    if (copyBadgeTimer.current) clearTimeout(copyBadgeTimer.current)
+    copyBadgeTimer.current = setTimeout(() => setCopyBadge(null), 1600)
   }, [])
-  const copySelection = useCallback(() => {
-    const text = renderer.getSelection()?.getSelectedText() ?? ""
-    if (!text) return // a plain click (no drag) selects nothing — ignore
-    void writeClipboard(text)
-    renderer.clearSelection()
-    flashCopied(text.length)
-  }, [renderer, flashCopied])
+  const copySelection = useCallback(
+    (e?: { x: number; y: number }) => {
+      const text = renderer.getSelection()?.getSelectedText() ?? ""
+      if (!text) return // a plain click (no drag) selects nothing — ignore
+      void writeClipboard(text)
+      renderer.clearSelection()
+      // Anchor the badge to the release point (= end of the selection, where the
+      // cursor is). Fall back to screen-centre when there's no mouse event.
+      showCopyBadge(
+        text.length,
+        e?.x ?? Math.floor(renderer.terminalWidth / 2),
+        e?.y ?? Math.floor(renderer.terminalHeight / 2),
+      )
+    },
+    [renderer, showCopyBadge],
+  )
 
   // The debug console overlay (opened on error) keeps its own selection; route
-  // its copy through the same clipboard path. Clear the notice timer on unmount.
+  // its copy through the same clipboard path. Clear the badge timer on unmount.
   useEffect(() => {
     renderer.console.onCopySelection = (text: string) => {
       if (!text) return
       void writeClipboard(text)
-      flashCopied(text.length)
+      showCopyBadge(text.length, Math.floor(renderer.terminalWidth / 2), Math.floor(renderer.terminalHeight / 2))
     }
     return () => {
       renderer.console.onCopySelection = undefined
-      if (copyNoticeTimer.current) clearTimeout(copyNoticeTimer.current)
+      if (copyBadgeTimer.current) clearTimeout(copyBadgeTimer.current)
     }
-  }, [renderer, flashCopied])
+  }, [renderer, showCopyBadge])
   const [state, setState] = useState<TranscriptState>(initialState)
   const [startedAt, setStartedAt] = useState<number | null>(null)
   const [threadsCollapsed, setThreadsCollapsed] = useState(false)
@@ -1169,16 +1180,32 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           baseUrl={mode === "live" ? baseUrl : undefined}
           prefill={prefill}
         />
-        {copyNotice ? (
-          <text fg={SUCCESS} attributes={TextAttributes.DIM}>
-            {"  ✓ " + copyNotice}
-          </text>
-        ) : null}
         <text attributes={TextAttributes.DIM}>
           {"  / commands · @ files · drag to copy · ctrl+v image · ctrl+y copy reply · ctrl+c quit"}
           {hasThreads ? "  ·  ctrl+t to " + (threadsCollapsed ? "expand" : "collapse") + " threads" : ""}
         </text>
       </box>
+      {copyBadge ? (
+        // A bright, solid badge floated at the release point (where the cursor
+        // is), on top of everything, so "it copied" reads instantly right where
+        // you're looking — not in the footer. Clamped to stay on-screen.
+        <box
+          position="absolute"
+          left={Math.min(
+            Math.max(0, copyBadge.x + 1),
+            Math.max(0, renderer.terminalWidth - (copyBadge.label.length + 2)),
+          )}
+          top={Math.min(Math.max(0, copyBadge.y - 1), Math.max(0, renderer.terminalHeight - 1))}
+          zIndex={1000}
+          backgroundColor="#22c55e"
+          paddingLeft={1}
+          paddingRight={1}
+        >
+          <text fg="#04160b" attributes={TextAttributes.BOLD}>
+            {copyBadge.label}
+          </text>
+        </box>
+      ) : null}
     </box>
   )
 }

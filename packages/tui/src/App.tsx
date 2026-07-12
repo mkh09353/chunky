@@ -1,5 +1,7 @@
-import React, { useCallback, useEffect, useRef, useState } from "react"
-import { Box, Text, useApp, useInput, useStdin } from "ink"
+import { useCallback, useEffect, useRef, useState } from "react"
+import { TextAttributes } from "@opentui/core"
+import { useRenderer } from "@opentui/react"
+import { rawModeSupported, useInput } from "./useInput.js"
 import {
   ROUTES,
   readSSE,
@@ -84,7 +86,12 @@ interface PendingSend {
 }
 
 export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Props) {
-  const { exit } = useApp()
+  const renderer = useRenderer()
+  // Tear down the OpenTUI renderer (restores the terminal) and leave.
+  const exit = useCallback(() => {
+    renderer.destroy()
+    process.exit(0)
+  }, [renderer])
   const [state, setState] = useState<TranscriptState>(initialState)
   const [startedAt, setStartedAt] = useState<number | null>(null)
   const [threadsCollapsed, setThreadsCollapsed] = useState(false)
@@ -124,7 +131,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   const [attachments, setAttachments] = useState<ClipboardImage[]>([])
   const attachmentsRef = useRef<ClipboardImage[]>([])
   attachmentsRef.current = attachments
-  const rawSupported = Boolean(useStdin().isRawModeSupported)
+  const rawSupported = rawModeSupported
 
   const pickerOpen = loginPicker != null || modelPickerOpen || advisorPickerOpen || pendingSend != null
 
@@ -908,11 +915,22 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       : "mock"
 
   return (
-    <Box flexDirection="column" width="100%">
-      <WelcomeBanner mode={mode} cwd={cwd} model={bannerModel} />
-      <Transcript state={state} collapsed={threadsCollapsed} />
+    <box flexDirection="column" width="100%" height="100%">
+      {/* OpenTUI owns the whole screen (no terminal scrollback), so the
+          transcript lives in a scrollbox pinned to the bottom like a chat. */}
+      <scrollbox
+        flexGrow={1}
+        flexShrink={1}
+        stickyScroll
+        stickyStart="bottom"
+        scrollY
+        contentOptions={{ flexDirection: "column" }}
+      >
+        <WelcomeBanner mode={mode} cwd={cwd} model={bannerModel} />
+        <Transcript state={state} collapsed={threadsCollapsed} />
+      </scrollbox>
       {running && startedAt != null && <StatusLine startedAt={startedAt} />}
-      <Box flexDirection="column" width="100%" marginTop={1}>
+      <box flexDirection="column" width="100%" marginTop={1} flexShrink={0}>
         {loginPicker && <LoginPicker providers={loginPicker.providers} selected={loginPicker.selected} />}
         {modelPickerOpen && (
           <ModelPicker baseUrl={baseUrl} onDone={onModelDone} onCancel={() => setModelPickerOpen(false)} />
@@ -922,8 +940,8 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         )}
         {pendingSend ? (
           // The cache guard held this send: nothing ran server-side yet.
-          <Box flexDirection="column">
-            <Text color={WARNING}>
+          <box flexDirection="column">
+            <text fg={WARNING}>
               {"⚠ Cache cold after "}
               {coldReason(pendingSend.warning)}
               {" — sending will re-send ~"}
@@ -931,20 +949,22 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
               {" tokens (guard: "}
               {fmtTokens(pendingSend.guardTokens)}
               {")."}
-            </Text>
-            <Text dimColor>{"  enter to send anyway · esc to keep the message unsent · /cacheguard to tune"}</Text>
-          </Box>
+            </text>
+            <text attributes={TextAttributes.DIM}>
+              {"  enter to send anyway · esc to keep the message unsent · /cacheguard to tune"}
+            </text>
+          </box>
         ) : (
           cacheCold &&
           !running && (
             // Early heads-up while idle: the next send would rebuild a cold cache.
-            <Text color={WARNING}>
+            <text fg={WARNING}>
               {"⚠ Cache cold ("}
               {coldReason(cacheCold)}
               {") — next message re-sends ~"}
               {fmtTokens(cacheCold.approxTokens)}
               {" tokens. Consider a fresh thread."}
-            </Text>
+            </text>
           )
         )}
         <PromptInput
@@ -957,11 +977,11 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           baseUrl={mode === "live" ? baseUrl : undefined}
           prefill={prefill}
         />
-        <Text dimColor>
+        <text attributes={TextAttributes.DIM}>
           {"  / for commands · @ for files · ctrl+v paste image · ctrl+c to quit"}
           {hasThreads ? "  ·  ctrl+t to " + (threadsCollapsed ? "expand" : "collapse") + " threads" : ""}
-        </Text>
-      </Box>
-    </Box>
+        </text>
+      </box>
+    </box>
   )
 }

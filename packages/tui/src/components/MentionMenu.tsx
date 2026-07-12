@@ -1,5 +1,4 @@
-import React from "react"
-import { Box, Text } from "ink"
+import { TextAttributes } from "@opentui/core"
 import figures from "figures"
 import type { FileSearchItem } from "@chunky/protocol"
 import { ACCENT, BORDER } from "../theme.js"
@@ -19,27 +18,27 @@ export function MentionMenu({
 }) {
   if (items.length === 0) {
     return (
-      <Box borderStyle="round" borderColor={BORDER} flexDirection="column" paddingX={1}>
-        <Text dimColor>no files match @{query || "…"}</Text>
-      </Box>
+      <box border borderStyle="rounded" borderColor={BORDER} flexDirection="column" paddingX={1}>
+        <text attributes={TextAttributes.DIM}>no files match @{query || "…"}</text>
+      </box>
     )
   }
   return (
-    <Box borderStyle="round" borderColor={BORDER} flexDirection="column" paddingX={1}>
+    <box border borderStyle="rounded" borderColor={BORDER} flexDirection="column" paddingX={1}>
       {items.map((item, i) => {
         const focused = i === selected
         const kindMark = item.kind === "directory" ? "/" : ""
         return (
-          <Box key={`${item.kind}:${item.path}`}>
-            <Text color={ACCENT}>{focused ? figures.pointer : " "} </Text>
-            <Text color={focused ? ACCENT : undefined} bold={focused}>
+          <box key={`${item.kind}:${item.path}`} flexDirection="row">
+            <text fg={ACCENT}>{focused ? figures.pointer : " "} </text>
+            <text fg={focused ? ACCENT : undefined} attributes={focused ? TextAttributes.BOLD : 0}>
               {item.path}
               {kindMark}
-            </Text>
-          </Box>
+            </text>
+          </box>
         )
       })}
-    </Box>
+    </box>
   )
 }
 

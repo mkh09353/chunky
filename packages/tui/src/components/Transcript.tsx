@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from "react"
-import { Box, Text } from "ink"
+import { useEffect, useState } from "react"
+import { TextAttributes } from "@opentui/core"
 import type { Item, ThreadNode, TranscriptState } from "../transcript.js"
 import { MAIN } from "../transcript.js"
 import { collapseToolRuns, type DisplayItem } from "../collapseToolRuns.js"
@@ -19,6 +19,8 @@ import {
   SUCCESS,
   WARNING,
 } from "../theme.js"
+
+const { BOLD, DIM, ITALIC } = TextAttributes
 
 // Max chars for a coalesced group's trailing input hint, mirroring kimi's
 // TOOL_SUMMARY_MAX_LENGTH — tighter than a lone tool's header so the "×N" count
@@ -62,12 +64,12 @@ export function Transcript({
   const main = state.threads[MAIN]
   if (!main) return null
   return (
-    <Box flexDirection="column">
+    <box flexDirection="column">
       {collapseToolRuns(main.items).map((it, i) => (
         <ItemView key={i} item={it} />
       ))}
       <ThreadChildren parentId={MAIN} state={state} depth={0} collapsed={collapsed} />
-    </Box>
+    </box>
   )
 }
 
@@ -112,40 +114,40 @@ function ThreadBlock({
   const rail = depth % 2 === 0 ? ACCENT : ACCENT_DEEP
   const childCount = state.order.filter((id) => state.threads[id]!.parentId === thread.id).length
   return (
-    <Box flexDirection="column" marginTop={1} marginLeft={depth === 0 ? 0 : 2}>
+    <box flexDirection="column" marginTop={1} marginLeft={depth === 0 ? 0 : 2}>
       {/* header */}
-      <Box>
-        <Text color={rail}>{"├─ "}</Text>
-        {running ? <Spinner color={rail} /> : <Text color={ACCENT}>{DOT}</Text>}
-        <Text bold color={rail}>
+      <box flexDirection="row">
+        <text fg={rail}>{"├─ "}</text>
+        {running ? <Spinner color={rail} /> : <text fg={ACCENT}>{DOT}</text>}
+        <text fg={rail} attributes={BOLD}>
           {" "}
           thread: {thread.title}
-        </Text>
-        <Text dimColor>{running ? "  (running…)" : "  (done)"}</Text>
+        </text>
+        <text attributes={DIM}>{running ? "  (running…)" : "  (done)"}</text>
         {collapsed && (thread.items.length > 0 || childCount > 0) && (
-          <Text dimColor>
+          <text attributes={DIM}>
             {"  "}
             {thread.items.length} item{thread.items.length === 1 ? "" : "s"}
             {childCount > 0 ? `, ${childCount} sub` : ""}
-          </Text>
+          </text>
         )}
-      </Box>
+      </box>
 
       {/* body: left rail + items, then nested children */}
       {!collapsed && (
-        <Box flexDirection="row">
-          <Box flexDirection="column" marginRight={1}>
-            <Text color={rail}>{"│"}</Text>
-          </Box>
-          <Box flexDirection="column" flexGrow={1}>
+        <box flexDirection="row">
+          <box flexDirection="column" marginRight={1}>
+            <text fg={rail}>{"│"}</text>
+          </box>
+          <box flexDirection="column" flexGrow={1}>
             {collapseToolRuns(thread.items).map((it, i) => (
               <ItemView key={i} item={it} />
             ))}
             <ThreadChildren parentId={thread.id} state={state} depth={depth + 1} collapsed={collapsed} />
-          </Box>
-        </Box>
+          </box>
+        </box>
       )}
-    </Box>
+    </box>
   )
 }
 
@@ -156,7 +158,7 @@ function Spinner({ color }: { color: string }) {
     const t = setInterval(() => setFrame((f) => (f + 1) % SPINNER_FRAMES.length), 90)
     return () => clearInterval(t)
   }, [])
-  return <Text color={color}>{SPINNER_FRAMES[frame]}</Text>
+  return <text fg={color}>{SPINNER_FRAMES[frame]}</text>
 }
 
 export function ItemView({ item }: { item: DisplayItem }) {
@@ -168,73 +170,73 @@ export function ItemView({ item }: { item: DisplayItem }) {
       // that's the whole point.
       const hint = summarizeInput(item.lastInput, TOOL_SUMMARY_MAX_LENGTH)
       return (
-        <Box marginTop={1}>
-          {item.running ? <Spinner color={BORDER} /> : <Text color={ACCENT}>{DOT}</Text>}
-          <Text bold> {item.summary}</Text>
-          {hint ? <Text dimColor> · {hint}</Text> : null}
-        </Box>
+        <box flexDirection="row" marginTop={1}>
+          {item.running ? <Spinner color={BORDER} /> : <text fg={ACCENT}>{DOT}</text>}
+          <text attributes={BOLD}> {item.summary}</text>
+          {hint ? <text attributes={DIM}> · {hint}</text> : null}
+        </box>
       )
     }
 
     case "user":
       return (
-        <Box marginTop={1} flexDirection="column">
+        <box marginTop={1} flexDirection="column">
           {item.from && (
             // A message injected by another session (send_to_session) — show
             // provenance so it doesn't read as something the user typed.
-            <Text color={MARKER}>{`⇄ from session ${item.from}`}</Text>
+            <text fg={MARKER}>{`⇄ from session ${item.from}`}</text>
           )}
-          <Box>
-            <Text color={ACCENT}>{"> "}</Text>
-            <Text>{item.text}</Text>
-          </Box>
-        </Box>
+          <box flexDirection="row">
+            <text fg={ACCENT}>{"> "}</text>
+            <text>{item.text}</text>
+          </box>
+        </box>
       )
 
     case "assistant":
       return (
-        <Box marginTop={1} flexDirection="row" width="100%">
-          <Text color={ACCENT}>{DOT} </Text>
+        <box marginTop={1} flexDirection="row" width="100%">
+          <text fg={ACCENT}>{DOT} </text>
           {/* flexGrow so long lines wrap inside the remaining columns instead of
               overflowing and reflowing under the sparkle marker. */}
-          <Box flexDirection="column" flexGrow={1} flexShrink={1}>
+          <box flexDirection="column" flexGrow={1} flexShrink={1}>
             <Markdown text={item.text} />
-          </Box>
-        </Box>
+          </box>
+        </box>
       )
 
     case "tool":
       return (
-        <Box marginTop={1} flexDirection="column">
-          <Box>
-            <Text color={ACCENT}>{DOT} </Text>
-            <Text bold>{item.name}</Text>
-            <Text dimColor>({summarizeInput(item.input)})</Text>
-          </Box>
+        <box marginTop={1} flexDirection="column">
+          <box flexDirection="row">
+            <text fg={ACCENT}>{DOT} </text>
+            <text attributes={BOLD}>{item.name}</text>
+            <text attributes={DIM}>({summarizeInput(item.input)})</text>
+          </box>
           {item.done && (
-            <Box marginLeft={2}>
-              <Text dimColor>
+            <box flexDirection="row" marginLeft={2}>
+              <text attributes={DIM}>
                 {"  ⎿  "}
-                <Text color={item.ok ? SUCCESS : ERROR}>{item.ok ? "" : "error: "}</Text>
+                <span fg={item.ok ? SUCCESS : ERROR}>{item.ok ? "" : "error: "}</span>
                 {summarizeOutput(item.output ?? "")}
-              </Text>
-            </Box>
+              </text>
+            </box>
           )}
-        </Box>
+        </box>
       )
 
     case "error":
       return (
-        <Box marginTop={1}>
-          <Text color={ERROR}>✗ {item.text}</Text>
-        </Box>
+        <box flexDirection="row" marginTop={1}>
+          <text fg={ERROR}>✗ {item.text}</text>
+        </box>
       )
 
     case "cache-warning":
       return (
-        <Box marginTop={1}>
-          <Text color={WARNING}>⚠ {cacheWarningText(item)}</Text>
-        </Box>
+        <box flexDirection="row" marginTop={1}>
+          <text fg={WARNING}>⚠ {cacheWarningText(item)}</text>
+        </box>
       )
 
     case "goal": {
@@ -248,28 +250,28 @@ export function ItemView({ item }: { item: DisplayItem }) {
               ? BORDER
               : ACCENT
       return (
-        <Box marginTop={1}>
-          <Text color={color} bold>
+        <box flexDirection="row" marginTop={1}>
+          <text fg={color} attributes={BOLD}>
             {item.message}
-          </Text>
-        </Box>
+          </text>
+        </box>
       )
     }
 
     case "workflow-phase":
       return (
-        <Box marginTop={1}>
-          <Text color={ACCENT} bold>
+        <box flexDirection="row" marginTop={1}>
+          <text fg={ACCENT} attributes={BOLD}>
             ◆ {item.title}
-          </Text>
-        </Box>
+          </text>
+        </box>
       )
 
     case "workflow-log":
       return (
-        <Box>
-          <Text color={MARKER}>{item.message}</Text>
-        </Box>
+        <box flexDirection="row">
+          <text fg={MARKER}>{item.message}</text>
+        </box>
       )
   }
 }
@@ -282,72 +284,72 @@ export function ItemView({ item }: { item: DisplayItem }) {
 function Markdown({ text }: { text: string }) {
   const blocks = parseBlocks(text)
   return (
-    <Box flexDirection="column">
+    <box flexDirection="column">
       {blocks.map((b, i) => {
         switch (b.kind) {
           case "blank":
-            // A single empty row between sections (Ink collapses pure empties).
-            return <Text key={i}>{" "}</Text>
+            // A single empty row between sections.
+            return <text key={i}>{" "}</text>
 
           case "hr":
             return (
-              <Text key={i} dimColor>
+              <text key={i} attributes={DIM}>
                 {"─".repeat(24)}
-              </Text>
+              </text>
             )
 
           case "heading":
             return (
-              <Text key={i} bold color={HEADING}>
+              <text key={i} fg={HEADING} attributes={BOLD}>
                 <Inline text={b.text} />
-              </Text>
+              </text>
             )
 
           case "bullet":
             return (
-              <Text key={i}>
+              <text key={i}>
                 {" ".repeat(b.indent)}
-                <Text color={MARKER_BULLET}>• </Text>
+                <span fg={MARKER_BULLET}>• </span>
                 <Inline text={b.text} />
-              </Text>
+              </text>
             )
 
           case "numbered":
             return (
-              <Text key={i}>
+              <text key={i}>
                 {" ".repeat(b.indent)}
-                <Text color={MARKER}>{b.n}. </Text>
+                <span fg={MARKER}>{b.n}. </span>
                 <Inline text={b.text} />
-              </Text>
+              </text>
             )
 
           case "code":
             return (
-              <Box key={i} flexDirection="column" marginY={0}>
+              <box key={i} flexDirection="column">
                 {b.lang ? (
-                  <Text dimColor color={CODE_MUTED}>
+                  <text fg={CODE_MUTED} attributes={DIM}>
                     {"  "}
                     {b.lang}
-                  </Text>
+                  </text>
                 ) : null}
                 {(b.lines.length === 0 ? [""] : b.lines).map((line, j) => (
-                  <Text key={j} color={CODE}>
+                  <text key={j} fg={CODE}>
                     {"  "}
                     {line.length === 0 ? " " : line}
-                  </Text>
+                  </text>
                 ))}
-              </Box>
+              </box>
             )
 
           case "paragraph":
             return (
-              <Text key={i}>
+              <text key={i}>
                 <Inline text={b.text} />
-              </Text>
+              </text>
             )
         }
       })}
-    </Box>
+    </box>
   )
 }
 
@@ -366,15 +368,15 @@ function Inline({ text }: { text: string }) {
 function SpanView({ span }: { span: MdSpan }) {
   switch (span.kind) {
     case "bold":
-      return <Text bold>{span.text}</Text>
+      return <span attributes={BOLD}>{span.text}</span>
     case "italic":
-      // Terminals rarely have true italic; dim+default is a quiet stand-in.
-      return <Text dimColor italic>{span.text}</Text>
+      // Terminals rarely have true italic; dim+italic is a quiet stand-in.
+      return <span attributes={DIM | ITALIC}>{span.text}</span>
     case "code":
       // No surrounding backticks — colour alone marks it as code.
-      return <Text color={CODE}>{span.text}</Text>
+      return <span fg={CODE}>{span.text}</span>
     case "text":
-      return <Text>{span.text}</Text>
+      return <span>{span.text}</span>
   }
 }
 

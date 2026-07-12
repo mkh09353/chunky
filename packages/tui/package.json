@@ -11,15 +11,13 @@
   "dependencies": {
     "@chunky/protocol": "workspace:*",
     "@ff-labs/fff-bun": "0.9.6",
-    "chalk": "^5.3.0",
-    "cli-boxes": "^4.0.1",
+    "@opentui/core": "^0.4.3",
+    "@opentui/react": "^0.4.3",
     "figures": "^6.1.0",
-    "ink": "^5.1.0",
-    "react": "^18.3.1",
-    "wrap-ansi": "^9.0.0"
+    "react": "^19.2.0"
   },
   "devDependencies": {
     "@types/bun": "^1.1.14",
-    "@types/react": "^18.3.12"
+    "@types/react": "^19"
   }
 }

@@ -1,7 +1,10 @@
-import React, { useEffect, useMemo, useState } from "react"
-import { Box, Text, useInput, useStdin } from "ink"
+import { useEffect, useMemo, useState } from "react"
+import { TextAttributes } from "@opentui/core"
 import figures from "figures"
 import { ACCENT, BORDER } from "../theme.js"
+import { rawModeSupported, useInput } from "../useInput.js"
+
+const { BOLD, DIM } = TextAttributes
 
 // ---- types mirrored from the server (kept local to avoid a server import) ----
 export interface ModelInfo {
@@ -64,7 +67,7 @@ function fuzzyScore(query: string, target: string): number {
  * we surface that as an "(inactive)" note.
  */
 export function AdvisorPicker({ baseUrl, onDone, onCancel }: Props) {
-  const rawSupported = Boolean(useStdin().isRawModeSupported)
+  const rawSupported = rawModeSupported
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -225,35 +228,35 @@ export function AdvisorPicker({ baseUrl, onDone, onCancel }: Props) {
   // ---- render ----
   if (loading) {
     return (
-      <Box borderStyle="round" borderColor={BORDER} paddingX={1} marginBottom={1}>
-        <Text dimColor>Loading models…</Text>
-      </Box>
+      <box border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
+        <text attributes={DIM}>Loading models…</text>
+      </box>
     )
   }
   if (error) {
     return (
-      <Box borderStyle="round" borderColor={BORDER} paddingX={1} marginBottom={1}>
-        <Text color="red">Couldn&apos;t load models: {error}</Text>
-      </Box>
+      <box border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
+        <text fg="red">Couldn&apos;t load models: {error}</text>
+      </box>
     )
   }
 
   if (step === "effort") {
     return (
-      <Box flexDirection="column" borderStyle="round" borderColor={BORDER} paddingX={1} marginBottom={1}>
-        <Text dimColor>Reasoning effort for advisor {chosen?.model.id} — ↑/↓ move · enter select · esc back</Text>
+      <box flexDirection="column" border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
+        <text attributes={DIM}>Reasoning effort for advisor {chosen?.model.id} — ↑/↓ move · enter select · esc back</text>
         {EFFORTS.map((opt, i) => {
           const on = i === optSel
           return (
-            <Box key={opt}>
-              <Text color={ACCENT}>{on ? figures.pointer : " "} </Text>
-              <Text color={on ? ACCENT : undefined} bold={on}>
+            <box key={opt} flexDirection="row">
+              <text fg={ACCENT}>{on ? figures.pointer : " "} </text>
+              <text fg={on ? ACCENT : undefined} attributes={on ? BOLD : 0}>
                 {opt}
-              </Text>
-            </Box>
+              </text>
+            </box>
           )
         })}
-      </Box>
+      </box>
     )
   }
 
@@ -261,44 +264,44 @@ export function AdvisorPicker({ baseUrl, onDone, onCancel }: Props) {
   const start = Math.max(0, Math.min(listSel - Math.floor(WINDOW / 2), Math.max(0, items.length - WINDOW)))
   const visible = items.slice(start, start + WINDOW)
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={BORDER} paddingX={1} marginBottom={1}>
-      <Text dimColor>Set the advisor model — type to filter · ↑/↓ move · enter select · esc cancel</Text>
-      <Box>
-        <Text color={ACCENT}>{figures.pointer} </Text>
-        <Text>{filter || ""}</Text>
-        <Text dimColor>{filter ? "" : "type to search…"}</Text>
-      </Box>
+    <box flexDirection="column" border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
+      <text attributes={DIM}>Set the advisor model — type to filter · ↑/↓ move · enter select · esc cancel</text>
+      <box flexDirection="row">
+        <text fg={ACCENT}>{figures.pointer} </text>
+        <text>{filter || ""}</text>
+        <text attributes={DIM}>{filter ? "" : "type to search…"}</text>
+      </box>
       {visible.map((item, i) => {
         const idx = start + i
         const on = idx === listSel
         if (item.off) {
           return (
-            <Box key="__off__">
-              <Text color={on ? ACCENT : undefined}>{on ? "❯ " : "  "}</Text>
-              <Text color={on ? ACCENT : undefined} bold={on} dimColor={!on}>
+            <box key="__off__" flexDirection="row">
+              <text fg={on ? ACCENT : undefined}>{on ? "❯ " : "  "}</text>
+              <text fg={on ? ACCENT : undefined} attributes={(on ? BOLD : 0) | (on ? 0 : DIM)}>
                 Turn advisor OFF
-              </Text>
-            </Box>
+              </text>
+            </box>
           )
         }
         const row = item.row
         return (
-          <Box key={`${row.provider}/${row.model.id}`}>
-            <Text color={on ? ACCENT : undefined}>{on ? "❯ " : "  "}</Text>
-            <Text color={on ? ACCENT : undefined} bold={on}>
+          <box key={`${row.provider}/${row.model.id}`} flexDirection="row">
+            <text fg={on ? ACCENT : undefined}>{on ? "❯ " : "  "}</text>
+            <text fg={on ? ACCENT : undefined} attributes={on ? BOLD : 0}>
               {row.provider}/{row.model.id}
-            </Text>
-            <Text dimColor>
+            </text>
+            <text attributes={DIM}>
               {row.model.reasoning ? "  ◆ reasoning" : ""}
               {row.ready ? "" : "  [login needed]"}
-            </Text>
-          </Box>
+            </text>
+          </box>
         )
       })}
-      <Text dimColor>
+      <text attributes={DIM}>
         {items.length - 1 > WINDOW ? `${listSel + 1}/${items.length - 1}` : `${filtered.length} models`}
         {busy ? "  · saving…" : ""}
-      </Text>
-    </Box>
+      </text>
+    </box>
   )
 }

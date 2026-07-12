@@ -1,5 +1,4 @@
-import React from "react"
-import { Box, Text } from "ink"
+import { TextAttributes } from "@opentui/core"
 import { ACCENT, BORDER } from "../theme.js"
 
 export interface ProviderRow {
@@ -15,24 +14,24 @@ export interface ProviderRow {
  */
 export function LoginPicker({ providers, selected }: { providers: ProviderRow[]; selected: number }) {
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={BORDER} paddingX={1} marginBottom={1}>
-      <Text dimColor>Log in to a provider — ↑/↓ move · enter select · esc cancel</Text>
+    <box flexDirection="column" border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
+      <text attributes={TextAttributes.DIM}>Log in to a provider — ↑/↓ move · enter select · esc cancel</text>
       {providers.map((p, i) => {
         const on = i === selected
         return (
-          <Box key={p.id}>
-            <Text color={on ? ACCENT : undefined}>{on ? "❯ " : "  "}</Text>
-            <Text color={on ? ACCENT : undefined} bold={on}>
+          <box key={p.id} flexDirection="row">
+            <text fg={on ? ACCENT : undefined}>{on ? "❯ " : "  "}</text>
+            <text fg={on ? ACCENT : undefined} attributes={on ? TextAttributes.BOLD : 0}>
               {p.ready ? "●" : "○"} {p.id}
-            </Text>
-            <Text dimColor>
+            </text>
+            <text attributes={TextAttributes.DIM}>
               {"  — " + p.label}
               {p.ready ? " [logged in]" : ""}
               {p.active ? " (active)" : ""}
-            </Text>
-          </Box>
+            </text>
+          </box>
         )
       })}
-    </Box>
+    </box>
   )
 }

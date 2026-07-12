@@ -9,6 +9,7 @@ export interface Command {
 
 export const COMMANDS: Command[] = [
   { name: "/clear", description: "Clear the conversation" },
+  { name: "/resume", description: "Resume a previous thread in this repo" },
   { name: "/help", description: "Show help" },
   { name: "/login", description: "Log in to an OAuth provider (Grok / Codex)" },
   { name: "/model", description: "Pick a model (provider, model, effort/speed)" },

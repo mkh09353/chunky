@@ -13,10 +13,12 @@ import {
   type GoalRequest,
   type GoalSnapshot,
   type GoalStateResponse,
+  type ListSessionsResponse,
   type LoginInitiation,
   type ModeSpec,
   type ModesResponse,
   type SendBlockedResponse,
+  type SessionSummary,
 } from "@chunky/protocol"
 import { mockRun } from "@chunky/protocol/mock"
 import { mockThreadsRun } from "./mockThreads.js"
@@ -27,6 +29,7 @@ import { Transcript, fmtTokens } from "./components/Transcript.js"
 import { StatusLine } from "./components/StatusLine.js"
 import { PromptInput } from "./components/PromptInput.js"
 import { LoginPicker, type ProviderRow } from "./components/LoginPicker.js"
+import { ResumePicker } from "./components/ResumePicker.js"
 import { ModelPicker, type ModelSelectionResult } from "./components/ModelPicker.js"
 import { AdvisorPicker, type AdvisorSelectionResult } from "./components/AdvisorPicker.js"
 import { openBrowser } from "./openBrowser.js"
@@ -102,6 +105,8 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
   // When true, the /advisor picker is open (owns the keyboard while shown).
   const [advisorPickerOpen, setAdvisorPickerOpen] = useState(false)
+  // When set, the /resume thread picker is open (owns the keyboard while shown).
+  const [resumePicker, setResumePicker] = useState<{ sessions: SessionSummary[]; selected: number } | null>(null)
   // The active model selection, reflected on the status line.
   const [currentSel, setCurrentSel] = useState<CurrentSelection | null>(null)
   // The active advisor config, reflected on the status line.
@@ -126,6 +131,15 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   // session (fresh prompt cache + empty transcript) instead of only wiping UI.
   const [sessionKey, setSessionKey] = useState(0)
   const sessionIdRef = useRef<string | null>(null)
+  // Set by /resume before bumping sessionKey: the live effect ATTACHES to this
+  // existing session (SSE replays its history) instead of creating a new one.
+  // /clear resets it so the next attach is a fresh session again.
+  const resumeTargetRef = useRef<string | null>(null)
+  // True from a resume-attach until the user's first send: from-less
+  // message.user events (the user's own PAST sends, replayed from history)
+  // render from the event. Cleared before each live send so the server's echo
+  // can't double with the local pushUser echo (see reduce()'s message.user).
+  const resumeReplayRef = useRef(false)
   // Images pasted (Ctrl+V) onto the NEXT message. A ref mirrors it so `submit`
   // reads the latest set without going stale in its closure.
   const [attachments, setAttachments] = useState<ClipboardImage[]>([])
@@ -133,7 +147,8 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   attachmentsRef.current = attachments
   const rawSupported = rawModeSupported
 
-  const pickerOpen = loginPicker != null || modelPickerOpen || advisorPickerOpen || pendingSend != null
+  const pickerOpen =
+    loginPicker != null || modelPickerOpen || advisorPickerOpen || resumePicker != null || pendingSend != null
 
   // Ctrl+T collapses/expands child-thread bodies (the tree view stays; only
   // spawned threads' contents fold to their header lines).
@@ -158,6 +173,13 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
 
   const apply = useCallback(
     (ev: AgentEvent) => {
+      // Replayed OWN sends have no local pushUser echo — the persisted event is
+      // their only appearance (reduce() skips from-less user events so live
+      // sends don't double). Only rendered while a resume replay is streaming.
+      if (ev.type === "message.user" && !ev.from && resumeReplayRef.current) {
+        setState((s) => pushUser(s, ev.text))
+        return
+      }
       setState((s) => reduce(s, ev))
       if (ev.type === "message.start" && !ev.threadId) lastAssistantRef.current = ""
       if (ev.type === "message.delta" && !ev.threadId) lastAssistantRef.current += ev.text
@@ -181,18 +203,24 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   )
 
   // ---- live wiring: open the SSE stream BEFORE any message is sent ----
-  // `sessionKey` re-runs this on /clear so we actually start a new thread
-  // (new sessionId → empty cache-watch → no stale "Cache cold" banner).
+  // `sessionKey` re-runs this on /clear (fresh server session) and on /resume
+  // (resumeTargetRef set → attach to that EXISTING session; the SSE history
+  // replay rebuilds the transcript, so reattaching IS resuming).
   useEffect(() => {
     if (mode !== "live") return
     let cancelled = false
     sessionIdRef.current = null
     ;(async () => {
       try {
-        const res = await fetch(baseUrl + ROUTES.createSession, { method: "POST" })
-        const { sessionId } = (await res.json()) as CreateSessionResponse
+        let sessionId = resumeTargetRef.current
+        if (!sessionId) {
+          const res = await fetch(baseUrl + ROUTES.createSession, { method: "POST" })
+          ;({ sessionId } = (await res.json()) as CreateSessionResponse)
+        }
         if (cancelled) return
         sessionIdRef.current = sessionId
+        // Only a resumed thread has history: render its replayed user turns.
+        resumeReplayRef.current = resumeTargetRef.current != null
         // New conversation: nothing tracked yet, so the cold banner must go.
         setCacheCold(null)
         const evRes = await fetch(baseUrl + ROUTES.events(sessionId))
@@ -262,6 +290,10 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         apply({ type: "error", message: "no live session yet" })
         return
       }
+      // End any resume-replay window BEFORE the request leaves: from here the
+      // local pushUser below is the echo, so the server's from-less message.user
+      // for this send must not render too.
+      resumeReplayRef.current = false
       try {
         const res = await fetch(baseUrl + ROUTES.sendMessage(id), {
           method: "POST",
@@ -503,6 +535,70 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       if (key.escape) setLoginPicker(null)
     },
     { isActive: rawSupported && loginPicker != null },
+  )
+
+  // /resume — pick a previous thread in this repo and reattach to it. The SSE
+  // history replay rebuilds the whole transcript (past user turns included), so
+  // the picker only chooses WHICH session id the live effect opens.
+  const doResume = useCallback(async () => {
+    if (mode !== "live") {
+      printLine("/resume needs the live server (run the server, then the TUI with --live).")
+      return
+    }
+    try {
+      const res = await fetch(baseUrl + ROUTES.listSessions)
+      const body = (await res.json()) as ListSessionsResponse
+      // Hide the thread we're already on, and never-used ones (no events means
+      // last_activity never moved past creation — every TUI launch leaves one).
+      const sessions = body.sessions.filter(
+        (s) => s.sessionId !== sessionIdRef.current && s.lastActivity > s.createdAt,
+      )
+      if (sessions.length === 0) {
+        printLine("No previous threads in this repo yet.")
+        return
+      }
+      setResumePicker({ sessions, selected: 0 })
+    } catch (err) {
+      printLine(`Resume failed: ${String(err)}`)
+    }
+  }, [mode, baseUrl, printLine])
+
+  // Reattach to a picked thread: the same local wipe as /clear, then point the
+  // live-session effect at the EXISTING id instead of creating a fresh one.
+  const attachResume = useCallback((s: SessionSummary) => {
+    setResumePicker(null)
+    setState(initialState)
+    setStartedAt(null)
+    setCacheCold(null)
+    setPendingSend(null)
+    setGoal(null)
+    setAttachments([])
+    setPrefill(null)
+    resumeTargetRef.current = s.sessionId
+    sessionIdRef.current = null
+    setSessionKey((k) => k + 1)
+  }, [])
+
+  // Resume-picker navigation: ↑/↓ move, enter reattaches, esc cancels.
+  useInput(
+    (_input, key) => {
+      if (!resumePicker) return
+      if (key.upArrow) {
+        setResumePicker((s) => (s ? { ...s, selected: (s.selected - 1 + s.sessions.length) % s.sessions.length } : s))
+        return
+      }
+      if (key.downArrow) {
+        setResumePicker((s) => (s ? { ...s, selected: (s.selected + 1) % s.sessions.length } : s))
+        return
+      }
+      if (key.return) {
+        const row = resumePicker.sessions[resumePicker.selected]
+        if (row) attachResume(row)
+        return
+      }
+      if (key.escape) setResumePicker(null)
+    },
+    { isActive: rawSupported && resumePicker != null },
   )
 
   // /model — open the fuzzy model picker (provider → model → effort/speed).
@@ -835,16 +931,20 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
             const old = sessionIdRef.current
             if (old) void fetch(baseUrl + ROUTES.interrupt(old), { method: "POST" }).catch(() => {})
             sessionIdRef.current = null
+            resumeTargetRef.current = null // next attach is a FRESH session
             setSessionKey((k) => k + 1)
           }
           break
         }
+        case "/resume":
+          void doResume()
+          break
         case "/quit":
           exit()
           break
         case "/help":
           printLine(
-            "Commands: /clear, /help, /login, /model, /advisor, /mode, /goal, /shipit, /cacheguard, /quit. Type a message and press Enter to talk to the agent. `/goal <objective>` works autonomously until the goal is done (`--workflows` makes it a workflow-orchestrator). `/shipit [notes]` hands this conversation's plan off to a fresh orchestrator session. `/mode <name>` switches a saved model+advisor pairing. `/cacheguard <tokens|off>` sets when a cold-cache re-send needs confirmation.",
+            "Commands: /clear, /resume, /help, /login, /model, /advisor, /mode, /goal, /shipit, /cacheguard, /quit. Type a message and press Enter to talk to the agent. `/resume` reopens a previous thread in this repo (its full history replays). `/goal <objective>` works autonomously until the goal is done (`--workflows` makes it a workflow-orchestrator). `/shipit [notes]` hands this conversation's plan off to a fresh orchestrator session. `/mode <name>` switches a saved model+advisor pairing. `/cacheguard <tokens|off>` sets when a cold-cache re-send needs confirmation.",
           )
           break
         case "/login":
@@ -870,7 +970,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           break
       }
     },
-    [printLine, doLogin, doModel, doAdvisor, doGoal, doShipIt, doCacheGuard, doMode, exit, mode, baseUrl],
+    [printLine, doLogin, doModel, doAdvisor, doGoal, doShipIt, doCacheGuard, doMode, doResume, exit, mode, baseUrl],
   )
 
   // Mock demo turn so the transcript streams even without a TTY.
@@ -932,6 +1032,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       {running && startedAt != null && <StatusLine startedAt={startedAt} />}
       <box flexDirection="column" width="100%" marginTop={1} flexShrink={0}>
         {loginPicker && <LoginPicker providers={loginPicker.providers} selected={loginPicker.selected} />}
+        {resumePicker && <ResumePicker sessions={resumePicker.sessions} selected={resumePicker.selected} />}
         {modelPickerOpen && (
           <ModelPicker baseUrl={baseUrl} onDone={onModelDone} onCancel={() => setModelPickerOpen(false)} />
         )}

@@ -6,7 +6,7 @@
 // speaks the OpenAI *Responses* API. LangChain's ChatOpenAI handles that shape
 // natively via `useResponsesApi: true` (body, streaming, tool round-trips) — so
 // we do NOT hand-build responses bodies. `reasoningEffort` is set natively and
-// `store:false` via modelKwargs. The only hand-handling (in injectingFetch →
+// stateless reasoning via LangChain's `zdrEnabled` mode. The only hand-handling (in injectingFetch →
 // codexResponsesBody) is for Codex's *non-standard deviations* from the public
 // Responses API, which no SDK knows about: it forbids system messages (moved to
 // top-level `instructions`) and rejects LangChain's `strict:null` on tools.
@@ -436,6 +436,10 @@ export const codexProvider: ProviderDef = {
       // handles the shape; we set store/effort the native way so it emits the
       // correct `store` and `reasoning.effort` fields (no body rewrite needed).
       useResponsesApi: true,
+      // The Codex backend requires store:false. Use LangChain's ZDR switch rather
+      // than only setting the wire field: it also prevents replaying ephemeral
+      // response-item ids and carries encrypted reasoning when available.
+      zdrEnabled: true,
       // reasoningEffort is a native ChatOpenAI field → LangChain emits the
       // correct `reasoning.effort` on the Responses path.
       ...(selection.effort ? { reasoningEffort: selection.effort as any } : {}),
@@ -445,10 +449,9 @@ export const codexProvider: ProviderDef = {
         baseURL: "https://chatgpt.com/backend-api/codex",
         fetch: injectingFetch as unknown as typeof fetch,
       },
-      // `store` isn't a ChatOpenAI constructor field, and Codex-only speed maps
-      // to service_tier — both go through modelKwargs (spread into the body).
+      // Codex-only speed maps to service_tier through modelKwargs (spread into
+      // the body). `zdrEnabled` above supplies store:false itself.
       modelKwargs: {
-        store: false, // Codex requires store:false.
         // With store:false the endpoint is stateless, so a reasoning model needs
         // its encrypted reasoning returned to carry state across turns / tool
         // round-trips (opencode's transform.ts does the same).

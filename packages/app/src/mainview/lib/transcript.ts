@@ -5,7 +5,9 @@ import type { AgentEvent, GoalStatus } from "@chunky/protocol"
 export const MAIN = "main"
 
 export type Item =
-  | { kind: "user"; text: string }
+  /** `from` marks a message injected by ANOTHER session (send_to_session) —
+   *  rendered with provenance instead of as something the user typed. */
+  | { kind: "user"; text: string; from?: string }
   | { kind: "assistant"; text: string; streaming: boolean }
   | {
       kind: "tool"
@@ -33,12 +35,24 @@ export type Item =
   /** A client-local status line (slash-command feedback). Never comes from the
    *  server stream, so it is not replayed on resume — session-scoped UI only. */
   | { kind: "notice"; text: string }
+  /** A dynamic-workflow phase header, rendered in the thread that ran `workflow`. */
+  | { kind: "workflow-phase"; title: string }
+  /** A dynamic-workflow narrator line (start/finish, log()). */
+  | { kind: "workflow-log"; message: string }
 
 export interface ThreadNode {
   id: string
   parentId: string | null
   title: string
   status: "idle" | "running"
+  /** Effective model running this thread (from thread.spawn) — shown in its header. */
+  model?: string
+  /** How many items the PARENT thread had when this thread was spawned — the point
+   *  in the parent's stream where this thread belongs chronologically. The renderer
+   *  anchors the thread's block here, so the parent's post-spawn output (e.g. its
+   *  final summary) renders BELOW it. Undefined for threads created before their
+   *  spawn event (fallback paths) → rendered at the end. */
+  anchorIndex?: number
   items: Item[]
 }
 
@@ -59,7 +73,7 @@ export const initialState: TranscriptState = {
 function reduceItems(items: Item[], ev: AgentEvent): Item[] {
   switch (ev.type) {
     case "message.user":
-      return [...items, { kind: "user", text: ev.text }]
+      return [...items, { kind: "user", text: ev.text, ...(ev.from ? { from: ev.from } : {}) }]
 
     case "message.start":
       return [...items, { kind: "assistant", text: "", streaming: true }]
@@ -179,6 +193,10 @@ export function reduce(state: TranscriptState, ev: AgentEvent): TranscriptState 
         parentId,
         title: ev.title,
         status: "running",
+        model: ev.model ?? existing?.model,
+        // Anchor the thread at its spawn point in the parent's stream so its block
+        // renders inline there. Keep an already-set anchor stable across re-spawns.
+        anchorIndex: existing?.anchorIndex ?? state.threads[parentId]?.items.length ?? 0,
         items: existing?.items ?? [],
       }
       return {
@@ -204,6 +222,22 @@ export function reduce(state: TranscriptState, ev: AgentEvent): TranscriptState 
         order: existing ? state.order : [...state.order, ev.threadId],
         threads: { ...state.threads, [ev.threadId]: node },
       }
+    }
+
+    case "workflow.phase": {
+      const threadId = ev.threadId || MAIN
+      return updateThreadItems(state, threadId, (items) => [
+        ...items,
+        { kind: "workflow-phase", title: ev.title },
+      ])
+    }
+
+    case "workflow.log": {
+      const threadId = ev.threadId || MAIN
+      return updateThreadItems(state, threadId, (items) => [
+        ...items,
+        { kind: "workflow-log", message: ev.message },
+      ])
     }
 
     case "message.user":

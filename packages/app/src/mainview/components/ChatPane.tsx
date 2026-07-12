@@ -1,7 +1,7 @@
 import { useMemo } from "react"
 import { ChatComposer, ChatComposerInput, ChatLayout } from "@astryxdesign/core/Chat"
 import type { ModelSelection } from "../lib/api"
-import { hasTranscript, mainItems, type TranscriptState } from "../lib/transcript"
+import { hasTranscript, type TranscriptState } from "../lib/transcript"
 import { createMentionTrigger } from "./mentionTrigger"
 import { createSlashTrigger } from "./slashTrigger"
 import { EmptyChat } from "./EmptyChat"
@@ -33,7 +33,6 @@ export function ChatPane({
   onStop: () => void
   onSuggestion: (text: string) => void
 }) {
-  const items = useMemo(() => mainItems(state), [state])
   const running = state.status === "running"
   const empty = !hasTranscript(state)
 
@@ -92,7 +91,7 @@ export function ChatPane({
           </div>
         }
       >
-        {!empty ? <TranscriptView items={items} /> : null}
+        {!empty ? <TranscriptView state={state} /> : null}
       </ChatLayout>
     </div>
   )

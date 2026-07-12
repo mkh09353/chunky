@@ -249,6 +249,109 @@ body,
   color: var(--color-text-secondary);
 }
 
+/* ---- Subagent / workflow threads ------------------------------------------ */
+
+/* A spawned child thread, rendered inline at its spawn point in the parent
+   stream (net-new vs the flat chat). A coloured left rail sets it apart; nesting
+   alternates the rail hue (data-depth 0/1) so a child-of-a-child stays legible. */
+.chunky-subthread {
+  margin-block: var(--spacing-2);
+  border-inline-start: 2px solid var(--color-accent);
+  padding-inline-start: var(--spacing-3);
+}
+
+.chunky-subthread[data-depth="1"] {
+  border-inline-start-color: var(--chunky-purple-deep);
+}
+
+.chunky-subthread-head {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-2);
+  width: 100%;
+  padding: var(--spacing-1) 0;
+  background: none;
+  border: none;
+  cursor: pointer;
+  text-align: left;
+  color: var(--color-text-primary);
+  font: inherit;
+}
+
+.chunky-subthread-head:hover .chunky-subthread-title {
+  color: var(--color-text-accent);
+}
+
+.chunky-subthread-caret {
+  flex: none;
+  width: 0.75rem;
+  color: var(--color-text-accent);
+  font-size: var(--font-size-2xs);
+}
+
+.chunky-subthread-dot {
+  flex: none;
+  width: 0.5rem;
+  height: 0.5rem;
+  border-radius: var(--radius-full);
+  background: var(--color-accent);
+}
+
+.chunky-subthread-dot[data-running] {
+  background: var(--color-success);
+  animation: chunky-pulse 1.4s ease-in-out infinite;
+}
+
+.chunky-subthread-title {
+  font-size: var(--font-size-sm);
+  font-weight: var(--font-weight-semibold);
+}
+
+.chunky-subthread-model {
+  font-size: var(--font-size-2xs);
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.chunky-subthread-status {
+  font-size: var(--font-size-2xs);
+  color: var(--color-text-secondary);
+}
+
+.chunky-subthread-count {
+  margin-inline-start: auto;
+  font-size: var(--font-size-2xs);
+  color: var(--color-text-secondary);
+  font-variant-numeric: tabular-nums;
+}
+
+.chunky-subthread-preview {
+  padding: 0 0 var(--spacing-2);
+  font-size: var(--font-size-sm);
+  color: var(--color-text-secondary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chunky-subthread-more {
+  color: var(--color-text-accent);
+  font-size: var(--font-size-2xs);
+}
+
+.chunky-subthread-body {
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-4);
+  padding-block: var(--spacing-2);
+}
+
+.chunky-workflow-log {
+  font-family: var(--font-family-code);
+  font-size: var(--font-size-2xs);
+  color: var(--color-text-accent);
+}
+
 /* ---- Scrollbars ----------------------------------------------------------- */
 
 /* The SideNav list defaults to the fat native scrollbar, which ends in a hard

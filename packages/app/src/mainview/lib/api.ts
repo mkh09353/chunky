@@ -5,6 +5,9 @@ import {
   type CreateSessionResponse,
   type FileSearchItem,
   type FileSearchResponse,
+  type GoalRequest,
+  type GoalSnapshot,
+  type GoalStateResponse,
   type ListSessionsResponse,
   type Repo,
   type ReposResponse,
@@ -148,6 +151,44 @@ export async function sendMessage(
 
 export async function interruptSession(baseUrl: string, sessionId: string): Promise<void> {
   await fetch(baseUrl + ROUTES.interrupt(sessionId), { method: "POST" }).catch(() => {})
+}
+
+// ---- Goal mode + shipit (slash commands) -----------------------------------
+
+export async function fetchGoal(baseUrl: string, sessionId: string): Promise<GoalSnapshot | null> {
+  const res = await fetch(baseUrl + ROUTES.goal(sessionId))
+  if (!res.ok) throw new Error(`goal status failed (${res.status})`)
+  const data = (await res.json()) as GoalStateResponse
+  return data.goal
+}
+
+/** Set an objective (starts the autonomous loop; the server streams goal.update
+ *  markers) or run a lifecycle action (pause/resume/clear). */
+export async function postGoal(
+  baseUrl: string,
+  sessionId: string,
+  req: GoalRequest,
+): Promise<GoalSnapshot | null> {
+  const res = await fetch(baseUrl + ROUTES.goal(sessionId), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(req),
+  })
+  const data = (await res.json().catch(() => ({}))) as GoalStateResponse & { error?: string }
+  if (!res.ok || data.error) throw new Error(data.error || `goal request failed (${res.status})`)
+  return data.goal
+}
+
+/** Ask THIS session to distill a handoff brief and ship it to a fresh
+ *  workflows-mode goal session (via the ship_goal tool). 202 on dispatch; the
+ *  brief-writing turn streams over the session's SSE like any other. */
+export async function shipSession(baseUrl: string, sessionId: string, notes?: string): Promise<void> {
+  const res = await fetch(baseUrl + ROUTES.ship(sessionId), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(notes ? { notes } : {}),
+  })
+  if (!res.ok && res.status !== 202) throw new Error(`shipit failed (${res.status})`)
 }
 
 /** FFF fuzzy file/dir search powering the composer's `@`-mention autocomplete,

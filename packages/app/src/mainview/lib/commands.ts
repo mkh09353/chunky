@@ -1,0 +1,78 @@
+// Slash commands for the app composer. The composer's `/` trigger menu inserts
+// a command's text; on submit App.tsx routes anything matching a KNOWN command
+// here instead of sending it as a chat message. Unknown `/foo` text still goes
+// to the model — only names listed below are intercepted.
+import type { GoalMode } from "@chunky/protocol"
+
+export interface SlashCommand {
+  name: string
+  description: string
+  /** Text inserted when picked from the menu (trailing space = takes args). */
+  insert: string
+}
+
+export const SLASH_COMMANDS: SlashCommand[] = [
+  {
+    name: "/goal",
+    description: "Work autonomously toward a goal (--workflows to orchestrate, --turns N for a budget)",
+    insert: "/goal ",
+  },
+  {
+    name: "/shipit",
+    description: "Hand this plan off to a fresh goal-orchestrator session (optional notes)",
+    insert: "/shipit ",
+  },
+  {
+    name: "/clear",
+    description: "Start a new thread in this repo",
+    insert: "/clear",
+  },
+]
+
+/** Split a submitted message into a KNOWN command + its argument string, or null
+ *  so ordinary messages (including unknown `/foo` text) go to the model. */
+export function parseSlashCommand(text: string): { name: string; rest: string } | null {
+  const trimmed = text.trim()
+  if (!trimmed.startsWith("/")) return null
+  const space = trimmed.indexOf(" ")
+  const name = space === -1 ? trimmed : trimmed.slice(0, space)
+  if (!SLASH_COMMANDS.some((c) => c.name === name)) return null
+  return { name, rest: space === -1 ? "" : trimmed.slice(space + 1).trim() }
+}
+
+export type GoalIntent =
+  | { kind: "status" }
+  | { kind: "action"; action: "pause" | "resume" | "clear" }
+  | { kind: "set"; objective: string; maxTurns?: number; mode?: GoalMode }
+
+/** Parse `/goal ...` arguments — mirrors the server's parseGoalCommand: bare →
+ *  status, lifecycle words, else an objective with optional leading `--turns N`
+ *  and `--workflows` (alias `--dynamite`) flags in either order. */
+export function parseGoalArgs(rest: string): GoalIntent {
+  const trimmed = rest.trim()
+  if (!trimmed) return { kind: "status" }
+  const lower = trimmed.toLowerCase()
+  if (lower === "pause") return { kind: "action", action: "pause" }
+  if (lower === "resume" || lower === "continue") return { kind: "action", action: "resume" }
+  if (lower === "clear" || lower === "stop" || lower === "cancel") return { kind: "action", action: "clear" }
+
+  let objective = trimmed
+  let maxTurns: number | undefined
+  let mode: GoalMode | undefined
+  for (;;) {
+    const turns = objective.match(/^--turns\s+(\d+)\s+([\s\S]+)$/)
+    if (turns) {
+      maxTurns = Number(turns[1])
+      objective = turns[2]!.trim()
+      continue
+    }
+    const workflows = objective.match(/^--(?:workflows|dynamite)\s+([\s\S]+)$/)
+    if (workflows) {
+      mode = "workflows"
+      objective = workflows[1]!.trim()
+      continue
+    }
+    break
+  }
+  return { kind: "set", objective, maxTurns, mode }
+}

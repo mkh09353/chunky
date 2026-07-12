@@ -316,6 +316,16 @@ body,
   font-size: var(--font-size-sm);
 }
 
+/* Dimmed one-line description after a `/` command's name in the trigger menu. */
+.chunky-command-desc {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-secondary);
+  font-size: var(--font-size-sm);
+}
+
 /* ---- Repo tabs (top nav) -------------------------------------------------- */
 
 .chunky-repotabs {

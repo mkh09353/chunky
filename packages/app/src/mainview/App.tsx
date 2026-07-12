@@ -13,25 +13,29 @@ import { RepoTabs } from "./components/RepoTabs"
 import {
   addRepo,
   createSession,
+  fetchGoal,
   fetchModel,
   interruptSession,
   listRepos,
   listSessions,
   loadConfig,
   openEventStream,
+  postGoal,
   removeRepo,
   sendMessage,
+  shipSession,
   type AppConfig,
   type ModelSelection,
   type Repo,
 } from "./lib/api"
+import { parseGoalArgs, parseSlashCommand } from "./lib/commands"
 
 // Which repo tab is open is THIS CLIENT's UI state (the server has no global
 // active workspace anymore) — remembered locally so a relaunch restores it.
 const ACTIVE_REPO_KEY = "chunky.activeRepoId"
 import { groupSessions, relativeTime, threadLabel } from "./lib/format"
 import { MIN_NOTIFY_MS, notifyTurnEnd } from "./lib/notify"
-import { initialState, reduce, type TranscriptState } from "./lib/transcript"
+import { initialState, pushNotice, reduce, type TranscriptState } from "./lib/transcript"
 
 export default function App() {
   const [config, setConfig] = useState<AppConfig | null>(null)
@@ -250,11 +254,74 @@ export default function App() {
     [config, openRepoThreads],
   )
 
+  // Client-local status line for slash-command feedback (never persisted —
+  // the server's own goal.update/message events remain the durable record).
+  const notice = useCallback((text: string) => {
+    setTranscript((s) => pushNotice(s, text))
+  }, [])
+
+  // Execute a KNOWN slash command (see lib/commands.ts) against the current
+  // session. Anything the server does in response (goal.update markers, the
+  // shipit brief-writing turn) streams back over the session's SSE.
+  const runCommand = useCallback(
+    async (name: string, rest: string) => {
+      if (!config || !sessionId) return
+      try {
+        switch (name) {
+          case "/clear":
+            await handleNewThread()
+            return
+          case "/shipit":
+            await shipSession(config.baseUrl, sessionId, rest || undefined)
+            notice(
+              "Shipping — this thread is writing the handoff brief and will spawn a fresh goal-orchestrator thread (ship_goal). It appears in the sidebar once created.",
+            )
+            return
+          case "/goal": {
+            const intent = parseGoalArgs(rest)
+            if (intent.kind === "status") {
+              const goal = await fetchGoal(config.baseUrl, sessionId)
+              if (!goal) {
+                notice(
+                  "No goal set. `/goal <objective>` starts one (autonomous until done); `--workflows` runs it as a workflow-orchestrator; `--turns 30` sets a budget; `/goal pause|resume|clear` manages it.",
+                )
+                return
+              }
+              const modeTag = goal.mode === "workflows" ? ", orchestrator" : ""
+              notice(`Goal (${goal.status}${modeTag}, turn ${goal.turns}/${goal.maxTurns}): ${goal.objective}`)
+              return
+            }
+            if (intent.kind === "action") {
+              await postGoal(config.baseUrl, sessionId, { action: intent.action })
+              return // the server streams a goal.update marker
+            }
+            await postGoal(config.baseUrl, sessionId, {
+              objective: intent.objective,
+              ...(intent.maxTurns ? { maxTurns: intent.maxTurns } : {}),
+              ...(intent.mode ? { mode: intent.mode } : {}),
+            })
+            return // ditto — "◎ Goal set" arrives over SSE
+          }
+        }
+      } catch (err) {
+        notice(`${name} failed: ${(err as Error).message}`)
+      }
+    },
+    [config, sessionId, handleNewThread, notice],
+  )
+
   const handleSubmit = useCallback(
     async (text: string) => {
       const trimmed = text.trim()
       if (!trimmed || !config || !sessionId) return
       setDraft("")
+      // Known slash commands run against the server's control routes instead of
+      // being sent as chat; unknown `/foo` text still goes to the model.
+      const cmd = parseSlashCommand(trimmed)
+      if (cmd) {
+        await runCommand(cmd.name, cmd.rest)
+        return
+      }
       // The server echoes the user turn back over SSE (message.user), so we
       // don't optimistically insert it here — that keeps a single source of
       // truth and means resumed threads show past prompts too.
@@ -282,7 +349,7 @@ export default function App() {
         setConnError((err as Error).message)
       }
     },
-    [config, refreshSessions, sessionId],
+    [config, refreshSessions, runCommand, sessionId],
   )
 
   const handleStop = useCallback(() => {

@@ -96,6 +96,7 @@ function senderOf(g: Group): Sender {
       return "user"
     case "cache-warning":
     case "goal":
+    case "notice":
       return "system"
     default:
       return "assistant"
@@ -185,6 +186,10 @@ export function TranscriptView({ items }: { items: Item[] }) {
                 <ChatSystemMessage key={`g-${i}`} variant="divider">
                   {item.message}
                 </ChatSystemMessage>
+              )
+            case "notice":
+              return (
+                <ChatSystemMessage key={`n-${i}`}>{item.text}</ChatSystemMessage>
               )
             default:
               return null

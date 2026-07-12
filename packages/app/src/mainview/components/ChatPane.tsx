@@ -3,6 +3,7 @@ import { ChatComposer, ChatComposerInput, ChatLayout } from "@astryxdesign/core/
 import type { ModelSelection } from "../lib/api"
 import { hasTranscript, mainItems, type TranscriptState } from "../lib/transcript"
 import { createMentionTrigger } from "./mentionTrigger"
+import { createSlashTrigger } from "./slashTrigger"
 import { EmptyChat } from "./EmptyChat"
 import { ModelPickerMenu } from "./ModelPickerMenu"
 import { TranscriptView } from "./TranscriptView"
@@ -36,11 +37,12 @@ export function ChatPane({
   const running = state.status === "running"
   const empty = !hasTranscript(state)
 
-  // `@`-mention file autocomplete, backed by the current repo's FFF search.
-  // Rebuilt per baseUrl + repo so its AbortController-based SearchSource is
-  // scoped to one server and one repo index. Absent baseUrl → plain input.
+  // `@`-mention file autocomplete (backed by the current repo's FFF search) plus
+  // the `/` slash-command menu. Rebuilt per baseUrl + repo so the mention
+  // trigger's AbortController-based SearchSource is scoped to one server and one
+  // repo index. Absent baseUrl → plain input.
   const triggers = useMemo(
-    () => (baseUrl ? [createMentionTrigger(baseUrl, repoId)] : undefined),
+    () => (baseUrl ? [createMentionTrigger(baseUrl, repoId), createSlashTrigger()] : undefined),
     [baseUrl, repoId],
   )
 

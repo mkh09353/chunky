@@ -30,6 +30,9 @@ export type Item =
       status: GoalStatus | "cleared"
       message: string
     }
+  /** A client-local status line (slash-command feedback). Never comes from the
+   *  server stream, so it is not replayed on resume — session-scoped UI only. */
+  | { kind: "notice"; text: string }
 
 export interface ThreadNode {
   id: string
@@ -217,6 +220,11 @@ export function reduce(state: TranscriptState, ev: AgentEvent): TranscriptState 
     default:
       return state
   }
+}
+
+/** Append a client-local notice line (slash-command feedback) to the main thread. */
+export function pushNotice(state: TranscriptState, text: string): TranscriptState {
+  return updateThreadItems(state, MAIN, (items) => [...items, { kind: "notice", text }])
 }
 
 /** Flatten main-thread items for the primary chat pane. */

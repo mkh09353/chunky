@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useState } from "react"
+import { Fragment, useCallback, useEffect, useState } from "react"
 import {
   ChatMessage,
   ChatMessageBubble,
@@ -131,6 +131,11 @@ function MessageGroups({ groups }: { groups: Group[] }) {
                 <ChatMessageBubble
                   name={burstStart ? <span className="chunky-sender">You</span> : undefined}
                 >
+                  {item.from ? (
+                    // Injected by ANOTHER session via send_to_session — show
+                    // provenance so it doesn't read as something the user typed.
+                    <span className="chunky-user-from">⇄ from session {item.from}</span>
+                  ) : null}
                   {item.text}
                 </ChatMessageBubble>
               </ChatMessage>
@@ -325,6 +330,18 @@ export function TranscriptView({ state }: { state: TranscriptState }) {
       else next.add(id)
       return next
     })
+  }, [])
+
+  // Ctrl+T folds every expanded thread back to its preview line (TUI parity).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "t" || e.key === "T")) {
+        e.preventDefault()
+        setExpanded(new Set())
+      }
+    }
+    document.addEventListener("keydown", onKey)
+    return () => document.removeEventListener("keydown", onKey)
   }, [])
 
   const main = state.threads[MAIN]

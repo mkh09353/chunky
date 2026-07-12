@@ -1,13 +1,7 @@
-import { mkdirSync } from "node:fs"
-import { dirname, join } from "node:path"
-import { fileURLToPath } from "node:url"
 import { BrowserWindow, Updater, createRPC, Utils } from "electrobun/bun"
 
 const DEV_SERVER_PORT = 5173
 const DEV_SERVER_URL = process.env.VITE_DEV_URL ?? `http://localhost:${DEV_SERVER_PORT}`
-
-const here = dirname(fileURLToPath(import.meta.url))
-const appRoot = join(here, "../..")
 
 async function getMainViewUrl(): Promise<string> {
   // Prefer Vite HMR when reachable (dev workflow).
@@ -41,19 +35,12 @@ const baseUrl =
 const workspace = process.env.CHUNKY_WORKSPACE || process.cwd()
 const workspaceName = workspace.split(/[\\/]/).filter(Boolean).pop() || "workspace"
 
+// Served to the webview over the `getConfig` RPC below. (We used to also write
+// chunky-config.json copies at startup, but bundled bun runs from inside the
+// .app, so those writes landed in Resources/{src,dist}/ — paths neither Vite
+// HMR nor the views:// server ever reads. The static public/chunky-config.json
+// stays as a dev-browser fallback only.)
 const config = { baseUrl, workspace, workspaceName }
-const configJson = JSON.stringify(config, null, 2)
-
-// Vite serves public/ at /; also drop a copy next to built assets for canary.
-for (const rel of ["src/mainview/public/chunky-config.json", "dist/chunky-config.json"]) {
-  try {
-    const path = join(appRoot, rel)
-    mkdirSync(dirname(path), { recursive: true })
-    await Bun.write(path, configJson)
-  } catch (err) {
-    console.warn(`[@chunky/app] could not write ${rel}`, err)
-  }
-}
 
 const url = await getMainViewUrl()
 
@@ -62,6 +49,21 @@ const url = await getMainViewUrl()
 // chooser and return the selected absolute path (or "" if cancelled).
 const rpc = createRPC({
   requestHandler: {
+    // The webview's source of truth for the harness URL/workspace (lib/api.ts
+    // loadConfig). Static chunky-config.json copies can't track env overrides.
+    getConfig: async () => config,
+    // Open a URL in the user's default browser (the /login flow) — the webview
+    // itself can't reach outside its window.
+    openExternal: async (url: unknown) => {
+      if (typeof url !== "string" || !/^https?:\/\//i.test(url)) return false
+      const opener = process.platform === "darwin" ? "open" : process.platform === "win32" ? "start" : "xdg-open"
+      try {
+        await Bun.spawn([opener, url], { stdout: "ignore", stderr: "ignore" }).exited
+        return true
+      } catch {
+        return false
+      }
+    },
     openFolderDialog: async () => {
       console.log("[@chunky/app] openFolderDialog RPC received — opening native dialog")
       const paths = await Utils.openFileDialog({

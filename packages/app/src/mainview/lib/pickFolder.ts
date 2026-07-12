@@ -1,49 +1,14 @@
 // Native folder picker, bridged to the electrobun bun process over RPC.
 //
-// This ONLY works inside the packaged electrobun app, where `Electroview` sets
-// up an encrypted socket to bun and `window.__electrobunRpcSocketPort` is set.
-// In the plain dev browser (Vite at :5173) there is no bun process, so we never
-// import electrobun/view (its internal `.js`→`.ts` imports would only resolve
-// through the build) and pickFolder() returns null — callers fall back to the
-// paste-a-path field. See bun/index.ts for the matching `openFolderDialog` RPC
-// handler that calls the OS dialog.
+// Only works inside the electrobun webview (see lib/rpc.ts); in the plain dev
+// browser pickFolder() returns null — callers fall back to the paste-a-path
+// field. See bun/index.ts for the matching `openFolderDialog` RPC handler that
+// calls the OS dialog.
+import { getRpc, nativeRpcAvailable } from "./rpc"
 
 /** True when running inside the electrobun webview (vs the dev browser). */
 export function nativePickerAvailable(): boolean {
-  return typeof window !== "undefined" && !!window.__electrobunRpcSocketPort
-}
-
-// The electrobun RPC client, lazily created once. `unknown` because we don't
-// bundle electrobun's types into the webview app.
-let rpcReady: Promise<{ request?: Record<string, (...a: unknown[]) => Promise<unknown>> } | null> | null =
-  null
-
-async function getRpc() {
-  if (!nativePickerAvailable()) return null
-  if (!rpcReady) {
-    rpcReady = (async () => {
-      try {
-        // Dynamic + guarded: only loaded inside electrobun. Vite bundles it as a
-        // lazy chunk (electrobunTsResolve resolves its `.js`→`.ts` deep imports).
-        const mod = (await import("electrobun/view")) as {
-          Electroview: new (c: { rpc: unknown }) => unknown
-          createRPC: (opts: unknown) => unknown
-        }
-        // maxRequestTime: the OS folder chooser is modal and open-ended, but
-        // electrobun's RPC rejects requests after 1s by default — long before
-        // anyone can pick a folder. Infinity disables the timer (explicitly
-        // supported); a missing bun-side handler still rejects immediately.
-        const rpc = mod.createRPC({ maxRequestTime: Infinity }) as {
-          request?: Record<string, (...a: unknown[]) => Promise<unknown>>
-        }
-        new mod.Electroview({ rpc })
-        return rpc
-      } catch {
-        return null
-      }
-    })()
-  }
-  return rpcReady
+  return nativeRpcAvailable()
 }
 
 /**

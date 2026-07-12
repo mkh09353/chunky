@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import type { SessionSummary } from "@chunky/protocol"
+import type { CacheCold, GoalSnapshot, ModeSpec, SessionSummary } from "@chunky/protocol"
 import { AppShell } from "@astryxdesign/core/AppShell"
 import { SideNav, SideNavItem, SideNavSection } from "@astryxdesign/core/SideNav"
 import { TopNav, TopNavHeading } from "@astryxdesign/core/TopNav"
@@ -12,23 +12,39 @@ import { ChatPane } from "./components/ChatPane"
 import { RepoTabs } from "./components/RepoTabs"
 import {
   addRepo,
+  applyMode,
   createSession,
+  deleteMode,
+  fetchAdvisor,
+  fetchCacheGuard,
+  fetchCacheStatus,
   fetchGoal,
   fetchModel,
+  fetchModes,
+  initiateLogin,
   interruptSession,
+  listProviders,
   listRepos,
   listSessions,
   loadConfig,
+  loginStatus,
   openEventStream,
   postGoal,
+  prettyModel,
   removeRepo,
+  saveMode,
   sendMessage,
+  setCacheGuard,
   shipSession,
+  type AdvisorState,
   type AppConfig,
+  type InputImage,
   type ModelSelection,
   type Repo,
 } from "./lib/api"
+import { openExternal } from "./lib/rpc"
 import { parseGoalArgs, parseSlashCommand } from "./lib/commands"
+import { fmtTokens } from "./lib/format"
 
 // Which repo tab is open is THIS CLIENT's UI state (the server has no global
 // active workspace anymore) — remembered locally so a relaunch restores it.
@@ -48,6 +64,23 @@ export default function App() {
   const [activeRepoId, setActiveRepoId] = useState<string | null>(null)
   const [connError, setConnError] = useState<string | null>(null)
   const [booting, setBooting] = useState(true)
+  // The always-on advisor config (composer trigger label + /advisor).
+  const [advisor, setAdvisorState] = useState<AdvisorState | null>(null)
+  // The session's current goal (composer pill; tracked from goal.update events).
+  const [goal, setGoal] = useState<GoalSnapshot | null>(null)
+  // Passive cold-cache indicator: while idle, the NEXT send would re-send this
+  // much context. Shown above the composer so the warning lands BEFORE you send.
+  const [cacheCold, setCacheCold] = useState<CacheCold | null>(null)
+  // Images pasted onto the NEXT message. A ref mirrors it so handleSubmit reads
+  // the latest set without going stale in its closure.
+  const [attachments, setAttachments] = useState<InputImage[]>([])
+  const attachmentsRef = useRef<InputImage[]>([])
+  attachmentsRef.current = attachments
+  // Wall-clock start of the in-flight turn (drives the elapsed-seconds pill).
+  const [runningSince, setRunningSince] = useState<number | null>(null)
+  // Bumped by /model and /advisor to open the corresponding composer menu.
+  const [modelOpenSignal, setModelOpenSignal] = useState(0)
+  const [advisorOpenSignal, setAdvisorOpenSignal] = useState(0)
 
   const sessionIdRef = useRef<string | null>(null)
   const streamAbort = useRef<AbortController | null>(null)
@@ -66,6 +99,7 @@ export default function App() {
     if (ev.type === "message.start" && !ev.threadId) lastAssistantRef.current = ""
     if (ev.type === "message.delta" && !ev.threadId) lastAssistantRef.current += ev.text
     if (ev.type === "session.status") {
+      setRunningSince(ev.status === "running" ? Date.now() : null)
       if (ev.status === "running") {
         runningSinceRef.current = Date.now()
       } else {
@@ -74,6 +108,9 @@ export default function App() {
         if (since != null && Date.now() - since >= MIN_NOTIFY_MS) notifyTurnEnd(lastAssistantRef.current)
       }
     }
+    // Track goal state for the composer pill. History replay (resume) re-runs
+    // these in order, so the last one wins and the pill reflects the true state.
+    if (ev.type === "goal.update") setGoal(ev.goal)
   }, [])
 
   const refreshSessions = useCallback(
@@ -101,6 +138,13 @@ export default function App() {
       setSessionId(id)
       if (reset) setTranscript(initialState)
       setConnError(null)
+      // Per-session UI state must not leak across threads. goal.update events
+      // replay over SSE, but a session with no goal never emits one — so seed
+      // from the REST snapshot rather than trusting replay alone.
+      setGoal(null)
+      setCacheCold(null)
+      setAttachments([])
+      void fetchGoal(baseUrl, id).then(setGoal).catch(() => {})
 
       try {
         await openEventStream(baseUrl, id, applyEvent, ac.signal)
@@ -143,12 +187,14 @@ export default function App() {
       if (cancelled) return
       setConfig(cfg)
 
-      const [reg, sel] = await Promise.all([
+      const [reg, sel, adv] = await Promise.all([
         listRepos(cfg.baseUrl).catch(() => null),
         fetchModel(cfg.baseUrl),
+        fetchAdvisor(cfg.baseUrl),
       ])
       if (cancelled) return
       setModel(sel)
+      setAdvisorState(adv)
 
       let repoId: string | null = null
       if (reg) {
@@ -172,14 +218,33 @@ export default function App() {
     }
   }, [openRepoThreads])
 
-  // Poll model selection lightly so /model changes in TUI show up.
+  // Poll model + advisor selection lightly so TUI-side changes show up.
   useEffect(() => {
     if (!config) return
     const t = setInterval(() => {
       void fetchModel(config.baseUrl).then((m) => m && setModel(m))
+      void fetchAdvisor(config.baseUrl).then((a) => a && setAdvisorState(a))
     }, 15_000)
     return () => clearInterval(t)
   }, [config])
+
+  // Passive cold-cache watch (TUI parity): while the session is idle, ask the
+  // server whether the NEXT send would rebuild a cold cache and warn above the
+  // composer — BEFORE any tokens are spent — instead of after the turn starts.
+  useEffect(() => {
+    if (!config || !sessionId || transcript.status === "running") return
+    let cancelled = false
+    const check = async () => {
+      const res = await fetchCacheStatus(config.baseUrl, sessionId)
+      if (!cancelled && res) setCacheCold(res.cold)
+    }
+    void check()
+    const t = setInterval(() => void check(), 30_000)
+    return () => {
+      cancelled = true
+      clearInterval(t)
+    }
+  }, [config, sessionId, transcript.status])
 
   const handleNewThread = useCallback(async () => {
     if (!config) return
@@ -260,6 +325,168 @@ export default function App() {
     setTranscript((s) => pushNotice(s, text))
   }, [])
 
+  // /login — bare lists providers; `/login <provider>` starts the browser
+  // loopback flow (the server's callback captures the token) and polls until
+  // the provider reports ready.
+  const doLogin = useCallback(
+    async (rest: string) => {
+      if (!config) return
+      const providers = await listProviders(config.baseUrl)
+      if (providers.length === 0) {
+        notice("No providers available (is the server running?).")
+        return
+      }
+      const id = rest.trim().toLowerCase()
+      if (!id) {
+        const lines = providers.map(
+          (p) =>
+            `${p.ready ? "●" : "○"} ${p.id} — ${p.label}${p.ready ? " (logged in)" : ""}${p.active ? " (active)" : ""}`,
+        )
+        notice(`Providers: ${lines.join("  ·  ")}. \`/login <provider>\` starts a browser sign-in.`)
+        return
+      }
+      const p = providers.find((x) => x.id.toLowerCase() === id)
+      if (!p) {
+        notice(`Unknown provider "${rest}". Available: ${providers.map((x) => x.id).join(", ")}.`)
+        return
+      }
+      if (p.ready) {
+        notice(`${p.id} is already logged in. Pick one of its models with /model.`)
+        return
+      }
+      try {
+        const init = await initiateLogin(config.baseUrl, p.id)
+        if (init.kind === "ready") {
+          notice(init.instructions)
+          return
+        }
+        if (init.kind === "url") {
+          const opened = await openExternal(init.url)
+          notice(
+            opened
+              ? init.instructions
+              : `Couldn't open a browser automatically. Open this URL to sign in to ${p.id}: ${init.url}`,
+          )
+        } else {
+          notice(init.instructions)
+        }
+        // Poll until the server has stored a token (loopback callback fired).
+        const deadline = Date.now() + 150_000
+        while (Date.now() < deadline) {
+          await new Promise((r) => setTimeout(r, 2000))
+          if (await loginStatus(config.baseUrl, p.id)) {
+            notice(`✓ Logged in to ${p.id}. Pick one of its models with /model.`)
+            return
+          }
+        }
+        notice(`Still waiting on ${p.id} login. Finish in the browser, then pick a model with /model.`)
+      } catch (err) {
+        notice(`Login for ${p.id} failed: ${(err as Error).message}`)
+      }
+    },
+    [config, notice],
+  )
+
+  // /cacheguard — show or set the confirm-before-resend threshold:
+  //   ""                  -> show the current guard
+  //   <N | Nk | Nm | off> -> set the threshold in tokens, or disable the guard
+  const doCacheGuard = useCallback(
+    async (rest: string) => {
+      if (!config) return
+      const trimmed = rest.trim().toLowerCase()
+      if (!trimmed) {
+        const body = await fetchCacheGuard(config.baseUrl)
+        notice(
+          body.tokens == null
+            ? "Cache guard: off — cold-cache sends go through without confirmation. `/cacheguard <tokens>` (e.g. 100k) to enable."
+            : `Cache guard: a send that would re-send ≥${fmtTokens(body.tokens)} tokens on a cold cache asks for confirmation first. \`/cacheguard <tokens|off>\` to change.`,
+        )
+        return
+      }
+      let tokens: number | null
+      if (trimmed === "off" || trimmed === "none" || trimmed === "0") {
+        tokens = null
+      } else {
+        const m = trimmed.match(/^(\d+(?:\.\d+)?)(k|m)?$/)
+        if (!m) {
+          notice("Usage: /cacheguard <tokens|off> — e.g. /cacheguard 100k, /cacheguard 50000, /cacheguard off")
+          return
+        }
+        tokens = Math.round(Number(m[1]) * (m[2] === "m" ? 1_000_000 : m[2] === "k" ? 1_000 : 1))
+      }
+      const body = await setCacheGuard(config.baseUrl, tokens)
+      notice(
+        body.tokens == null
+          ? "Cache guard off — cold-cache sends go through without confirmation."
+          : `Cache guard set: confirm before re-sending ≥${fmtTokens(body.tokens)} tokens on a cold cache.`,
+      )
+    },
+    [config, notice],
+  )
+
+  // /mode — named executor+advisor pairings:
+  //   ""          -> list saved modes + the current pairing
+  //   <name>      -> apply that mode (model + advisor switch as one unit)
+  //   save <name> -> snapshot the current pairing under <name>
+  //   rm <name>   -> delete <name>
+  const doMode = useCallback(
+    async (rest: string) => {
+      if (!config) return
+      const effortParen = (e?: string | null) => (e ? ` (${e})` : "")
+      const fmtSpec = (spec: ModeSpec) =>
+        `${prettyModel(spec.model)}${effortParen(spec.effort)} + advisor ${
+          spec.advisor ? `${prettyModel(spec.advisor.model)}${effortParen(spec.advisor.effort)}` : "off"
+        }`
+      const trimmed = rest.trim()
+      if (!trimmed) {
+        const body = await fetchModes(config.baseUrl)
+        if (body.modes.length === 0) {
+          notice(
+            `No modes saved. Current pairing: ${fmtSpec(body.current)}. \`/mode save <name>\` snapshots it; \`/mode <name>\` applies one.`,
+          )
+          return
+        }
+        const lines = body.modes.map((m) => `${m.name} — ${fmtSpec(m)}`)
+        notice(`Modes: ${lines.join("  ·  ")}. Current: ${fmtSpec(body.current)}. \`/mode <name>\` to switch.`)
+        return
+      }
+
+      const save = trimmed.match(/^save\s+(\S+)$/i)
+      if (save) {
+        const name = save[1]!
+        const { current } = await fetchModes(config.baseUrl)
+        await saveMode(config.baseUrl, name)
+        const samePair =
+          current.advisor && current.advisor.provider === current.provider && current.advisor.model === current.model
+        notice(
+          `Mode "${name}" saved: ${fmtSpec(current)}.${
+            samePair ? " ⚠ advisor equals the executor — it will be suppressed; pick a different advisor for this mode." : ""
+          }`,
+        )
+        return
+      }
+
+      const rm = trimmed.match(/^(?:rm|delete)\s+(\S+)$/i)
+      if (rm) {
+        await deleteMode(config.baseUrl, rm[1]!)
+        notice(`Mode "${rm[1]}" deleted.`)
+        return
+      }
+
+      // Anything else is a mode name to apply.
+      const body = await applyMode(config.baseUrl, trimmed)
+      setModel({
+        provider: body.provider,
+        model: body.model,
+        effort: body.effort ?? null,
+        speed: body.speed ?? null,
+      })
+      void fetchAdvisor(config.baseUrl).then((a) => a && setAdvisorState(a))
+      notice(`Mode "${body.applied}" applied: ${prettyModel(body.model)}${effortParen(body.effort)} · ${body.provider}.`)
+    },
+    [config, notice],
+  )
+
   // Execute a KNOWN slash command (see lib/commands.ts) against the current
   // session. Anything the server does in response (goal.update markers, the
   // shipit brief-writing turn) streams back over the session's SSE.
@@ -271,6 +498,27 @@ export default function App() {
           case "/clear":
             await handleNewThread()
             return
+          case "/resume": {
+            // Candidates: this repo's threads, minus the one we're on and
+            // never-used empties (no events → lastActivity never moved past
+            // creation). The list is newest-first, so [0] is "the last thread
+            // I was in" — bare /resume is an alt-tab back to it.
+            const list = await refreshSessions(config.baseUrl)
+            const candidates = list.filter((s) => s.sessionId !== sessionId && s.lastActivity > s.createdAt)
+            if (candidates.length === 0) {
+              notice("No other threads in this repo yet.")
+              return
+            }
+            const q = rest.toLowerCase()
+            const match = q ? candidates.find((s) => s.title.toLowerCase().includes(q)) : candidates[0]!
+            if (!match) {
+              const recent = candidates.slice(0, 5).map((s) => `“${s.title}”`).join(", ")
+              notice(`No thread title matches "${rest}". Recent: ${recent}`)
+              return
+            }
+            void attachSession(config.baseUrl, match.sessionId, true)
+            return
+          }
           case "/shipit":
             await shipSession(config.baseUrl, sessionId, rest || undefined)
             notice(
@@ -302,12 +550,33 @@ export default function App() {
             })
             return // ditto — "◎ Goal set" arrives over SSE
           }
+          case "/model":
+            // Same affordance as the composer's model button — just open it.
+            setModelOpenSignal((n) => n + 1)
+            return
+          case "/advisor":
+            setAdvisorOpenSignal((n) => n + 1)
+            return
+          case "/login":
+            await doLogin(rest)
+            return
+          case "/cacheguard":
+            await doCacheGuard(rest)
+            return
+          case "/mode":
+            await doMode(rest)
+            return
+          case "/help":
+            notice(
+              "Commands: /clear, /resume, /help, /login, /model, /advisor, /mode, /goal, /shipit, /cacheguard. `/resume [title]` reopens a previous thread in this repo (its full history replays). `/goal <objective>` works autonomously until the goal is done (`--workflows` makes it a workflow-orchestrator). `/shipit [notes]` hands this conversation's plan off to a fresh orchestrator thread. `/mode <name>` switches a saved model+advisor pairing. `/cacheguard <tokens|off>` sets when a cold-cache re-send needs confirmation. Paste an image to attach it to your next message.",
+            )
+            return
         }
       } catch (err) {
         notice(`${name} failed: ${(err as Error).message}`)
       }
     },
-    [config, sessionId, handleNewThread, notice],
+    [config, sessionId, handleNewThread, notice, refreshSessions, attachSession, doLogin, doCacheGuard, doMode],
   )
 
   const handleSubmit = useCallback(
@@ -325,11 +594,13 @@ export default function App() {
       // The server echoes the user turn back over SSE (message.user), so we
       // don't optimistically insert it here — that keeps a single source of
       // truth and means resumed threads show past prompts too.
+      const images = attachmentsRef.current
+      setAttachments([]) // consume the pasted images with this message
       try {
-        const blocked = await sendMessage(config.baseUrl, sessionId, trimmed)
+        const blocked = await sendMessage(config.baseUrl, sessionId, trimmed, { images })
         if (blocked) {
           // Cache guard: the send did NOT run. Confirm before re-sending the
-          // whole context, or hand the draft back untouched.
+          // whole context, or hand the draft (and its images) back untouched.
           const w = blocked.warning
           const why =
             w.reason === "model-switch"
@@ -340,10 +611,12 @@ export default function App() {
           )
           if (!ok) {
             setDraft(text)
+            setAttachments(images)
             return
           }
-          await sendMessage(config.baseUrl, sessionId, trimmed, true)
+          await sendMessage(config.baseUrl, sessionId, trimmed, { images, force: true })
         }
+        setCacheCold(null)
         void refreshSessions(config.baseUrl)
       } catch (err) {
         setConnError((err as Error).message)
@@ -453,6 +726,16 @@ export default function App() {
           repoId={activeRepoId}
           model={model}
           onModelChange={setModel}
+          advisor={advisor}
+          onAdvisorChange={setAdvisorState}
+          goal={goal}
+          cacheCold={cacheCold}
+          runningSince={runningSince}
+          attachmentCount={attachments.length}
+          onAttachImage={(img) => setAttachments((a) => [...a, img])}
+          onClearAttachments={() => setAttachments([])}
+          modelOpenSignal={modelOpenSignal}
+          advisorOpenSignal={advisorOpenSignal}
           draft={draft}
           onDraftChange={setDraft}
           onSubmit={(t) => void handleSubmit(t)}

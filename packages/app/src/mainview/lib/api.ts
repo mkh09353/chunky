@@ -2,6 +2,8 @@ import {
   ROUTES,
   readSSE,
   type AgentEvent,
+  type CacheGuardResponse,
+  type CacheStatusResponse,
   type CreateSessionResponse,
   type FileSearchItem,
   type FileSearchResponse,
@@ -9,11 +11,15 @@ import {
   type GoalSnapshot,
   type GoalStateResponse,
   type ListSessionsResponse,
+  type LoginInitiation,
+  type ModesResponse,
   type Repo,
   type ReposResponse,
   type SendBlockedResponse,
   type SessionSummary,
 } from "@chunky/protocol"
+
+import { getRpc } from "./rpc"
 
 export type { SendBlockedResponse } from "@chunky/protocol"
 
@@ -50,12 +56,35 @@ export interface ModelRow {
 }
 
 const DEFAULT_CONFIG: AppConfig = {
-  baseUrl: "http://localhost:4599",
+  // Dev stack port (scripts/dev-server.ts). Only reached in the plain dev
+  // browser when /chunky-config.json can't be fetched; inside electrobun the
+  // bun process supplies the real URL over RPC.
+  baseUrl: "http://localhost:4620",
   workspace: "",
   workspaceName: "chunky",
 }
 
 export async function loadConfig(): Promise<AppConfig> {
+  // Inside electrobun, ask the bun process — it knows the real harness URL
+  // (CHUNKY_URL / CHUNKY_PORT / dev default). The static chunky-config.json
+  // fallback below can go stale: runtime rewrites of it land inside the .app
+  // bundle where neither Vite HMR nor the views:// server ever reads them.
+  try {
+    const rpc = await getRpc()
+    const fn = rpc?.request?.getConfig
+    if (fn) {
+      const data = (await fn()) as Partial<AppConfig> | null
+      if (data?.baseUrl) {
+        return {
+          baseUrl: data.baseUrl,
+          workspace: data.workspace || DEFAULT_CONFIG.workspace,
+          workspaceName: data.workspaceName || DEFAULT_CONFIG.workspaceName,
+        }
+      }
+    }
+  } catch {
+    /* fall through to the static file */
+  }
   try {
     const res = await fetch("/chunky-config.json", { cache: "no-store" })
     if (res.ok) {
@@ -126,6 +155,12 @@ export async function createSession(baseUrl: string, repoId?: string | null): Pr
   return data.sessionId
 }
 
+/** A pasted image attached to a message (mirrors the TUI's ClipboardImage). */
+export interface InputImage {
+  base64: string
+  mediaType: string
+}
+
 /** POST a user message. Returns null when accepted; on a cache-guard 409 the
  *  turn did NOT run — returns the block details so the caller can confirm and
  *  retry with `force: true`. */
@@ -133,12 +168,16 @@ export async function sendMessage(
   baseUrl: string,
   sessionId: string,
   text: string,
-  force = false,
+  opts: { force?: boolean; images?: InputImage[] } = {},
 ): Promise<SendBlockedResponse | null> {
   const res = await fetch(baseUrl + ROUTES.sendMessage(sessionId), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(force ? { text, force: true } : { text }),
+    body: JSON.stringify({
+      text,
+      ...(opts.images?.length ? { images: opts.images } : {}),
+      ...(opts.force ? { force: true } : {}),
+    }),
   })
   if (res.status === 409) {
     return (await res.json()) as SendBlockedResponse
@@ -271,6 +310,181 @@ export async function selectModel(
   const data = (await res.json().catch(() => ({}))) as ModelSelection & { error?: string }
   if (!res.ok || data.error) throw new Error(data.error || `select model failed (${res.status})`)
   return data
+}
+
+// ---- Advisor (the always-on second-opinion model) ---------------------------
+
+/** The advisor config + whether it's actually active (the server suppresses an
+ *  advisor that equals the executor model). */
+export interface AdvisorState {
+  enabled: boolean
+  provider?: string
+  model?: string
+  effort?: string
+  active: boolean
+}
+
+export async function fetchAdvisor(baseUrl: string): Promise<AdvisorState | null> {
+  try {
+    const res = await fetch(baseUrl + "/api/advisor")
+    if (!res.ok) return null
+    const body = (await res.json()) as {
+      config?: { enabled?: boolean; provider?: string; model?: string; effort?: string }
+      active?: boolean
+    }
+    return {
+      enabled: body.config?.enabled ?? false,
+      provider: body.config?.provider,
+      model: body.config?.model,
+      effort: body.config?.effort,
+      active: Boolean(body.active),
+    }
+  } catch {
+    return null
+  }
+}
+
+/** Merge-persist the advisor config (server invalidates the agent cache). */
+export async function setAdvisor(
+  baseUrl: string,
+  patch: { enabled?: boolean; provider?: string; model?: string; effort?: string },
+): Promise<AdvisorState> {
+  const res = await fetch(baseUrl + "/api/advisor", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(patch),
+  })
+  const body = (await res.json().catch(() => ({}))) as {
+    config?: { enabled?: boolean; provider?: string; model?: string; effort?: string }
+    active?: boolean
+    error?: string
+  }
+  if (!res.ok || body.error) throw new Error(body.error || `set advisor failed (${res.status})`)
+  return {
+    enabled: body.config?.enabled ?? false,
+    provider: body.config?.provider,
+    model: body.config?.model,
+    effort: body.config?.effort,
+    active: Boolean(body.active),
+  }
+}
+
+// ---- Providers + login -------------------------------------------------------
+
+export interface ProviderRow {
+  id: string
+  label: string
+  ready: boolean
+  active: boolean
+}
+
+export async function listProviders(baseUrl: string): Promise<ProviderRow[]> {
+  try {
+    const res = await fetch(baseUrl + "/api/providers")
+    if (!res.ok) return []
+    const body = (await res.json()) as { providers?: ProviderRow[] }
+    return body.providers ?? []
+  } catch {
+    return []
+  }
+}
+
+/** Start a provider's browser-loopback login. The server's callback stores the
+ *  token; poll `loginStatus` until ready. */
+export async function initiateLogin(baseUrl: string, providerId: string): Promise<LoginInitiation> {
+  const res = await fetch(baseUrl + `/api/auth/${providerId}/login`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ method: "browser" }),
+  })
+  const body = (await res.json()) as LoginInitiation | { error: string }
+  if ("error" in body) throw new Error(body.error)
+  return body
+}
+
+export async function loginStatus(baseUrl: string, providerId: string): Promise<boolean> {
+  try {
+    const res = await fetch(baseUrl + `/api/auth/${providerId}/status`)
+    const body = (await res.json()) as { ready?: boolean }
+    return Boolean(body.ready)
+  } catch {
+    return false
+  }
+}
+
+// ---- Cache status + guard ----------------------------------------------------
+
+/** Would a send on this thread right now rebuild a cold cache? Advisory only. */
+export async function fetchCacheStatus(
+  baseUrl: string,
+  sessionId: string,
+): Promise<CacheStatusResponse | null> {
+  try {
+    const res = await fetch(baseUrl + ROUTES.cacheStatus(sessionId))
+    if (!res.ok) return null
+    return (await res.json()) as CacheStatusResponse
+  } catch {
+    return null
+  }
+}
+
+export async function fetchCacheGuard(baseUrl: string): Promise<CacheGuardResponse> {
+  const res = await fetch(baseUrl + ROUTES.cacheGuard)
+  if (!res.ok) throw new Error(`cache guard failed (${res.status})`)
+  return (await res.json()) as CacheGuardResponse
+}
+
+export async function setCacheGuard(baseUrl: string, tokens: number | null): Promise<CacheGuardResponse> {
+  const res = await fetch(baseUrl + ROUTES.cacheGuard, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ tokens }),
+  })
+  if (!res.ok) throw new Error(`cache guard failed (${res.status})`)
+  return (await res.json()) as CacheGuardResponse
+}
+
+// ---- Modes (named executor + advisor pairings) --------------------------------
+
+export async function fetchModes(baseUrl: string): Promise<ModesResponse> {
+  const res = await fetch(baseUrl + ROUTES.modes)
+  if (!res.ok) throw new Error(`list modes failed (${res.status})`)
+  return (await res.json()) as ModesResponse
+}
+
+/** Snapshot the CURRENT executor+advisor pairing under `name`. */
+export async function saveMode(baseUrl: string, name: string): Promise<ModesResponse> {
+  const res = await fetch(baseUrl + ROUTES.modes, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  })
+  const body = (await res.json().catch(() => ({}))) as ModesResponse & { error?: string }
+  if (!res.ok || body.error) throw new Error(body.error || `save mode failed (${res.status})`)
+  return body
+}
+
+export interface AppliedMode {
+  applied: string
+  provider: string
+  model: string | null
+  effort?: string | null
+  speed?: string | null
+}
+
+/** Apply a saved mode (model + advisor switch as one unit). */
+export async function applyMode(baseUrl: string, name: string): Promise<AppliedMode> {
+  const res = await fetch(baseUrl + ROUTES.applyMode(name), { method: "POST" })
+  const body = (await res.json().catch(() => ({}))) as AppliedMode & { error?: string }
+  if (!res.ok || body.error) throw new Error(body.error || `apply mode failed (${res.status})`)
+  return body
+}
+
+export async function deleteMode(baseUrl: string, name: string): Promise<ModesResponse> {
+  const res = await fetch(baseUrl + ROUTES.deleteMode(name), { method: "DELETE" })
+  const body = (await res.json().catch(() => ({}))) as ModesResponse & { error?: string }
+  if (!res.ok || body.error) throw new Error(body.error || `delete mode failed (${res.status})`)
+  return body
 }
 
 export function prettyModel(id: string | null | undefined): string {

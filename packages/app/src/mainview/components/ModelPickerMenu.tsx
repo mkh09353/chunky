@@ -92,10 +92,13 @@ export function ModelPickerMenu({
   baseUrl,
   model,
   onModelChange,
+  openSignal,
 }: {
   baseUrl: string
   model: ModelSelection | null
   onModelChange: (sel: ModelSelection) => void
+  /** Bump to open the menu programmatically (the /model command). */
+  openSignal?: number
 }) {
   const [open, setOpen] = useState(false)
   const [rows, setRows] = useState<ModelRow[] | null>(null)
@@ -131,6 +134,15 @@ export function ModelPickerMenu({
         .catch((err) => setLoadError((err as Error).message))
     }
   }, [baseUrl, rows])
+
+  // The /model slash command bumps openSignal to open the menu from outside.
+  const lastSignal = useRef(openSignal ?? 0)
+  useEffect(() => {
+    if (openSignal != null && openSignal !== lastSignal.current) {
+      lastSignal.current = openSignal
+      openMenu()
+    }
+  }, [openSignal, openMenu])
 
   // Close on outside click. Escape is document-level (not just the menu's
   // keydown handler) because a clicked pill disables itself while its save is

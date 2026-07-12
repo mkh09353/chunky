@@ -23,9 +23,44 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     insert: "/shipit ",
   },
   {
+    name: "/resume",
+    description: "Resume another thread in this repo (optional title filter; blank = most recent)",
+    insert: "/resume ",
+  },
+  {
     name: "/clear",
     description: "Start a new thread in this repo",
     insert: "/clear",
+  },
+  {
+    name: "/model",
+    description: "Open the model picker (same as the composer's model button)",
+    insert: "/model",
+  },
+  {
+    name: "/advisor",
+    description: "Set the always-on advisor model (a second opinion the executor consults)",
+    insert: "/advisor",
+  },
+  {
+    name: "/mode",
+    description: "Named model+advisor pairings: /mode <name> applies, save <name>, rm <name>",
+    insert: "/mode ",
+  },
+  {
+    name: "/login",
+    description: "Log in to a provider (/login lists them, /login <provider> starts the flow)",
+    insert: "/login ",
+  },
+  {
+    name: "/cacheguard",
+    description: "Confirm-before-resend threshold for cold caches (/cacheguard <tokens|off>)",
+    insert: "/cacheguard ",
+  },
+  {
+    name: "/help",
+    description: "List the available commands",
+    insert: "/help",
   },
 ]
 

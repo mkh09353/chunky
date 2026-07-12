@@ -1,9 +1,10 @@
-import { useEffect, useState } from "react"
+import { Fragment, useEffect, useState } from "react"
 import { TextAttributes } from "@opentui/core"
 import type { Item, ThreadNode, TranscriptState } from "../transcript.js"
 import { MAIN } from "../transcript.js"
 import { rawModeSupported, useInput } from "../useInput.js"
-import { collapseToolRuns, type DisplayItem } from "../collapseToolRuns.js"
+import type { DisplayItem } from "../collapseToolRuns.js"
+import { buildRenderPlan } from "../renderPlan.js"
 import { parseBlocks, parseInline, type MdSpan } from "../markdown.js"
 import {
   ACCENT,
@@ -106,10 +107,8 @@ export function Transcript({
   const effectiveFocus = focusedId && threadIds.includes(focusedId) ? focusedId : (threadIds[threadIds.length - 1] ?? null)
   return (
     <box flexDirection="column">
-      {collapseToolRuns(main.items).map((it, i) => (
-        <ItemView key={i} item={it} />
-      ))}
-      <ThreadChildren
+      <ParentBody
+        items={main.items}
         parentId={MAIN}
         state={state}
         depth={0}
@@ -121,8 +120,14 @@ export function Transcript({
   )
 }
 
-/** Render every thread whose parent is `parentId`, recursively. */
-function ThreadChildren({
+/**
+ * Render a parent thread's OWN items with its child-thread blocks interleaved at
+ * each child's spawn anchor, so the stream reads in true chronological order — a
+ * parent's post-spawn output (e.g. its final summary) sits BELOW the threads that
+ * produced it, not above them. Recurses through ThreadBlock for nested threads.
+ */
+function ParentBody({
+  items,
   parentId,
   state,
   depth,
@@ -130,6 +135,7 @@ function ThreadChildren({
   expanded,
   focusedId,
 }: {
+  items: Item[]
   parentId: string
   state: TranscriptState
   depth: number
@@ -140,19 +146,25 @@ function ThreadChildren({
   const children = state.order
     .map((id) => state.threads[id]!)
     .filter((t) => t.parentId === parentId)
-  if (children.length === 0) return null
+  const plan = buildRenderPlan(items, children)
   return (
     <>
-      {children.map((thread) => (
-        <ThreadBlock
-          key={thread.id}
-          thread={thread}
-          state={state}
-          depth={depth}
-          collapsed={collapsed}
-          expanded={expanded}
-          focusedId={focusedId}
-        />
+      {plan.map((node, i) => (
+        <Fragment key={i}>
+          {node.kind === "items"
+            ? node.items.map((it, j) => <ItemView key={j} item={it} />)
+            : node.threads.map((thread) => (
+                <ThreadBlock
+                  key={thread.id}
+                  thread={thread}
+                  state={state}
+                  depth={depth}
+                  collapsed={collapsed}
+                  expanded={expanded}
+                  focusedId={focusedId}
+                />
+              ))}
+        </Fragment>
       ))}
     </>
   )
@@ -255,17 +267,15 @@ function ThreadBlock({
         </box>
       )}
 
-      {/* full body when expanded: left rail + items, then nested children */}
+      {/* full body when expanded: left rail + items with nested threads inlined */}
       {showBody && (
         <box flexDirection="row">
           <box flexDirection="column" marginRight={1}>
             <text fg={rail}>{"│"}</text>
           </box>
           <box flexDirection="column" flexGrow={1}>
-            {collapseToolRuns(thread.items).map((it, i) => (
-              <ItemView key={i} item={it} />
-            ))}
-            <ThreadChildren
+            <ParentBody
+              items={thread.items}
               parentId={thread.id}
               state={state}
               depth={depth + 1}

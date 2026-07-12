@@ -37,6 +37,12 @@ export interface ThreadNode {
   status: "idle" | "running"
   /** Effective model running this thread (from thread.spawn) — shown in its header. */
   model?: string
+  /** How many items the PARENT thread had when this thread was spawned — the point
+   *  in the parent's stream where this thread belongs chronologically. The renderer
+   *  anchors the thread's block here (inline), so the parent's post-spawn output
+   *  (e.g. its final summary) renders BELOW it, not above. Undefined for threads
+   *  created before their spawn event (fallback paths) → rendered at the end. */
+  anchorIndex?: number
   items: Item[]
 }
 
@@ -186,6 +192,9 @@ export function reduce(state: TranscriptState, ev: AgentEvent): TranscriptState 
         title: ev.title,
         status: "running",
         model: ev.model ?? existing?.model,
+        // Anchor the thread at its spawn point in the parent's stream so its block
+        // renders inline there. Keep an already-set anchor stable across re-spawns.
+        anchorIndex: existing?.anchorIndex ?? state.threads[parentId]?.items.length ?? 0,
         items: existing?.items ?? [],
       }
       return {

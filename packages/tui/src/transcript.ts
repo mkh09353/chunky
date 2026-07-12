@@ -236,5 +236,9 @@ export function reduce(state: TranscriptState, ev: AgentEvent): TranscriptState 
 }
 
 export function pushUser(state: TranscriptState, text: string): TranscriptState {
-  return updateThreadItems(state, MAIN, (items) => [...items, { kind: "user", text }])
+  // Strip carriage returns so a raw multi-line echo can't overwrite lines in the
+  // terminal (CR returns the cursor to column 0). Pastes normally arrive already
+  // collapsed to a chip; this guards the mock/other paths.
+  const clean = text.replace(/\r\n?/g, "\n")
+  return updateThreadItems(state, MAIN, (items) => [...items, { kind: "user", text: clean }])
 }

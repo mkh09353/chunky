@@ -4,10 +4,13 @@ import { ROUTES, type FileSearchItem, type FileSearchResponse } from "@chunky/pr
 import { ACCENT, BORDER } from "../theme.js"
 import { COMMANDS, SlashMenu, type Command } from "./SlashMenu.js"
 import { MentionMenu, activeMention } from "./MentionMenu.js"
+import { expandPastes, normalizePaste, pasteLabel, shouldCollapsePaste } from "../pastes.js"
 
 interface Props {
   disabled?: boolean
-  onSubmit: (text: string) => void
+  /** `text` is the full message (pastes expanded) sent to the model; `display`
+   *  is the shortened echo (paste placeholders kept) shown in the transcript. */
+  onSubmit: (text: string, display?: string) => void
   onCommand: (name: string) => void
   /** Right-aligned status (model/effort/advisor) drawn INTO the bottom rule. */
   status?: string
@@ -52,10 +55,21 @@ export function PromptInput({
   const { value, cursor } = buf
   const [selected, setSelected] = useState(0)
 
+  // Collapsed pastes for the message being composed: placeholder chip → full text.
+  // The buffer only ever holds the chips, so multi-line pastes can't garble the
+  // band; the full text is spliced back in `expandPastes` at submit time.
+  const pastesRef = useRef<Map<string, string>>(new Map())
+  const pasteSeqRef = useRef(0)
+
   // Restore a handed-back message (canceled cache-guard confirm). Keyed on the
-  // nonce so the same text can be handed back more than once.
+  // nonce so the same text can be handed back more than once. The handed-back
+  // text is already fully expanded, so drop any stale paste chips.
   useEffect(() => {
-    if (prefill) setBuf({ value: prefill.text, cursor: prefill.text.length })
+    if (prefill) {
+      pastesRef.current = new Map()
+      pasteSeqRef.current = 0
+      setBuf({ value: prefill.text, cursor: prefill.text.length })
+    }
   }, [prefill?.nonce])
 
   // ---- Slash commands ----
@@ -157,11 +171,12 @@ export function PromptInput({
       }
 
       if (key.return) {
-        const text = bufRef.current.value.trim()
+        const display = bufRef.current.value.trim()
+        const text = expandPastes(display, pastesRef.current).trim()
         // Allow an image-only message: submit when there's text OR attachments.
         if (!text && attachmentCount === 0) return
         reset()
-        onSubmit(text)
+        onSubmit(text, display)
         return
       }
       // Ctrl+V — pull an image off the clipboard (Cmd+V is owned by the terminal).
@@ -182,9 +197,18 @@ export function PromptInput({
       }
       if (key.ctrl || key.meta || key.escape) return
       if (input) {
+        // Ink hands a whole paste to the callback as one multi-char `input`, with
+        // terminal newlines as CR. Normalize CR→LF first so it never overwrites
+        // lines, then either collapse a big paste to a chip or insert inline.
+        const chunk = normalizePaste(input)
+        let insert = chunk
+        if (shouldCollapsePaste(chunk)) {
+          insert = pasteLabel(++pasteSeqRef.current, chunk)
+          pastesRef.current.set(insert, chunk)
+        }
         setBuf((b) => ({
-          value: b.value.slice(0, b.cursor) + input + b.value.slice(b.cursor),
-          cursor: b.cursor + input.length,
+          value: b.value.slice(0, b.cursor) + insert + b.value.slice(b.cursor),
+          cursor: b.cursor + insert.length,
         }))
         setSelected(0)
       }
@@ -196,6 +220,8 @@ export function PromptInput({
     setBuf({ value: "", cursor: 0 })
     setSelected(0)
     setFileHits([])
+    pastesRef.current = new Map()
+    pasteSeqRef.current = 0
   }
 
   return (

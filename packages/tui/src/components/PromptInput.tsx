@@ -55,6 +55,43 @@ export function PromptInput({
   const { value, cursor } = buf
   const [selected, setSelected] = useState(0)
 
+  // Prompt history: every submitted message is remembered; ↑/↓ walk it when no
+  // menu is open, like a shell. `histIdx` null = the live draft; navigating away
+  // from the draft stashes it so ↓ past the newest entry restores what you were
+  // typing. Session-scoped (in memory) — survives /clear and /resume, not restart.
+  const histRef = useRef<string[]>([])
+  const histIdxRef = useRef<number | null>(null)
+  const draftRef = useRef("")
+  const HISTORY_CAP = 200
+
+  const recallHistory = (dir: -1 | 1) => {
+    const hist = histRef.current
+    if (hist.length === 0) return
+    let idx = histIdxRef.current
+    if (dir === -1) {
+      if (idx === null) {
+        draftRef.current = bufRef.current.value // leaving the draft — stash it
+        idx = hist.length - 1
+      } else if (idx > 0) idx = idx - 1
+      else return // already at the oldest
+    } else {
+      if (idx === null) return // already on the live draft
+      if (idx < hist.length - 1) idx = idx + 1
+      else {
+        histIdxRef.current = null // past the newest — restore the draft
+        pastesRef.current = new Map()
+        setBuf({ value: draftRef.current, cursor: draftRef.current.length })
+        setSelected(0)
+        return
+      }
+    }
+    histIdxRef.current = idx
+    const entry = hist[idx] ?? ""
+    pastesRef.current = new Map() // recalled text is plain — drop stale chips
+    setBuf({ value: entry, cursor: entry.length })
+    setSelected(0)
+  }
+
   // Collapsed pastes for the message being composed: placeholder chip → full text.
   // The buffer only ever holds the chips, so multi-line pastes can't garble the
   // band; the full text is spliced back in `expandPastes` at submit time.
@@ -68,6 +105,7 @@ export function PromptInput({
     if (prefill) {
       pastesRef.current = new Map()
       pasteSeqRef.current = 0
+      histIdxRef.current = null
       setBuf({ value: prefill.text, cursor: prefill.text.length })
     }
   }, [prefill?.nonce])
@@ -191,11 +229,24 @@ export function PromptInput({
         }
       }
 
+      // Prompt history (no menu open): ↑ older, ↓ newer, like a shell. Placed
+      // after the menu handlers above, which consume the arrows when open.
+      if (key.upArrow) return recallHistory(-1)
+      if (key.downArrow) return recallHistory(1)
+
       if (key.return) {
         const display = bufRef.current.value.trim()
         const text = expandPastes(display, pastesRef.current).trim()
         // Allow an image-only message: submit when there's text OR attachments.
         if (!text && attachmentCount === 0) return
+        // Remember the typed line (dedup consecutive repeats), then reset the
+        // history cursor so the next ↑ starts from the newest entry.
+        if (display) {
+          const h = histRef.current
+          if (h[h.length - 1] !== display) h.push(display)
+          if (h.length > HISTORY_CAP) h.shift()
+        }
+        histIdxRef.current = null
         reset()
         onSubmit(text, display)
         return

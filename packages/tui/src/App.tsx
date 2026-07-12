@@ -1181,7 +1181,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           prefill={prefill}
         />
         <text attributes={TextAttributes.DIM}>
-          {"  / commands · @ files · drag to copy · ctrl+v image · ctrl+y copy reply · ctrl+c quit"}
+          {"  / commands · @ files · ↑ history · drag to copy · ctrl+v image · ctrl+y copy reply · ctrl+c quit"}
           {hasThreads ? "  ·  ctrl+t to " + (threadsCollapsed ? "expand" : "collapse") + " threads" : ""}
         </text>
       </box>

@@ -1,5 +1,4 @@
-import React from "react"
-import { Box, Text } from "ink"
+import { TextAttributes } from "@opentui/core"
 import { ChunkyLogo } from "./ChunkyLogo.js"
 import { ACCENT } from "../theme.js"
 
@@ -26,25 +25,26 @@ export function WelcomeBanner({
   model: string
 }) {
   return (
-    <Box
+    <box
       width="100%"
       marginBottom={1}
-      borderStyle="round"
+      border
+      borderStyle="rounded"
       borderColor="gray"
       flexDirection="column"
       alignItems="center"
       paddingY={1}
       paddingX={1}
     >
-      <Text bold>Welcome to Chunky</Text>
-      <Box marginY={1}>
+      <text attributes={TextAttributes.BOLD}>Welcome to Chunky</text>
+      <box marginY={1}>
         <ChunkyLogo />
-      </Box>
-      <Text dimColor>{model}</Text>
-      <Text dimColor>{shortCwd(cwd)}</Text>
-      <Text dimColor>
-        mode: <Text color={ACCENT}>all yolo, all the time</Text>
-      </Text>
-    </Box>
+      </box>
+      <text attributes={TextAttributes.DIM}>{model}</text>
+      <text attributes={TextAttributes.DIM}>{shortCwd(cwd)}</text>
+      <text attributes={TextAttributes.DIM}>
+        mode: <span fg={ACCENT}>all yolo, all the time</span>
+      </text>
+    </box>
   )
 }

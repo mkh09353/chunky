@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
-import React from "react"
-import { render } from "ink"
+import { createCliRenderer } from "@opentui/core"
+import { createRoot } from "@opentui/react"
 import { DEFAULT_PORT } from "@chunky/protocol"
 import { App } from "./App.js"
 
@@ -28,6 +28,7 @@ if (wantThreads || wantMock) mode = "mock"
 else if (wantLive) mode = "live"
 else mode = (await serverIsUp()) ? "live" : "mock"
 
-render(
+const renderer = await createCliRenderer({ exitOnCtrlC: true })
+createRoot(renderer).render(
   <App mode={mode} baseUrl={baseUrl} cwd={process.cwd()} demo={wantThreads ? "threads" : "basic"} />,
 )

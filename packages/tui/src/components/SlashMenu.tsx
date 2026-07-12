@@ -1,5 +1,4 @@
-import React from "react"
-import { Box, Text } from "ink"
+import { TextAttributes } from "@opentui/core"
 import figures from "figures"
 import { ACCENT, BORDER } from "../theme.js"
 
@@ -28,19 +27,19 @@ export const COMMANDS: Command[] = [
 export function SlashMenu({ commands, selected }: { commands: Command[]; selected: number }) {
   if (commands.length === 0) return null
   return (
-    <Box borderStyle="round" borderColor={BORDER} flexDirection="column" paddingX={1} marginBottom={0}>
+    <box border borderStyle="rounded" borderColor={BORDER} flexDirection="column" paddingX={1}>
       {commands.map((cmd, i) => {
         const focused = i === selected
         return (
-          <Box key={cmd.name}>
-            <Text color={ACCENT}>{focused ? figures.pointer : " "} </Text>
-            <Text color={focused ? ACCENT : undefined} bold={focused}>
+          <box key={cmd.name} flexDirection="row">
+            <text fg={ACCENT}>{focused ? figures.pointer : " "} </text>
+            <text fg={focused ? ACCENT : undefined} attributes={focused ? TextAttributes.BOLD : 0}>
               {cmd.name}
-            </Text>
-            <Text dimColor> — {cmd.description}</Text>
-          </Box>
+            </text>
+            <text attributes={TextAttributes.DIM}> — {cmd.description}</text>
+          </box>
         )
       })}
-    </Box>
+    </box>
   )
 }

@@ -1,4 +1,8 @@
 {
   "extends": "./tsconfig.base.json",
-  "include": ["packages/**/*.ts", "packages/**/*.tsx"]
+  "include": ["packages/**/*.ts", "packages/**/*.tsx"],
+  // The TUI compiles with its own jsxImportSource (@opentui/react); the root
+  // project would type its JSX against react-dom. `bun run typecheck` chains
+  // the package-local check so coverage is unchanged.
+  "exclude": ["packages/tui"]
 }

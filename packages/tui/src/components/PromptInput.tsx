@@ -1,9 +1,13 @@
-import React, { useEffect, useRef, useState } from "react"
-import { Box, Text, useInput, useStdin, useStdout } from "ink"
+import { useEffect, useRef, useState } from "react"
+import { TextAttributes } from "@opentui/core"
+import { useTerminalDimensions } from "@opentui/react"
 import { ROUTES, type FileSearchItem, type FileSearchResponse } from "@chunky/protocol"
 import { ACCENT, BORDER } from "../theme.js"
+import { rawModeSupported, useInput } from "../useInput.js"
 import { COMMANDS, SlashMenu, type Command } from "./SlashMenu.js"
 import { MentionMenu, activeMention } from "./MentionMenu.js"
+
+const { DIM, INVERSE } = TextAttributes
 
 interface Props {
   disabled?: boolean
@@ -38,14 +42,10 @@ export function PromptInput({
   baseUrl,
   prefill,
 }: Props) {
-  // isRawModeSupported is stdin.isTTY, `undefined` (not false) in a non-TTY.
-  // Ink's useInput only bails on a strict === false, so coerce to a real bool.
-  const rawSupported = Boolean(useStdin().isRawModeSupported)
+  const rawSupported = rawModeSupported
   // value + cursor live in ONE state so the key handler edits them with a
-  // functional updater (which always receives the CURRENT state). Ink
-  // re-subscribes useInput a frame after each render, so a plain closure drops the
-  // first keystroke after a re-render — e.g. backspace right after typing "/" saw
-  // cursor=0 and no-op'd. bufRef mirrors it for reads that can't use an updater.
+  // functional updater (which always receives the CURRENT state). bufRef
+  // mirrors it for reads that can't use an updater.
   const [buf, setBuf] = useState<{ value: string; cursor: number }>({ value: "", cursor: 0 })
   const bufRef = useRef(buf)
   bufRef.current = buf
@@ -199,11 +199,11 @@ export function PromptInput({
   }
 
   return (
-    <Box flexDirection="column" width="100%">
+    <box flexDirection="column" width="100%">
       {attachmentCount > 0 && (
-        <Text dimColor>
+        <text attributes={DIM}>
           {"  "}📎 {attachmentCount} image{attachmentCount === 1 ? "" : "s"} attached — enter to send
-        </Text>
+        </text>
       )}
       {matches.length > 0 && <SlashMenu commands={matches} selected={clampSel(selected, matches.length)} />}
       {mentionActive && (mentionItems.length > 0 || fileLoading || (mention?.query ?? "").length > 0) && (
@@ -213,21 +213,19 @@ export function PromptInput({
           query={mention?.query ?? ""}
         />
       )}
-      <Box
+      <box
         width="100%"
+        flexDirection="row"
+        border={["top"]}
         borderStyle="single"
         borderColor={BORDER}
-        borderTop
-        borderBottom={false}
-        borderLeft={false}
-        borderRight={false}
         flexShrink={0}
       >
-        <Text color={ACCENT}>{"❯ "}</Text>
+        <text fg={ACCENT}>{"❯ "}</text>
         <CursorText value={value} cursor={cursor} showCursor={rawSupported && !disabled} />
-      </Box>
+      </box>
       <BottomRule status={status} />
-    </Box>
+    </box>
   )
 }
 
@@ -238,39 +236,38 @@ export function PromptInput({
  * a plain full-width rule when there's no status yet.
  */
 function BottomRule({ status }: { status?: string }) {
-  const { stdout } = useStdout()
-  const cols = stdout?.columns ?? 80
+  const { width: cols } = useTerminalDimensions()
   const label = (status ?? "").trim()
-  // The dashes use the SAME border color as the top rule (Ink draws borderTop in
-  // BORDER) so both lines match. The status is embedded near the right with the
-  // rule continuing past it to the edge (grok-code style), a space on each side.
+  // The dashes use the SAME border color as the top rule so both lines match.
+  // The status is embedded near the right with the rule continuing past it to
+  // the edge (grok-code style), a space on each side.
   if (!label) {
-    return <Text color={BORDER}>{"─".repeat(Math.max(0, cols - 1))}</Text>
+    return <text fg={BORDER}>{"─".repeat(Math.max(0, cols - 1))}</text>
   }
   const rightDashes = 3
   const left = Math.max(0, cols - label.length - rightDashes - 3) // 2 spaces + 1 margin
   return (
-    <Text>
-      <Text color={BORDER}>{"─".repeat(left)}</Text>
-      <Text dimColor> {label} </Text>
-      <Text color={BORDER}>{"─".repeat(rightDashes)}</Text>
-    </Text>
+    <text wrapMode="none">
+      <span fg={BORDER}>{"─".repeat(left)}</span>
+      <span attributes={DIM}> {label} </span>
+      <span fg={BORDER}>{"─".repeat(rightDashes)}</span>
+    </text>
   )
 }
 
 /** Render the line with an inverse-block cursor, like Claude Code's input. */
 function CursorText({ value, cursor, showCursor }: { value: string; cursor: number; showCursor: boolean }) {
   if (value.length === 0) {
-    return <Text dimColor>Try &quot;fix lint errors&quot; or @file</Text>
+    return <text attributes={DIM}>Try &quot;fix lint errors&quot; or @file</text>
   }
   const before = value.slice(0, cursor)
   const at = value.slice(cursor, cursor + 1) || " "
   const after = value.slice(cursor + 1)
   return (
-    <Text>
+    <text>
       {before}
-      {showCursor ? <Text inverse>{at}</Text> : at === " " ? "" : at}
+      {showCursor ? <span attributes={INVERSE}>{at}</span> : at === " " ? "" : at}
       {after}
-    </Text>
+    </text>
   )
 }

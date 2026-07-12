@@ -1,5 +1,5 @@
-import React, { useEffect, useState } from "react"
-import { Box, Text } from "ink"
+import { useEffect, useState } from "react"
+import { TextAttributes } from "@opentui/core"
 import { ACCENT, SPINNER_FRAMES, SPINNER_VERBS } from "../theme.js"
 
 /**
@@ -24,13 +24,13 @@ export function StatusLine({ startedAt }: { startedAt: number }) {
   }, [startedAt])
 
   return (
-    <Box marginTop={1}>
-      <Text color={ACCENT}>{SPINNER_FRAMES[frame]} </Text>
-      <Text color={ACCENT} bold>
+    <box flexDirection="row" marginTop={1}>
+      <text fg={ACCENT}>{SPINNER_FRAMES[frame]} </text>
+      <text fg={ACCENT} attributes={TextAttributes.BOLD}>
         {verb}…
-      </Text>
-      <Text dimColor> ({elapsed}s · esc to interrupt)</Text>
-    </Box>
+      </text>
+      <text attributes={TextAttributes.DIM}> ({elapsed}s · esc to interrupt)</text>
+    </box>
   )
 }
 

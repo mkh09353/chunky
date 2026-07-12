@@ -15,7 +15,8 @@ export const COMMANDS: Command[] = [
   { name: "/model", description: "Pick a model (provider, model, effort/speed)" },
   { name: "/advisor", description: "Set the advisor model (a stronger model, on tap)" },
   { name: "/mode", description: "Named model+advisor pairings (/mode <name>, /mode save <name>)" },
-  { name: "/goal", description: "Work autonomously toward a goal (/goal <objective>)" },
+  { name: "/goal", description: "Work autonomously toward a goal (/goal [--workflows] <objective>)" },
+  { name: "/shipit", description: "Hand this plan off to a fresh goal-orchestrator session (/shipit [notes])" },
   { name: "/cacheguard", description: "Confirm before re-sending a big cold cache (/cacheguard 100k|off)" },
   { name: "/quit", description: "Exit Chunky CLI" },
 ]

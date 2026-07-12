@@ -1,6 +1,7 @@
 // Chunky CLI server: Bun.serve HTTP + SSE. Model via the provider registry;
 // sessions + event history persisted to sqlite so reconnecting resumes.
 import { randomUUID } from "node:crypto"
+import { AsyncLocalStorageProviderSingleton } from "@langchain/core/singletons"
 import {
   DEFAULT_PORT,
   ROUTES,
@@ -9,8 +10,10 @@ import {
   type CacheStatusResponse,
   type GoalRequest,
   type SendBlockedResponse,
+  type ShipRequest,
 } from "@chunky/protocol"
 import { runAgent, type InputImage } from "./run.ts"
+import { shipHandoffPrompt } from "./tools/ship.ts"
 import { Store } from "./store.ts"
 import { DEFAULT_MAX_TURNS, firstLine, goalKickoffPrompt, toSnapshot, type Goal } from "./goal.ts"
 import { invalidateAgent } from "./agent.ts"
@@ -129,8 +132,16 @@ installSessionBus({
   emitUserMessage(sessionId, text, from) {
     emitTo(sessionId, { type: "message.user", text, from })
   },
+  emitEvent(sessionId, ev) {
+    emitTo(sessionId, ev)
+  },
   dispatch(sessionId, text) {
-    return startRun(sessionId, text)
+    // A bus delivery can originate INSIDE another session's tool call
+    // (send_to_session, ship_goal). Run the new session's turn on a CLEARED
+    // async-local store so its LLM tokens stream only through its own
+    // iterator — not into the sender's `messages` stream via the ambient
+    // callback context (same isolation as ThreadManager.spawn).
+    return AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () => startRun(sessionId, text))
   },
   isRunning(sessionId) {
     return running.has(sessionId)
@@ -491,8 +502,8 @@ const server = Bun.serve({
       return json({ sessionId })
     }
 
-    // Match /api/sessions/:id/(events|messages|interrupt|goal|cache)
-    const m = pathname.match(/^\/api\/sessions\/([^/]+)\/(events|messages|interrupt|goal|cache)$/)
+    // Match /api/sessions/:id/(events|messages|interrupt|goal|ship|cache)
+    const m = pathname.match(/^\/api\/sessions\/([^/]+)\/(events|messages|interrupt|goal|ship|cache)$/)
     if (m) {
       const [, sessionId, kind] = m
       // Accept any session that exists on disk (enables resume across restart),
@@ -610,6 +621,22 @@ const server = Bun.serve({
         return new Response(null, { status: 202, headers: CORS })
       }
 
+      // POST .../ship -> 202. Inject the handoff prompt into THIS session: its
+      // model distills a brief from the conversation and calls ship_goal, which
+      // creates + starts the fresh workflows-mode goal session. The prompt is
+      // hidden (like a goal kickoff) — the user sees the brief being written.
+      if (kind === "ship" && req.method === "POST") {
+        let notes: string | undefined
+        try {
+          const body = (await req.json().catch(() => ({}))) as ShipRequest
+          if (typeof body?.notes === "string" && body.notes.trim()) notes = body.notes
+        } catch {
+          // no/invalid body -> no notes
+        }
+        dispatchRun(sessionId, shipHandoffPrompt(notes))
+        return new Response(null, { status: 202, headers: CORS })
+      }
+
       // .../goal — GET the current goal, or POST to set / pause / resume / clear it.
       if (kind === "goal") {
         // GET -> { goal: GoalSnapshot | null }
@@ -634,10 +661,12 @@ const server = Bun.serve({
               typeof body.maxTurns === "number" && Number.isFinite(body.maxTurns) && body.maxTurns > 0
                 ? Math.floor(body.maxTurns)
                 : DEFAULT_MAX_TURNS
+            const mode = body.mode === "workflows" ? "workflows" : "direct"
             const goal: Goal = {
               sessionId,
               objective: body.objective.trim(),
               status: "active",
+              mode,
               createdAt: now,
               updatedAt: now,
               turns: 0,
@@ -648,7 +677,7 @@ const server = Bun.serve({
               type: "goal.update",
               sessionId,
               goal: toSnapshot(goal),
-              message: `◎ Goal set — ${firstLine(goal.objective)}`,
+              message: `◎ Goal set${mode === "workflows" ? " (orchestrator)" : ""} — ${firstLine(goal.objective)}`,
             })
             dispatchRun(sessionId, goalKickoffPrompt(goal))
             return json({ goal: toSnapshot(goal) })

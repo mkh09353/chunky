@@ -4,7 +4,12 @@
 import { Database } from "bun:sqlite"
 import type { AgentEvent, SessionSummary } from "@chunky/protocol"
 import type { Goal } from "./goal.ts"
+import type { AgentSelection } from "./providers/registry.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
+
+/** A session's pinned model choice (type-only alias — the import is erased, so
+ *  the store keeps zero runtime provider dependencies). */
+export type PinnedSelection = AgentSelection
 
 const DB_PATH = process.env.CHUNKY_DB || "chunky.db"
 const db = new Database(DB_PATH)
@@ -26,6 +31,7 @@ db.exec(`
     session_id    TEXT PRIMARY KEY,
     objective     TEXT NOT NULL,
     status        TEXT NOT NULL,
+    mode          TEXT NOT NULL DEFAULT 'direct',
     created_at    INTEGER NOT NULL,
     updated_at    INTEGER NOT NULL,
     turns         INTEGER NOT NULL DEFAULT 0,
@@ -44,6 +50,21 @@ db.exec(`
   if (!cols.some((c) => c.name === "workspace")) {
     db.exec("ALTER TABLE sessions ADD COLUMN workspace TEXT")
     db.query("UPDATE sessions SET workspace = ? WHERE workspace IS NULL").run(LAUNCH_WORKSPACE)
+  }
+  // `selection`: an optional pinned model selection (JSON AgentSelection) so a
+  // session can run a DIFFERENT model than the global active one — how a shipped
+  // goal session keeps its orchestrator model while the user's session moves on.
+  if (!cols.some((c) => c.name === "selection")) {
+    db.exec("ALTER TABLE sessions ADD COLUMN selection TEXT")
+  }
+}
+
+// Migration: goals gained `mode` ('direct' | 'workflows'). Older rows were all
+// hands-on direct goals.
+{
+  const cols = db.query("PRAGMA table_info(goals)").all() as { name: string }[]
+  if (!cols.some((c) => c.name === "mode")) {
+    db.exec("ALTER TABLE goals ADD COLUMN mode TEXT NOT NULL DEFAULT 'direct'")
   }
 }
 
@@ -66,18 +87,21 @@ const stmtInsertEvent = db.query("INSERT INTO events (session_id, seq, json) VAL
 const stmtHistory = db.query("SELECT json FROM events WHERE session_id = ? ORDER BY seq ASC")
 const stmtGetGoal = db.query("SELECT * FROM goals WHERE session_id = ?")
 const stmtUpsertGoal = db.query(
-  `INSERT INTO goals (session_id, objective, status, created_at, updated_at, turns, max_turns, evidence, blocked_reason)
-   VALUES ($session_id, $objective, $status, $created_at, $updated_at, $turns, $max_turns, $evidence, $blocked_reason)
+  `INSERT INTO goals (session_id, objective, status, mode, created_at, updated_at, turns, max_turns, evidence, blocked_reason)
+   VALUES ($session_id, $objective, $status, $mode, $created_at, $updated_at, $turns, $max_turns, $evidence, $blocked_reason)
    ON CONFLICT(session_id) DO UPDATE SET
-     objective = $objective, status = $status, updated_at = $updated_at, turns = $turns,
+     objective = $objective, status = $status, mode = $mode, updated_at = $updated_at, turns = $turns,
      max_turns = $max_turns, evidence = $evidence, blocked_reason = $blocked_reason`,
 )
 const stmtClearGoal = db.query("DELETE FROM goals WHERE session_id = ?")
+const stmtSelection = db.query("SELECT selection FROM sessions WHERE id = ?")
+const stmtPinSelection = db.query("UPDATE sessions SET selection = ? WHERE id = ?")
 
 interface GoalRow {
   session_id: string
   objective: string
   status: string
+  mode: string | null
   created_at: number
   updated_at: number
   turns: number
@@ -91,6 +115,7 @@ function rowToGoal(row: GoalRow): Goal {
     sessionId: row.session_id,
     objective: row.objective,
     status: row.status as Goal["status"],
+    mode: (row.mode as Goal["mode"]) ?? "direct",
     createdAt: row.created_at,
     updatedAt: row.updated_at,
     turns: row.turns,
@@ -192,6 +217,7 @@ export const Store = {
       $session_id: goal.sessionId,
       $objective: goal.objective,
       $status: goal.status,
+      $mode: goal.mode ?? "direct",
       $created_at: goal.createdAt,
       $updated_at: goal.updatedAt,
       $turns: goal.turns,
@@ -212,5 +238,26 @@ export const Store = {
 
   clearGoal(sessionId: string): void {
     stmtClearGoal.run(sessionId)
+  },
+
+  // ---- Pinned model selection (optional; most sessions follow the global one) ----
+
+  /** The session's pinned model selection, or null to follow the global active
+   *  selection. Set at ship time so a goal-orchestrator session keeps its model
+   *  even as the user's /model choice moves on. */
+  pinnedSelectionOf(sessionId: string): PinnedSelection | null {
+    const row = stmtSelection.get(sessionId) as { selection: string | null } | null
+    if (!row?.selection) return null
+    try {
+      const parsed = JSON.parse(row.selection) as PinnedSelection
+      return parsed && typeof parsed.provider === "string" ? parsed : null
+    } catch {
+      return null
+    }
+  },
+
+  /** Pin (or with null, unpin) the session's model selection. */
+  pinSelection(sessionId: string, selection: PinnedSelection | null): void {
+    stmtPinSelection.run(selection ? JSON.stringify(selection) : null, sessionId)
   },
 }

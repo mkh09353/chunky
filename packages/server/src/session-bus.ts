@@ -10,10 +10,14 @@
 // - target running -> the message is queued and starts a turn when the current
 //                     one (including any goal continuations) finishes
 // Queued messages never abort in-flight work, unlike a user POST /messages.
+import type { AgentEvent } from "@chunky/protocol"
 
 export interface SessionBusImpl {
   /** Emit (persist + fan out) one already-shaped event to a session's stream. */
   emitUserMessage(sessionId: string, text: string, from: string): void
+  /** Emit (persist + fan out) an arbitrary protocol event to a session's stream —
+   *  e.g. the goal.update marker a ship_goal stamps onto the session it creates. */
+  emitEvent(sessionId: string, ev: AgentEvent): void
   /** Start an agent run on the session. Resolves when the run fully completes. */
   dispatch(sessionId: string, text: string): Promise<void>
   /** Whether the session has an in-flight run right now. */
@@ -59,6 +63,13 @@ export function queuedCount(sessionId: string): number {
 /** Whether the session has an in-flight run (false when the bus isn't up). */
 export function sessionIsRunning(sessionId: string): boolean {
   return impl?.isRunning(sessionId) ?? false
+}
+
+/** Emit an arbitrary protocol event onto a session's stream (persist + fan out).
+ *  Throws when the bus isn't installed — callers gate on busInstalled(). */
+export function emitToSession(sessionId: string, ev: AgentEvent): void {
+  if (!impl) throw new Error("session bus not installed (server not fully started)")
+  impl.emitEvent(sessionId, ev)
 }
 
 function startDelivery(sessionId: string, msg: QueuedMessage): void {

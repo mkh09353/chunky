@@ -73,10 +73,18 @@ export type AgentEvent =
  *  `blocked`/`complete` are terminal for this objective. */
 export type GoalStatus = "active" | "paused" | "blocked" | "complete"
 
+/** How the goal-mode agent is asked to work. `direct` (the default): do the work
+ *  hands-on. `workflows`: act as an ORCHESTRATOR — delegate all substantive work
+ *  to dynamic-workflow runs (each sub-agent a real child thread, typically on a
+ *  cheaper model), judge results between runs, and keep its own context lean. */
+export type GoalMode = "direct" | "workflows"
+
 /** The wire snapshot of a session's goal (a subset of the server's stored Goal). */
 export interface GoalSnapshot {
   objective: string
   status: GoalStatus
+  /** Omitted means "direct" (pre-mode servers). */
+  mode?: GoalMode
   /** Auto-continuation turns spent so far this run. */
   turns: number
   /** Cap on auto-continuation turns before the goal pauses itself. */
@@ -242,6 +250,9 @@ export const ROUTES = {
   // POST GoalRequest -> GoalStateResponse. Set an objective (starts the loop) or
   // run a lifecycle action (pause/resume/clear).
   goal: (id: string) => `/api/sessions/${id}/goal`,
+  // POST ShipRequest -> 202. Ask THIS session to write a handoff brief and ship
+  // it to a fresh workflows-mode goal session (via the ship_goal tool).
+  ship: (id: string) => `/api/sessions/${id}/ship`,
   // GET -> ModesResponse. POST SaveModeRequest -> ModesResponse (save/snapshot).
   modes: `/api/modes`,
   // POST -> the applied selection + advisor (also invalidates the agent cache).
@@ -257,8 +268,21 @@ export interface GoalRequest {
   objective?: string
   /** Optional cap on auto-continuation turns (defaults server-side). */
   maxTurns?: number
+  /** How the goal agent works: hands-on (`direct`, default) or as a
+   *  workflow-orchestrator (`workflows`). Only meaningful with `objective`. */
+  mode?: GoalMode
   /** Lifecycle action on the current goal. */
   action?: "pause" | "resume" | "clear"
+}
+
+/** Body for POST ROUTES.ship — hand the current session's plan off to a fresh
+ *  goal-orchestrator session. The server injects a hidden prompt telling this
+ *  session's model to distill a handoff brief and call the `ship_goal` tool,
+ *  which creates the new session and starts its workflows-mode goal. 202 on
+ *  dispatch; progress streams over the session's SSE like any turn. */
+export interface ShipRequest {
+  /** Extra user guidance folded into the handoff brief (e.g. scope notes). */
+  notes?: string
 }
 
 /** GET/POST ROUTES.goal response: the session's current goal snapshot, or null. */

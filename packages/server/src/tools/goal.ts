@@ -113,6 +113,7 @@ export const createGoalTool = tool(
       sessionId,
       objective: trimmed,
       status: "active",
+      mode: "direct",
       createdAt: now,
       updatedAt: now,
       turns: 0,

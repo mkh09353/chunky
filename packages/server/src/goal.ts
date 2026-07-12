@@ -5,15 +5,18 @@
 // turn budget is hit. This module holds the pure pieces (types, prompt builders,
 // the continuation decision); persistence lives in store.ts and the loop in
 // run.ts, so all three stay independently testable.
-import type { GoalSnapshot, GoalStatus } from "@chunky/protocol"
+import type { GoalMode, GoalSnapshot, GoalStatus } from "@chunky/protocol"
 
-export type { GoalSnapshot, GoalStatus } from "@chunky/protocol"
+export type { GoalMode, GoalSnapshot, GoalStatus } from "@chunky/protocol"
 
 /** The stored goal for one session (a superset of the wire GoalSnapshot). */
 export interface Goal {
   sessionId: string
   objective: string
   status: GoalStatus
+  /** `direct` = do the work hands-on (classic goal mode). `workflows` = act as an
+   *  orchestrator that delegates all substantive work to dynamic-workflow runs. */
+  mode: GoalMode
   createdAt: number
   updatedAt: number
   /** Auto-continuation turns spent this run (reset to 0 on set/resume). */
@@ -33,7 +36,7 @@ export const DEFAULT_MAX_TURNS = Number(process.env.CHUNKY_GOAL_MAX_TURNS) || 20
 
 /** Project the stored goal onto the wire snapshot the TUI renders. */
 export function toSnapshot(goal: Goal): GoalSnapshot {
-  return { objective: goal.objective, status: goal.status, turns: goal.turns, maxTurns: goal.maxTurns }
+  return { objective: goal.objective, status: goal.status, mode: goal.mode, turns: goal.turns, maxTurns: goal.maxTurns }
 }
 
 /** First line of a possibly-multiline note, trimmed for a one-line transcript marker. */
@@ -59,10 +62,35 @@ ${escapeXml(goal.objective)}
 </untrusted_objective>`
 }
 
+/** The shared "how to finish / when to give up" rules, identical in both modes. */
+const TERMINAL_RULES = `If you hit a genuine impasse that needs the user, call goal_blocked with the specific reason — but only after the SAME blocker has repeated for at least three consecutive turns. Never call goal_blocked because the work is merely hard or slow, and never call goal_complete because the turn budget is nearly spent.`
+
+/** The orchestrator operating manual for workflows-mode goals: delegate all
+ *  substantive work to dynamic-workflow runs, judge between runs, verify by
+ *  workflow before completing. Shared by the kickoff and continuation prompts. */
+function orchestratorPlaybook(): string {
+  return `You are the ORCHESTRATOR for this goal. You plan, delegate, and judge — you do NOT do the hands-on work yourself:
+- Run \`workflow\` scripts for ALL substantive work (exploring the code, implementing, testing, verifying). Keep your own context lean: have workflow agents read files and report back synthesized results instead of reading whole files yourself. Reading a few small files to plan or check a claim is fine; bulk work is not.
+- One workflow per phase works well (recon -> implement -> verify). Give every agent() a focused, self-contained prompt with exact paths and acceptance criteria — agents share no context with you or each other. Use tiers: small/medium for mechanical and standard work (they run the session's default executor model), big only for the hardest judgment calls.
+- Between workflows, judge the returned results against the objective: what is PROVEN done (command output, test results), what remains, what regressed. Then launch the next workflow to close the gap — or re-run a failed part with a sharper prompt.
+- Before claiming completion, run a final VERIFICATION workflow whose agents independently check every concrete requirement of the objective against current evidence (files, command output, test results). The audit must prove completion, not merely fail to find remaining work. Then call goal_complete with a concise evidence summary.`
+}
+
 /** The kickoff prompt injected when a goal is set or resumed. Not shown as a user
  *  bubble in the TUI (the server never emits user messages) — the user only sees
  *  the agent's resulting work, so this reads as an autonomous run. */
 export function goalKickoffPrompt(goal: Goal): string {
+  if (goal.mode === "workflows") {
+    return `[goal mode: orchestrator] Work autonomously toward this goal until it is fully complete and verified.
+
+${objectiveBlock(goal)}
+
+${orchestratorPlaybook()}
+
+You have up to ${goal.maxTurns} continuation turns; don't stall waiting for the user.
+Keep the full objective intact: do not redefine success around a smaller, safer, or easier-to-test task.
+${TERMINAL_RULES} Start now — if the objective doesn't already tell you exactly where to work, begin with a short recon workflow.`
+  }
   return `[goal mode] Work autonomously toward this goal until it is fully complete and verified.
 
 ${objectiveBlock(goal)}
@@ -70,11 +98,23 @@ ${objectiveBlock(goal)}
 Do the work directly — read, search, edit, run, and verify. You have up to ${goal.maxTurns} continuation turns; don't stall waiting for the user.
 Keep the full objective intact: if it cannot be finished this turn, make concrete progress toward the real requested end state — do not redefine success around a smaller, safer, or easier-to-test task.
 Before claiming completion, audit it as unproven: derive the concrete requirements from the objective, and verify each one against current evidence (files, command output, test results). The audit must prove completion, not merely fail to find remaining work. Then call goal_complete with a concise evidence summary.
-If you hit a genuine impasse that needs the user, call goal_blocked with the specific reason — but only after the SAME blocker has repeated for at least three consecutive turns. Never call goal_blocked because the work is merely hard or slow, and never call goal_complete because the turn budget is nearly spent. Start now.`
+${TERMINAL_RULES} Start now.`
 }
 
 /** The hidden nudge injected before each auto-continuation turn. */
 export function goalContinuationPrompt(goal: Goal): string {
+  if (goal.mode === "workflows") {
+    return `[goal mode: orchestrator] The goal is NOT yet complete. Keep orchestrating toward it.
+
+${objectiveBlock(goal)}
+
+This is continuation turn ${goal.turns} of ${goal.maxTurns}. Continue now — do not ask the user for confirmation.
+${orchestratorPlaybook()}
+
+Work from evidence: trust workflow results over your memory of earlier turns, and re-verify anything uncertain with a fresh workflow rather than assuming it held.
+Keep the full objective intact; do not substitute a narrower or easier-to-test solution because it is more likely to pass.
+${TERMINAL_RULES}`
+  }
   return `[goal mode] The goal is NOT yet complete. Keep working toward it.
 
 ${objectiveBlock(goal)}
@@ -118,11 +158,15 @@ export function decideGoalStep(goal: Goal | null, aborted: boolean): GoalStep {
 }
 
 /** Parse the argument string of the `/goal` TUI command into an intent. Supports
- *  `pause` / `resume` / `clear` / `stop`, an optional leading `--turns N`, and
- *  otherwise treats the rest as the objective text. Bare "" → status query. */
+ *  `pause` / `resume` / `clear` / `stop`, optional leading `--turns N` and
+ *  `--workflows` (alias `--dynamite`) flags in either order, and otherwise treats
+ *  the rest as the objective text. Bare "" → status query. */
 export function parseGoalCommand(
   rest: string,
-): { kind: "status" } | { kind: "action"; action: "pause" | "resume" | "clear" } | { kind: "set"; objective: string; maxTurns?: number } {
+):
+  | { kind: "status" }
+  | { kind: "action"; action: "pause" | "resume" | "clear" }
+  | { kind: "set"; objective: string; maxTurns?: number; mode?: GoalMode } {
   const trimmed = rest.trim()
   if (!trimmed) return { kind: "status" }
   const lower = trimmed.toLowerCase()
@@ -132,10 +176,21 @@ export function parseGoalCommand(
 
   let objective = trimmed
   let maxTurns: number | undefined
-  const m = objective.match(/^--turns\s+(\d+)\s+([\s\S]+)$/)
-  if (m) {
-    maxTurns = Number(m[1])
-    objective = m[2]!.trim()
+  let mode: GoalMode | undefined
+  for (;;) {
+    const turns = objective.match(/^--turns\s+(\d+)\s+([\s\S]+)$/)
+    if (turns) {
+      maxTurns = Number(turns[1])
+      objective = turns[2]!.trim()
+      continue
+    }
+    const workflows = objective.match(/^--(?:workflows|dynamite)\s+([\s\S]+)$/)
+    if (workflows) {
+      mode = "workflows"
+      objective = workflows[1]!.trim()
+      continue
+    }
+    break
   }
-  return { kind: "set", objective, maxTurns }
+  return { kind: "set", objective, maxTurns, mode }
 }

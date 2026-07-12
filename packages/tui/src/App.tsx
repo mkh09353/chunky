@@ -281,12 +281,18 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   )
 
   const submit = useCallback(
-    async (text: string) => {
+    async (text: string, display?: string) => {
+      // `text` is the full message (paste chips expanded) sent to the model;
+      // `display` is the shortened echo (chips kept) shown in the transcript.
       // Slash commands that take arguments arrive here (the menu only fires bare
       // commands via onCommand): `/goal <objective>`, `/cacheguard <tokens|off>`.
       const command = text.trim()
       if (command === "/goal" || command.startsWith("/goal ")) {
         void doGoal(command.slice("/goal".length).trim())
+        return
+      }
+      if (command === "/shipit" || command.startsWith("/shipit ")) {
+        void doShipIt(command.slice("/shipit".length).trim())
         return
       }
       if (command === "/cacheguard" || command.startsWith("/cacheguard ")) {
@@ -299,7 +305,9 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       }
       const images = attachmentsRef.current
       setAttachments([]) // consume the pasted images with this message
-      const shown = text || (images.length ? `📎 ${images.length} image${images.length === 1 ? "" : "s"}` : text)
+      const shownText = display ?? text
+      const shown =
+        shownText || (images.length ? `📎 ${images.length} image${images.length === 1 ? "" : "s"}` : shownText)
       if (mode === "mock") {
         setState((s) => pushUser(s, shown))
         setStartedAt(Date.now())
@@ -561,12 +569,13 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           const body = (await res.json()) as GoalStateResponse
           if (!body.goal) {
             printLine(
-              "No goal set. `/goal <objective>` starts one (autonomous until done); `/goal --turns 30 <objective>` sets a turn budget; `/goal pause|resume|clear` manages it.",
+              "No goal set. `/goal <objective>` starts one (autonomous until done); `/goal --workflows <objective>` runs it as a workflow-orchestrator; `/goal --turns 30 <objective>` sets a turn budget; `/goal pause|resume|clear` manages it.",
             )
             return
           }
           setGoal(body.goal)
-          printLine(`Goal (${body.goal.status}, turn ${body.goal.turns}/${body.goal.maxTurns}): ${body.goal.objective}`)
+          const modeTag = body.goal.mode === "workflows" ? ", orchestrator" : ""
+          printLine(`Goal (${body.goal.status}${modeTag}, turn ${body.goal.turns}/${body.goal.maxTurns}): ${body.goal.objective}`)
         } catch (err) {
           printLine(`Goal status failed: ${String(err)}`)
         }
@@ -579,15 +588,28 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       else if (lower === "resume" || lower === "continue") payload = { action: "resume" }
       else if (lower === "clear" || lower === "stop" || lower === "cancel") payload = { action: "clear" }
       else {
-        // Set a new objective, with an optional leading `--turns N`.
+        // Set a new objective, with optional leading `--turns N` and
+        // `--workflows` (alias `--dynamite`) flags in either order (mirrors the
+        // server's parseGoalCommand).
         let objective = trimmed
         let maxTurns: number | undefined
-        const m = objective.match(/^--turns\s+(\d+)\s+([\s\S]+)$/)
-        if (m) {
-          maxTurns = Number(m[1])
-          objective = m[2]!.trim()
+        let goalMode: GoalRequest["mode"]
+        for (;;) {
+          const turns = objective.match(/^--turns\s+(\d+)\s+([\s\S]+)$/)
+          if (turns) {
+            maxTurns = Number(turns[1])
+            objective = turns[2]!.trim()
+            continue
+          }
+          const workflows = objective.match(/^--(?:workflows|dynamite)\s+([\s\S]+)$/)
+          if (workflows) {
+            goalMode = "workflows"
+            objective = workflows[1]!.trim()
+            continue
+          }
+          break
         }
-        payload = maxTurns ? { objective, maxTurns } : { objective }
+        payload = { objective, ...(maxTurns ? { maxTurns } : {}), ...(goalMode ? { mode: goalMode } : {}) }
       }
 
       try {
@@ -606,6 +628,43 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         setGoal(body.goal)
       } catch (err) {
         printLine(`Goal request failed: ${String(err)}`)
+      }
+    },
+    [mode, baseUrl, printLine],
+  )
+
+  // /shipit — hand the plan agreed in THIS conversation off to a fresh
+  // goal-orchestrator session. The server injects a hidden prompt telling the
+  // current session's model to distill a handoff brief and call ship_goal, which
+  // creates the new session and starts its workflows-mode goal. `rest` is
+  // optional extra notes folded into the brief.
+  const doShipIt = useCallback(
+    async (rest: string) => {
+      if (mode !== "live") {
+        printLine("/shipit needs the live server (run the server, then the TUI with --live).")
+        return
+      }
+      const id = sessionIdRef.current
+      if (!id) {
+        printLine("No live session yet — nothing to ship. Talk through the plan first, then /shipit.")
+        return
+      }
+      try {
+        const notes = rest.trim()
+        const res = await fetch(baseUrl + ROUTES.ship(id), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(notes ? { notes } : {}),
+        })
+        if (!res.ok) {
+          printLine(`Shipit failed: HTTP ${res.status}`)
+          return
+        }
+        printLine(
+          "Shipping — this session is writing the handoff brief and will spawn a fresh goal-orchestrator session (ship_goal). The new session appears in the sessions list once created.",
+        )
+      } catch (err) {
+        printLine(`Shipit request failed: ${String(err)}`)
       }
     },
     [mode, baseUrl, printLine],
@@ -778,7 +837,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           break
         case "/help":
           printLine(
-            "Commands: /clear, /help, /login, /model, /advisor, /mode, /goal, /cacheguard, /quit. Type a message and press Enter to talk to the agent. `/goal <objective>` works autonomously until the goal is done. `/mode <name>` switches a saved model+advisor pairing. `/cacheguard <tokens|off>` sets when a cold-cache re-send needs confirmation.",
+            "Commands: /clear, /help, /login, /model, /advisor, /mode, /goal, /shipit, /cacheguard, /quit. Type a message and press Enter to talk to the agent. `/goal <objective>` works autonomously until the goal is done (`--workflows` makes it a workflow-orchestrator). `/shipit [notes]` hands this conversation's plan off to a fresh orchestrator session. `/mode <name>` switches a saved model+advisor pairing. `/cacheguard <tokens|off>` sets when a cold-cache re-send needs confirmation.",
           )
           break
         case "/login":
@@ -793,6 +852,9 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         case "/goal":
           void doGoal("")
           break
+        case "/shipit":
+          void doShipIt("")
+          break
         case "/cacheguard":
           void doCacheGuard("")
           break
@@ -801,7 +863,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           break
       }
     },
-    [printLine, doLogin, doModel, doAdvisor, doGoal, doCacheGuard, doMode, exit, mode, baseUrl],
+    [printLine, doLogin, doModel, doAdvisor, doGoal, doShipIt, doCacheGuard, doMode, exit, mode, baseUrl],
   )
 
   // Mock demo turn so the transcript streams even without a TTY.

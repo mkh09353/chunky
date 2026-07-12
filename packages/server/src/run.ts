@@ -270,8 +270,11 @@ export async function runAgent(
   emit({ type: "session.status", sessionId, status: "running" })
 
   // Freeze the root selection for this run. A later /model change affects the
-  // next root turn, never an in-flight root or any of its child threads.
-  const selection = activeSelection()
+  // next root turn, never an in-flight root or any of its child threads. A
+  // session with a PINNED selection (a shipped goal-orchestrator keeping its
+  // model) uses that instead — unless its provider has since been unregistered.
+  const pinned = Store.pinnedSelectionOf(sessionId)
+  const selection = pinned && getProvider(pinned.provider) ? pinned : activeSelection()
 
   // Freeze the run's workspace from the SESSION (not any global): every tool
   // call, child thread, and advisor consult in this run operates here, so

@@ -15,7 +15,7 @@ The script is JavaScript with top-level \`await\`; \`return\` the final value. A
 - pipeline(items, ...stages) -> run each item through the stages independently (no barrier); stage signature (prev, item, index).
 - phase(title) / log(msg) -> progress grouping + a narrator line the user sees.
 - args -> the args you passed to this tool. budget -> { total, spent(), remaining() } (stub for now).
-Concurrency is capped automatically. Date.now()/Math.random() are disabled (runs must be deterministic) — vary work by array index. Prefer a DIFFERENT model per agent (a tier, or an explicit model) — heterogeneity is the point; big fans out to your advisor/premium model.
+Concurrency is capped automatically. Date.now()/Math.random() are disabled (runs must be deterministic) — vary work by array index. Give every agent a tier (or an explicit model): small/medium run the session's default executor model at low/default effort, big routes to the advisor/premium model — reserve it for the hardest judgment calls.
 
 Example:
 const files = (await agent('List the route files under src/routes, one path per line, no prose.', { tier: 'small' })).split('\\n').filter(Boolean)
@@ -23,6 +23,14 @@ phase('Review')
 const found = await parallel(files.map(f => () => agent(\`Audit \${f} for missing auth checks. Be specific.\`, { tier: 'medium' })))
 phase('Synthesize')
 return await agent('Synthesize these audit findings into the top risks:\\n' + found.filter(Boolean).join('\\n\\n'), { tier: 'big' })`
+
+export const workflowInputShape = {
+  script: z.string().describe("The JavaScript orchestration script (top-level await; `return` the final value)."),
+  args: z
+    .any()
+    .optional()
+    .describe("Optional JSON value exposed to the script as the global `args`."),
+}
 
 export const workflow = tool(
   async (input: { script: string; args?: unknown }, config?: unknown) => {
@@ -36,12 +44,6 @@ export const workflow = tool(
   {
     name: "workflow",
     description: DESCRIPTION,
-    schema: z.object({
-      script: z.string().describe("The JavaScript orchestration script (top-level await; `return` the final value)."),
-      args: z
-        .any()
-        .optional()
-        .describe("Optional JSON value exposed to the script as the global `args`."),
-    }),
+    schema: z.object(workflowInputShape),
   },
 )

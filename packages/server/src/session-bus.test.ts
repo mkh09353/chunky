@@ -28,10 +28,14 @@ const { registerThread } = await import("./thread-context.ts")
 function fakeImpl() {
   const runningSet = new Set<string>()
   const delivered: Array<{ sessionId: string; shown: string; from: string; prompt: string }> = []
+  const events: Array<{ sessionId: string; ev: unknown }> = []
   let resolvers: Array<() => void> = []
   const impl = {
     emitUserMessage(sessionId: string, text: string, from: string) {
       delivered.push({ sessionId, shown: text, from, prompt: "" })
+    },
+    emitEvent(sessionId: string, ev: unknown) {
+      events.push({ sessionId, ev })
     },
     dispatch(sessionId: string, text: string) {
       delivered[delivered.length - 1]!.prompt = text
@@ -52,7 +56,7 @@ function fakeImpl() {
     r?.()
     await Bun.sleep(0) // let .finally(drainQueue) run
   }
-  return { impl, delivered, runningSet, finishNextRun }
+  return { impl, delivered, events, runningSet, finishNextRun }
 }
 
 describe("session bus", () => {

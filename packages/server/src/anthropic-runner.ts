@@ -24,6 +24,8 @@ import { bash, bashInputShape } from "./tools/bash.ts"
 import { editInputShape, editTool } from "./tools/edit.ts"
 import { fffind, fffindInputShape, ffgrep, ffgrepInputShape } from "./tools/fff.ts"
 import {
+  createGoalInputShape,
+  createGoalTool,
   getGoalInputShape,
   getGoalTool,
   goalBlockedInputShape,
@@ -32,12 +34,14 @@ import {
   goalCompleteTool,
 } from "./tools/goal.ts"
 import { read, readInputShape } from "./tools/read.ts"
+import { shipGoal, shipGoalInputShape } from "./tools/ship.ts"
 import { spawnThread, spawnThreadInputShape } from "./tools/spawn-thread.ts"
+import { workflow, workflowInputShape } from "./tools/workflow.ts"
 import { write, writeInputShape } from "./tools/write.ts"
 
 const SERVER_NAME = "chunky"
 const ALLOWED_TOOLS = [`mcp__${SERVER_NAME}__*`]
-const CHUNKY_TOOLS = [read, bash, fffind, ffgrep, write, editTool, spawnThread, getGoalTool, goalCompleteTool, goalBlockedTool]
+const CHUNKY_TOOLS = [read, bash, fffind, ffgrep, write, editTool, spawnThread, workflow, getGoalTool, createGoalTool, goalCompleteTool, goalBlockedTool, shipGoal]
 const SDK_TOOL_NAMES = new Set(CHUNKY_TOOLS.map((chunkyTool) => `mcp__${SERVER_NAME}__${chunkyTool.name}`))
 const knownSessions = new Set<string>()
 
@@ -176,6 +180,16 @@ export function createChunkySdkMcpServer(
         (args) => spawnThread.invoke(args, runConfig),
         emit,
       ),
+      // workflow resolves its ThreadManager from the caller thread exactly like
+      // spawn_thread — required for workflows-mode goals when the orchestrator
+      // runs on the Anthropic SDK runtime (Claude/Fable).
+      wrapChunkyTool(
+        workflow.name,
+        workflow.description,
+        workflowInputShape,
+        (args) => workflow.invoke(args, runConfig),
+        emit,
+      ),
       // Goal-mode tools resolve the session from the caller thread the same way
       // spawn_thread does, so goal_complete/goal_blocked reach the right goal.
       wrapChunkyTool(
@@ -185,6 +199,13 @@ export function createChunkySdkMcpServer(
         (args) => getGoalTool.invoke(args, runConfig),
         emit,
         readOnly,
+      ),
+      wrapChunkyTool(
+        createGoalTool.name,
+        createGoalTool.description,
+        createGoalInputShape,
+        (args) => createGoalTool.invoke(args, runConfig),
+        emit,
       ),
       wrapChunkyTool(
         goalCompleteTool.name,
@@ -198,6 +219,13 @@ export function createChunkySdkMcpServer(
         goalBlockedTool.description,
         goalBlockedInputShape,
         (args) => goalBlockedTool.invoke(args, runConfig),
+        emit,
+      ),
+      wrapChunkyTool(
+        shipGoal.name,
+        shipGoal.description,
+        shipGoalInputShape,
+        (args) => shipGoal.invoke(args, runConfig),
         emit,
       ),
     ],

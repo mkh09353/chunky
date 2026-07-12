@@ -182,12 +182,15 @@ export class ThreadManager implements ThreadSpawner {
   }
 
   /**
-   * Map a workflow tier to a model-selection override (undefined = inherit the
-   * caller's model). Lean policy: `big` routes to the configured advisor model
-   * (the session's premium model) when one is set, else just raises effort;
-   * `small` lowers effort; `medium` inherits. A fully configurable per-provider
-   * tier map + picker is a later increment — this already gives `tier` real,
-   * heterogeneous meaning today without inventing model ids.
+   * Map a workflow tier to a model-selection override. Lean policy: `big` routes
+   * to the configured advisor model (the session's premium model) when one is
+   * set, else just raises effort; `small` and `medium` anchor to the GLOBAL
+   * active selection (the user's /model choice) at low/default effort — anchored
+   * rather than inherited so a workflows-mode goal session pinned to a premium
+   * orchestrator fans out on the everyday model instead of multiplying the
+   * premium one. In an ordinary session the caller IS the active selection, so
+   * anchoring changes nothing. A fully configurable per-provider tier map +
+   * picker is a later increment.
    */
   private tierOverride(tier: WorkflowTier): AgentSelectionOverride | undefined {
     if (tier === "big") {
@@ -195,8 +198,9 @@ export class ThreadManager implements ThreadSpawner {
       if (advisor) return { provider: advisor.provider, model: advisor.model, effort: advisor.effort }
       return { effort: "high" }
     }
-    if (tier === "small") return { effort: "low" }
-    return undefined
+    const base = activeSelection()
+    if (tier === "small") return { provider: base.provider, model: base.model, effort: "low" }
+    return { provider: base.provider, model: base.model, effort: base.effort }
   }
 
   /**

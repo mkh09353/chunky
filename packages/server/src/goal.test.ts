@@ -38,6 +38,7 @@ function makeGoal(over: Partial<Goal> = {}): Goal {
     sessionId: "s",
     objective: "ship it",
     status: "active",
+    mode: "direct",
     createdAt: 1,
     updatedAt: 1,
     turns: 0,
@@ -71,6 +72,15 @@ async function main() {
   assert(set.kind === "set" && set.objective === "build the login page" && set.maxTurns === undefined, "plain text -> set objective, no budget")
   const setBudget = parseGoalCommand("--turns 30 refactor the parser")
   assert(setBudget.kind === "set" && (setBudget as any).maxTurns === 30 && (setBudget as any).objective === "refactor the parser", "--turns N <text> -> set with budget")
+  const setWf = parseGoalCommand("--workflows audit the routes")
+  assert(setWf.kind === "set" && (setWf as any).mode === "workflows" && (setWf as any).objective === "audit the routes", "--workflows <text> -> workflows mode")
+  const setDyn = parseGoalCommand("--dynamite audit the routes")
+  assert((setDyn as any).mode === "workflows", "--dynamite is an alias for --workflows")
+  const setBoth = parseGoalCommand("--workflows --turns 12 big migration")
+  assert((setBoth as any).mode === "workflows" && (setBoth as any).maxTurns === 12 && (setBoth as any).objective === "big migration", "flags compose in either order")
+  const setBoth2 = parseGoalCommand("--turns 12 --workflows big migration")
+  assert((setBoth2 as any).mode === "workflows" && (setBoth2 as any).maxTurns === 12 && (setBoth2 as any).objective === "big migration", "flags compose (turns first)")
+  assert((parseGoalCommand("plain objective") as any).mode === undefined, "no flag -> mode undefined (direct default)")
 
   console.log("\n--- 3. Store goal persistence ---")
   const SID = "sess-goal-test"
@@ -85,6 +95,9 @@ async function main() {
   Store.putGoal({ ...g, objective: "replaced" })
   assert(Store.getGoal(SID)!.objective === "replaced" && Store.getGoal(SID)!.turns === 0, "putGoal replaces (upsert), resets turns")
   assert(Store.updateGoal("nobody", { turns: 1 }) === null, "updateGoal on missing goal -> null")
+  assert(Store.getGoal(SID)!.mode === "direct", "mode defaults to direct")
+  Store.putGoal(makeGoal({ sessionId: SID, mode: "workflows" }))
+  assert(Store.getGoal(SID)!.mode === "workflows", "workflows mode roundtrips")
 
   console.log("\n--- 4. goal tools resolve the session and flip status ---")
   // Register a fake run context: both the root session id AND a spawned child id
@@ -144,6 +157,18 @@ async function main() {
   assert(classifyGoalError("429: rate limit exceeded") === "usage-limit", "rate-limit error -> usage-limit")
   assert(classifyGoalError("monthly usage cap reached") === "usage-limit", "usage error -> usage-limit")
   assert(classifyGoalError("ECONNRESET while streaming") === "error", "infra error -> plain error")
+
+  // Workflows-mode prompts frame the agent as an orchestrator (and keep the
+  // untrusted-objective hardening).
+  const wfGoal = makeGoal({ mode: "workflows", objective: "do <thing>", turns: 1, maxTurns: 9 })
+  const wfKick = goalKickoffPrompt(wfGoal)
+  assert(wfKick.startsWith("[goal mode: orchestrator]"), "workflows kickoff uses the orchestrator prefix")
+  assert(wfKick.includes("ORCHESTRATOR") && wfKick.includes("workflow"), "workflows kickoff carries the orchestrator playbook")
+  assert(wfKick.includes("<untrusted_objective>") && wfKick.includes("do &lt;thing&gt;"), "workflows kickoff keeps the untrusted-objective hardening")
+  assert(wfKick.includes("VERIFICATION workflow"), "workflows kickoff demands a verification workflow before completion")
+  const wfCont = goalContinuationPrompt(wfGoal)
+  assert(wfCont.startsWith("[goal mode: orchestrator]") && wfCont.includes("turn 1 of 9"), "workflows continuation: prefix + turn counter")
+  assert(goalKickoffPrompt(makeGoal()).startsWith("[goal mode]"), "direct kickoff keeps the classic prefix")
 
   console.log("\n--- 6. create_goal (model-initiated goals) ---")
   const created = (await createGoalTool.invoke(

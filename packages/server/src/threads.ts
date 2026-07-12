@@ -16,6 +16,7 @@ import { ADVISOR_SYSTEM_PROMPT } from "./prompt.ts"
 import {
   activeSelection,
   childSelection,
+  getProvider,
   providerRuntime,
   resolveAdvisorSelection,
   type AgentSelection,
@@ -67,6 +68,11 @@ export class ThreadManager implements ThreadSpawner {
   /** The session's workspace: every child thread and advisor consult runs here —
    *  a child can never escape into another repo's folder. */
   readonly workspace: string
+  /** The turn's abort controller (from run.ts). Threaded into EVERY child and
+   *  advisor stream so an Esc/interrupt tears them down too — without it a stalled
+   *  advisor/child consult hangs the whole turn un-interruptibly (the root signal
+   *  never reaches the child's stream, so the awaited tool promise never settles). */
+  private readonly abort?: AbortController
 
   constructor(
     emit: Emit,
@@ -75,12 +81,14 @@ export class ThreadManager implements ThreadSpawner {
     agentFor: AgentForSelection = getAgent,
     advisorAgentFor: AgentForSelection = getAdvisorAgent,
     workspace: string = LAUNCH_WORKSPACE,
+    abort?: AbortController,
   ) {
     this.emit = emit
     this.rootId = rootId
     this.agentFor = agentFor
     this.advisorAgentFor = advisorAgentFor
     this.workspace = workspace
+    this.abort = abort
     this.selections.set(rootId, rootSelection)
     // The root (main session) thread resolves to this manager, so the main
     // model's spawn_thread calls are routed here.
@@ -114,11 +122,21 @@ export class ThreadManager implements ThreadSpawner {
     }
     const selection = childSelection(parentSelection, opts.selection)
 
+    // Fail fast if the child's provider sign-in is expired: a stalled auth would
+    // otherwise hang the child stream with no clear cause. Mirrors run.ts's
+    // root-turn preflight, which never ran for spawned children.
+    try {
+      await getProvider(selection.provider)?.ensureAuth?.()
+    } catch (err) {
+      const detail = (err as Error)?.message ?? String(err)
+      return `error: provider "${selection.provider}" sign-in expired — run /login to re-authenticate. (${detail})`
+    }
+
     // The child is itself a valid spawn context, so grandchildren route correctly.
     registerThread(childThreadId, this)
     this.selections.set(childThreadId, selection)
 
-    this.emit({ type: "thread.spawn", threadId: childThreadId, parentThreadId, title: opts.title })
+    this.emit({ type: "thread.spawn", threadId: childThreadId, parentThreadId, title: opts.title, model: selection.model })
     this.emit({ type: "thread.status", threadId: childThreadId, status: "running", title: opts.title })
 
     try {
@@ -132,6 +150,7 @@ export class ThreadManager implements ThreadSpawner {
           eventThreadId: childThreadId,
           freshSession: true,
           workspace: this.workspace,
+          abort: this.abort,
         })
       }
 
@@ -147,6 +166,7 @@ export class ThreadManager implements ThreadSpawner {
             configurable: { thread_id: childThreadId, workspace: this.workspace },
             streamMode: ["updates", "messages"],
             recursionLimit: RECURSION_LIMIT,
+            signal: this.abort?.signal,
           } as any,
         ),
       )
@@ -238,12 +258,22 @@ export class ThreadManager implements ThreadSpawner {
     advisorConsultsBySession.set(this.rootId, consultNo)
     console.log(`[@chunky/server] advisor consult #${consultNo} this session (${this.rootId})`)
 
+    // Fail fast on an expired advisor sign-in — otherwise the consult stream can
+    // hang silently (this was the "stuck on the advisor" wedge). run.ts only
+    // preflights the ROOT provider's auth, never the advisor's separate provider.
+    try {
+      await getProvider(advisorSel.provider)?.ensureAuth?.()
+    } catch (err) {
+      const detail = (err as Error)?.message ?? String(err)
+      return `error: advisor provider "${advisorSel.provider}" sign-in expired — run /login to re-authenticate. (${detail})`
+    }
+
     const advisorThreadId = `${this.rootId}:advisor`
     const content = opts.pointers
       ? `${opts.question}\n\nWhere to look / context:\n${opts.pointers}`
       : opts.question
 
-    this.emit({ type: "thread.spawn", threadId: advisorThreadId, parentThreadId: null, title: "Advisor" })
+    this.emit({ type: "thread.spawn", threadId: advisorThreadId, parentThreadId: null, title: "Advisor", model: advisorSel.model })
     this.emit({ type: "thread.status", threadId: advisorThreadId, status: "running", title: "Advisor" })
 
     let finalText = ""
@@ -262,6 +292,7 @@ export class ThreadManager implements ThreadSpawner {
           systemPrompt: ADVISOR_SYSTEM_PROMPT,
           allowedTools: ["mcp__chunky__read", "mcp__chunky__bash"],
           workspace: this.workspace,
+          abort: this.abort,
         })
       } else {
         // Same async-local isolation as spawn(): a cleared store so the advisor's
@@ -274,6 +305,7 @@ export class ThreadManager implements ThreadSpawner {
               configurable: { thread_id: advisorThreadId, workspace: this.workspace },
               streamMode: ["updates", "messages"],
               recursionLimit: RECURSION_LIMIT,
+              signal: this.abort?.signal,
             } as any,
           ),
         )

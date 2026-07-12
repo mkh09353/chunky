@@ -52,7 +52,9 @@ export type AgentEvent =
   | { type: "message.end"; threadId?: string }
   | { type: "tool.start"; id: string; name: string; input: unknown; threadId?: string }
   | { type: "tool.end"; id: string; ok: boolean; output: string; threadId?: string }
-  | { type: "thread.spawn"; threadId: string; parentThreadId: string | null; title: string }
+  /** `model` is the child's EFFECTIVE model id (inherited or overridden) so the
+   *  TUI can label each thread with the model running it — omitted if unknown. */
+  | { type: "thread.spawn"; threadId: string; parentThreadId: string | null; title: string; model?: string }
   | { type: "thread.status"; threadId: string; status: "running" | "idle"; title?: string }
   /** Goal-mode lifecycle: emitted when a goal is set, auto-continues, completes,
    * blocks, or pauses. `goal` is the current snapshot (null once cleared) and

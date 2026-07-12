@@ -308,7 +308,7 @@ export async function runAgent(
   // Context for spawn_thread: any thread_id in this run (root or descendant)
   // resolves back to this manager via the thread registry. Defaults for the
   // agent factories; the workspace pins children to the session's repo.
-  const threads = new ThreadManager(emit, sessionId, selection, undefined, undefined, workspace)
+  const threads = new ThreadManager(emit, sessionId, selection, undefined, undefined, workspace, abort)
   const cache: CacheContext | undefined = model ? { conversationId: sessionId, model } : undefined
 
   // One turn = one full agent run (a model call + any tool loop). Both runtimes

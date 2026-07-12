@@ -121,7 +121,20 @@ async function main() {
   assert(delivered[0]!.from.startsWith("shipped from"), "provenance labels the source session")
   assert(delivered[0]!.from.includes("planning the relay fix"), "provenance carries the source title")
 
-  console.log("\n--- 3. handoff prompt ---")
+  console.log("\n--- 3. orchestrator model override ---")
+  const badProv = await runShipGoal({ title: "t", objective: BRIEF, orchestrator_provider: "not-a-provider" }, FROM)
+  assert(badProv.startsWith("error:") && badProv.includes("Valid providers"), "unknown orchestrator_provider -> error listing valid ids")
+
+  const before2 = new Set(Store.list().map((s) => s.sessionId))
+  const result2 = await runShipGoal({ title: "Effort override", objective: BRIEF, orchestrator_effort: "low" }, FROM)
+  assert(result2.startsWith("Shipped."), "ship with orchestrator override succeeds")
+  const created2 = Store.list().find((s) => !before2.has(s.sessionId))!
+  const pinned2 = Store.pinnedSelectionOf(created2.sessionId)
+  assert(pinned2 != null && pinned2.effort === "low", "explicit orchestrator_effort is pinned on the new session")
+  assert(pinned2!.provider === expected.provider, "provider still defaults to advisor/active when not overridden")
+  Store.clearGoal(created2.sessionId)
+
+  console.log("\n--- 4. handoff prompt ---")
   const plain = shipHandoffPrompt()
   assert(plain.startsWith("[shipit]") && plain.includes("ship_goal"), "handoff prompt instructs a brief + ship_goal call")
   assert(!plain.includes("<user_notes>"), "no notes -> no notes block")

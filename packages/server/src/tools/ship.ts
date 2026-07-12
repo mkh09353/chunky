@@ -13,7 +13,14 @@ import { Store } from "../store.ts"
 import { sessionForThread } from "../thread-context.ts"
 import { busInstalled, deliverToSession, emitToSession } from "../session-bus.ts"
 import { DEFAULT_MAX_TURNS, firstLine, goalKickoffPrompt, toSnapshot, type Goal } from "../goal.ts"
-import { activeSelection, resolveAdvisorSelection } from "../providers/registry.ts"
+import {
+  activeSelection,
+  childSelection,
+  getProvider,
+  listProviders,
+  resolveAdvisorSelection,
+  type Effort,
+} from "../providers/registry.ts"
 import { sessionLabel } from "./sessions.ts"
 
 function threadIdOf(config: unknown): string | undefined {
@@ -35,6 +42,8 @@ Write the brief as if onboarding a sharp colleague who has never seen this threa
 - Verification: the concrete checks that prove completion (tests to run, commands whose output to confirm, behaviors to observe).
 Leave out conversational history, dead ends (unless ruled-out-for-a-reason), and open musings the user didn't endorse.${notesBlock}
 
+Model routing: if the user said which model should ORCHESTRATE, pass it via ship_goal's orchestrator_provider/orchestrator_model (must be a configured provider) — otherwise omit them (defaults to the advisor, else the active model). If the user said which models the workflow SUB-AGENTS should use, state that as an explicit directive inside the brief (e.g. "run workflow agents on <model>; agent() accepts explicit provider/model") so the orchestrator honors it.
+
 Then call ship_goal with a short title and the brief as the objective. Do not start the work yourself, and do not ask for confirmation — ship it.`
 }
 
@@ -42,6 +51,9 @@ export interface ShipGoalInput {
   title: string
   objective: string
   max_turns?: number
+  orchestrator_provider?: string
+  orchestrator_model?: string
+  orchestrator_effort?: Effort
 }
 
 export const shipGoalInputShape = {
@@ -56,6 +68,21 @@ export const shipGoalInputShape = {
     .number()
     .optional()
     .describe("Optional cap on the goal's auto-continuation turns. Omit unless the user asked for a budget."),
+  orchestrator_provider: z
+    .string()
+    .optional()
+    .describe(
+      "Optional provider id for the new session's ORCHESTRATOR model; must be a CONFIGURED provider. Set only when " +
+        "the user named a model to orchestrate with — omit to default to the advisor (else the active selection).",
+    ),
+  orchestrator_model: z
+    .string()
+    .optional()
+    .describe("Optional model id for the orchestrator (with orchestrator_provider, or alone to switch model on the default provider)."),
+  orchestrator_effort: z
+    .enum(["low", "medium", "high", "xhigh"])
+    .optional()
+    .describe("Optional reasoning effort for the orchestrator."),
 }
 
 export async function runShipGoal(input: ShipGoalInput, callerThreadId: string | undefined): Promise<string> {
@@ -76,12 +103,24 @@ export async function runShipGoal(input: ShipGoalInput, callerThreadId: string |
       : DEFAULT_MAX_TURNS
 
   // The new session lives in the same repo and is pinned to the ORCHESTRATOR
-  // model: the advisor (the configured premium model) when set, else the current
-  // active selection. Workflow tiers inside it still resolve small/medium to the
-  // global default executor, so orchestration stays on the strong model while
-  // fan-out work runs on the everyday one.
+  // model: an explicit orchestrator_* override when the user named one, else the
+  // advisor (the configured premium model), else the current active selection.
+  // Workflow tiers inside it still resolve small/medium to the global default
+  // executor, so orchestration stays on the strong model while fan-out work runs
+  // on the everyday one.
+  if (input.orchestrator_provider !== undefined && !getProvider(input.orchestrator_provider)) {
+    const valid = listProviders().map((p) => `"${p.id}"`).join(", ")
+    return `error: unknown orchestrator_provider "${input.orchestrator_provider}". Valid providers: ${valid}. Omit it to default to the advisor/active model.`
+  }
+  const hasOverride =
+    input.orchestrator_provider !== undefined || input.orchestrator_model !== undefined || input.orchestrator_effort !== undefined
   const workspace = Store.workspaceOf(fromSessionId) ?? undefined
-  const orchestrator = resolveAdvisorSelection() ?? activeSelection()
+  const orchestrator = childSelection(
+    resolveAdvisorSelection() ?? activeSelection(),
+    hasOverride
+      ? { provider: input.orchestrator_provider, model: input.orchestrator_model, effort: input.orchestrator_effort }
+      : undefined,
+  )
   const newSessionId = randomUUID()
   Store.createSession(newSessionId, title, workspace)
   Store.pinSelection(newSessionId, orchestrator)
@@ -125,10 +164,12 @@ export const shipGoal = tool(
     name: "ship_goal",
     description:
       "Hand the work agreed in THIS conversation off to a fresh, context-clean goal session: creates a new session " +
-      "in the same repo, pins it to the orchestrator model (the advisor when configured), sets a workflows-mode " +
-      "goal with your handoff brief as the objective, and starts it working autonomously. Call it with a distilled " +
-      "brief (end state, decisions + why, constraints, exact pointers, verification checks) — the new session has " +
-      "no other context. Use when the user says to ship/hand off the plan; do not also start the work here.",
+      "in the same repo, pins it to the orchestrator model (orchestrator_* when the user named one, else the " +
+      "advisor, else the active model), sets a workflows-mode goal with your handoff brief as the objective, and " +
+      "starts it working autonomously. Call it with a distilled brief (end state, decisions + why, constraints, " +
+      "exact pointers, verification checks) — the new session has no other context; put any user directives about " +
+      "which models the workflow sub-agents should use INSIDE the brief. Use when the user says to ship/hand off " +
+      "the plan; do not also start the work here.",
     schema: z.object(shipGoalInputShape),
   },
 )

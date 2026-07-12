@@ -8,7 +8,7 @@
 // Run:  bun run packages/server/src/threads.test.ts
 import type { AgentEvent } from "@chunky/protocol"
 import type { AgentSelection } from "./providers/registry.ts"
-import { type AgentForSelection, ThreadManager } from "./threads.ts"
+import { type AgentForSelection, capEffortAtMedium, ThreadManager } from "./threads.ts"
 
 const events: AgentEvent[] = []
 const emit = (ev: AgentEvent) => {
@@ -165,6 +165,21 @@ async function main() {
   assertSelection(selectionsUsed[2]!, ROOT_SELECTION, "inherited child")
   console.log("ok  explicit child selection used; nested child inherited it; omitted selection inherited the root model")
   console.log(`\nCHILD FINAL TEXT:\n${finalText}\n`)
+
+  // big-tier reasoning cap: keep a lower configured effort, clamp >= medium
+  // (or unset) down to medium.
+  for (const [given, want] of [
+    ["low", "low"],
+    ["medium", "medium"],
+    ["high", "medium"],
+    ["xhigh", "medium"],
+    [undefined, "medium"],
+  ] as const) {
+    if (capEffortAtMedium(given) !== want) {
+      throw new Error(`FAIL: capEffortAtMedium(${given}) should be ${want}`)
+    }
+  }
+  console.log("ok  big-tier effort caps at medium (low stays low)")
 
   console.log("PASS: deterministic thread test")
 }

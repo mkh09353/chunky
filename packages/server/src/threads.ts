@@ -25,6 +25,13 @@ import { registerThread, unregisterThread, type ThreadSpawner } from "./thread-c
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { runWorkflowScript, workflowConcurrency, type WorkflowHost, type WorkflowTier } from "./workflow/engine.ts"
 
+/** Reasoning-effort cap for `big`-tier workflow agents: keep a lower configured
+ *  effort, clamp anything at/above medium (or unset) to medium. */
+const EFFORT_RANK: Record<string, number> = { low: 0, medium: 1, high: 2, xhigh: 3 }
+export function capEffortAtMedium(effort: string | undefined): "low" | "medium" {
+  return effort && (EFFORT_RANK[effort] ?? 1) < 1 ? (effort as "low") : "medium"
+}
+
 /** The narrow part of a compiled agent that ThreadManager needs. Keeping this
  * structural lets the deterministic thread test inject a fake stream without
  * model credentials. */
@@ -184,19 +191,22 @@ export class ThreadManager implements ThreadSpawner {
   /**
    * Map a workflow tier to a model-selection override. Lean policy: `big` routes
    * to the configured advisor model (the session's premium model) when one is
-   * set, else just raises effort; `small` and `medium` anchor to the GLOBAL
+   * set, else the active selection — either way with reasoning effort CAPPED at
+   * medium ("big" buys a stronger model for judgment calls, not maximum thinking
+   * time multiplied across a fan-out). `small` and `medium` anchor to the GLOBAL
    * active selection (the user's /model choice) at low/default effort — anchored
    * rather than inherited so a workflows-mode goal session pinned to a premium
    * orchestrator fans out on the everyday model instead of multiplying the
    * premium one. In an ordinary session the caller IS the active selection, so
-   * anchoring changes nothing. A fully configurable per-provider tier map +
-   * picker is a later increment.
+   * anchoring changes nothing. Scripts that pass an explicit provider/model/
+   * effort on agent() bypass tiers entirely (see engine.ts selectionFor). A
+   * fully configurable per-provider tier map + picker is a later increment.
    */
   private tierOverride(tier: WorkflowTier): AgentSelectionOverride | undefined {
     if (tier === "big") {
       const advisor = resolveAdvisorSelection()
-      if (advisor) return { provider: advisor.provider, model: advisor.model, effort: advisor.effort }
-      return { effort: "high" }
+      if (advisor) return { provider: advisor.provider, model: advisor.model, effort: capEffortAtMedium(advisor.effort) }
+      return { effort: "medium" }
     }
     const base = activeSelection()
     if (tier === "small") return { provider: base.provider, model: base.model, effort: "low" }

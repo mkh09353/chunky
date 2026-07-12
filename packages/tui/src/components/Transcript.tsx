@@ -4,26 +4,22 @@ import type { Item, ThreadNode, TranscriptState } from "../transcript.js"
 import { MAIN } from "../transcript.js"
 import { rawModeSupported, useInput } from "../useInput.js"
 import { writeClipboard } from "../clipboard.js"
+import { getSyntaxStyle } from "../syntaxStyle.js"
 import type { DisplayItem } from "../collapseToolRuns.js"
 import { buildRenderPlan } from "../renderPlan.js"
-import { parseBlocks, parseInline, type MdSpan } from "../markdown.js"
 import {
   ACCENT,
   ACCENT_DEEP,
   BORDER,
-  CODE,
-  CODE_MUTED,
   DOT,
   ERROR,
-  HEADING,
   MARKER,
-  MARKER_BULLET,
   SPINNER_FRAMES,
   SUCCESS,
   WARNING,
 } from "../theme.js"
 
-const { BOLD, DIM, ITALIC } = TextAttributes
+const { BOLD, DIM } = TextAttributes
 
 // Max chars for a coalesced group's trailing input hint, mirroring kimi's
 // TOOL_SUMMARY_MAX_LENGTH — tighter than a lone tool's header so the "×N" count
@@ -355,7 +351,17 @@ export function ItemView({ item }: { item: DisplayItem }) {
             {/* flexGrow so long lines wrap inside the remaining columns instead of
                 overflowing and reflowing under the sparkle marker. */}
             <box flexDirection="column" flexGrow={1} flexShrink={1}>
-              <Markdown text={item.text} />
+              {/* OpenTUI's markdown renderable: tree-sitter syntax-highlighted
+                  fenced code (md/ts/js/zig bundled; other langs render plain),
+                  tables, links, headings — all styled via the shared SyntaxStyle.
+                  `conceal` hides the raw markers (**, #, `) for clean prose;
+                  `streaming` keeps the trailing block live until the turn ends. */}
+              <markdown
+                content={item.text}
+                syntaxStyle={getSyntaxStyle()}
+                streaming={item.streaming}
+                conceal
+              />
             </box>
           </box>
           {item.endReason === "max_tokens" ? <text fg={WARNING}>⚠ Response stopped at the output limit.</text> : null}
@@ -432,110 +438,6 @@ export function ItemView({ item }: { item: DisplayItem }) {
           <text fg={MARKER}>{item.message}</text>
         </box>
       )
-  }
-}
-
-/**
- * Terminal markdown: fenced code, inline code/bold/italic, headings, lists,
- * horizontal rules, and blank-line spacing. Keeps raw fences and backticks off
- * the screen so agent prose reads clean instead of like unrendered source.
- */
-function Markdown({ text }: { text: string }) {
-  const blocks = parseBlocks(text)
-  return (
-    <box flexDirection="column">
-      {blocks.map((b, i) => {
-        switch (b.kind) {
-          case "blank":
-            // A single empty row between sections.
-            return <text key={i}>{" "}</text>
-
-          case "hr":
-            return (
-              <text key={i} attributes={DIM}>
-                {"─".repeat(24)}
-              </text>
-            )
-
-          case "heading":
-            return (
-              <text key={i} fg={HEADING} attributes={BOLD}>
-                <Inline text={b.text} />
-              </text>
-            )
-
-          case "bullet":
-            return (
-              <text key={i}>
-                {" ".repeat(b.indent)}
-                <span fg={MARKER_BULLET}>• </span>
-                <Inline text={b.text} />
-              </text>
-            )
-
-          case "numbered":
-            return (
-              <text key={i}>
-                {" ".repeat(b.indent)}
-                <span fg={MARKER}>{b.n}. </span>
-                <Inline text={b.text} />
-              </text>
-            )
-
-          case "code":
-            return (
-              <box key={i} flexDirection="column">
-                {b.lang ? (
-                  <text fg={CODE_MUTED} attributes={DIM}>
-                    {"  "}
-                    {b.lang}
-                  </text>
-                ) : null}
-                {(b.lines.length === 0 ? [""] : b.lines).map((line, j) => (
-                  <text key={j} fg={CODE}>
-                    {"  "}
-                    {line.length === 0 ? " " : line}
-                  </text>
-                ))}
-              </box>
-            )
-
-          case "paragraph":
-            return (
-              <text key={i}>
-                <Inline text={b.text} />
-              </text>
-            )
-        }
-      })}
-    </box>
-  )
-}
-
-/** Render inline `code`, **bold**, and *italic* spans. */
-function Inline({ text }: { text: string }) {
-  const spans = parseInline(text)
-  return (
-    <>
-      {spans.map((s, i) => (
-        <SpanView key={i} span={s} />
-      ))}
-    </>
-  )
-}
-
-function SpanView({ span }: { span: MdSpan }) {
-  switch (span.kind) {
-    case "bold":
-      return <span attributes={BOLD}>{span.text}</span>
-    case "italic":
-      // Terminals rarely have true italic; dim+italic is a quiet stand-in.
-      return <span attributes={DIM | ITALIC}>{span.text}</span>
-    case "code":
-      // No surrounding backticks — colour alone marks it as code.
-      return <span fg={CODE}>{span.text}</span>
-    case "text":
-      return <span>{span.text}</span>
   }
 }
 

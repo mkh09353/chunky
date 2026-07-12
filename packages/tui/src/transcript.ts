@@ -35,6 +35,8 @@ export interface ThreadNode {
   parentId: string | null
   title: string
   status: "idle" | "running"
+  /** Effective model running this thread (from thread.spawn) — shown in its header. */
+  model?: string
   items: Item[]
 }
 
@@ -183,6 +185,7 @@ export function reduce(state: TranscriptState, ev: AgentEvent): TranscriptState 
         parentId,
         title: ev.title,
         status: "running",
+        model: ev.model ?? existing?.model,
         items: existing?.items ?? [],
       }
       return {

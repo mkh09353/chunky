@@ -2,6 +2,7 @@ import { useEffect, useState } from "react"
 import { TextAttributes } from "@opentui/core"
 import type { Item, ThreadNode, TranscriptState } from "../transcript.js"
 import { MAIN } from "../transcript.js"
+import { rawModeSupported, useInput } from "../useInput.js"
 import { collapseToolRuns, type DisplayItem } from "../collapseToolRuns.js"
 import { parseBlocks, parseInline, type MdSpan } from "../markdown.js"
 import {
@@ -62,13 +63,60 @@ export function Transcript({
   collapsed?: boolean
 }) {
   const main = state.threads[MAIN]
+
+  // Per-thread expand state so a fan-out of spawned threads can't flood the
+  // screen: every child thread renders as a ONE-LINE preview by default, and the
+  // user expands the ones they want to read. `Ctrl+↑/↓` moves the focus caret;
+  // `Ctrl+O` toggles the focused thread (the newest one when nothing is focused).
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
+  const [focusedId, setFocusedId] = useState<string | null>(null)
+
+  const threadIds = state.order.filter((id) => id !== MAIN)
+
+  useInput(
+    (input, key) => {
+      if (threadIds.length === 0) return
+      // Default focus = the NEWEST thread, so a bare Ctrl+O expands the latest.
+      const curIdx = focusedId && threadIds.includes(focusedId) ? threadIds.indexOf(focusedId) : threadIds.length - 1
+      if (key.ctrl && key.downArrow) {
+        setFocusedId(threadIds[(curIdx + 1) % threadIds.length] ?? null)
+        return
+      }
+      if (key.ctrl && key.upArrow) {
+        setFocusedId(threadIds[(curIdx - 1 + threadIds.length) % threadIds.length] ?? null)
+        return
+      }
+      if (key.ctrl && (input === "o" || input === "O")) {
+        const target = focusedId && threadIds.includes(focusedId) ? focusedId : threadIds[threadIds.length - 1]
+        if (!target) return
+        setFocusedId(target)
+        setExpanded((prev) => {
+          const next = new Set(prev)
+          if (next.has(target)) next.delete(target)
+          else next.add(target)
+          return next
+        })
+      }
+    },
+    { isActive: rawModeSupported },
+  )
+
   if (!main) return null
+  // The caret target (highlighted, toggled by a bare Ctrl+O) defaults to newest.
+  const effectiveFocus = focusedId && threadIds.includes(focusedId) ? focusedId : (threadIds[threadIds.length - 1] ?? null)
   return (
     <box flexDirection="column">
       {collapseToolRuns(main.items).map((it, i) => (
         <ItemView key={i} item={it} />
       ))}
-      <ThreadChildren parentId={MAIN} state={state} depth={0} collapsed={collapsed} />
+      <ThreadChildren
+        parentId={MAIN}
+        state={state}
+        depth={0}
+        collapsed={collapsed}
+        expanded={expanded}
+        focusedId={effectiveFocus}
+      />
     </box>
   )
 }
@@ -79,11 +127,15 @@ function ThreadChildren({
   state,
   depth,
   collapsed,
+  expanded,
+  focusedId,
 }: {
   parentId: string
   state: TranscriptState
   depth: number
   collapsed: boolean
+  expanded: Set<string>
+  focusedId: string | null
 }) {
   const children = state.order
     .map((id) => state.threads[id]!)
@@ -92,49 +144,119 @@ function ThreadChildren({
   return (
     <>
       {children.map((thread) => (
-        <ThreadBlock key={thread.id} thread={thread} state={state} depth={depth} collapsed={collapsed} />
+        <ThreadBlock
+          key={thread.id}
+          thread={thread}
+          state={state}
+          depth={depth}
+          collapsed={collapsed}
+          expanded={expanded}
+          focusedId={focusedId}
+        />
       ))}
     </>
   )
 }
 
-/** One child thread: header (title + status) and, unless collapsed, its body. */
+/** The most representative one line of a collapsed thread: the first line of its
+ *  latest assistant reply, else the newest tool/log/error line. */
+function threadPreview(items: Item[]): { text: string; more: number } {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i]!
+    if (it.kind === "assistant" && it.text.trim()) {
+      const lines = it.text.split("\n").map((l) => l.trim()).filter(Boolean)
+      return { text: lines[0] ?? "", more: Math.max(0, lines.length - 1) }
+    }
+  }
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i]!
+    if (it.kind === "tool") return { text: `${it.name}…`, more: 0 }
+    if (it.kind === "workflow-log") return { text: it.message, more: 0 }
+    if (it.kind === "error") return { text: `error: ${it.text}`, more: 0 }
+  }
+  return { text: "", more: 0 }
+}
+
+/**
+ * One child thread. `Ctrl+T` (global) folds every thread to a header line; by
+ * default each thread shows a ONE-LINE preview and expands per-thread (`Ctrl+O`
+ * on the focused thread). The header carries the model running the thread and a
+ * ▸/▾ caret; the focused thread is accented with an inline toggle hint.
+ */
 function ThreadBlock({
   thread,
   state,
   depth,
   collapsed,
+  expanded,
+  focusedId,
 }: {
   thread: ThreadNode
   state: TranscriptState
   depth: number
   collapsed: boolean
+  expanded: Set<string>
+  focusedId: string | null
 }) {
   const running = thread.status === "running"
   const rail = depth % 2 === 0 ? ACCENT : ACCENT_DEEP
   const childCount = state.order.filter((id) => state.threads[id]!.parentId === thread.id).length
+  const isFocused = focusedId === thread.id
+  const isExpanded = expanded.has(thread.id)
+  // collapsed (global Ctrl+T) → header + count only; else per-thread: full body
+  // when expanded, otherwise a one-line preview.
+  const showBody = !collapsed && isExpanded
+  const showPreview = !collapsed && !isExpanded
+  const headFg = isFocused ? ACCENT : rail
+  const preview = showPreview ? threadPreview(thread.items) : null
+  const countLabel = `${thread.items.length} item${thread.items.length === 1 ? "" : "s"}${
+    childCount > 0 ? `, ${childCount} sub` : ""
+  }`
+
   return (
     <box flexDirection="column" marginTop={1} marginLeft={depth === 0 ? 0 : 2}>
       {/* header */}
       <box flexDirection="row">
         <text fg={rail}>{"├─ "}</text>
         {running ? <Spinner color={rail} /> : <text fg={ACCENT}>{DOT}</text>}
-        <text fg={rail} attributes={BOLD}>
-          {" "}
+        <text fg={headFg}>{` ${showBody ? "▾" : "▸"} `}</text>
+        <text fg={headFg} attributes={BOLD}>
           thread: {thread.title}
         </text>
+        {thread.model ? <text attributes={DIM}>{`  · ${thread.model}`}</text> : null}
         <text attributes={DIM}>{running ? "  (running…)" : "  (done)"}</text>
         {collapsed && (thread.items.length > 0 || childCount > 0) && (
-          <text attributes={DIM}>
-            {"  "}
-            {thread.items.length} item{thread.items.length === 1 ? "" : "s"}
-            {childCount > 0 ? `, ${childCount} sub` : ""}
-          </text>
+          <text attributes={DIM}>{`  ${countLabel}`}</text>
+        )}
+        {isFocused && !collapsed && (
+          <text fg={ACCENT} attributes={DIM}>{isExpanded ? "  ⌃O collapse" : "  ⌃O expand"}</text>
         )}
       </box>
 
-      {/* body: left rail + items, then nested children */}
-      {!collapsed && (
+      {/* one-line preview (collapsed-by-default state) */}
+      {showPreview && (
+        <box flexDirection="row">
+          <box flexDirection="column" marginRight={1}>
+            <text fg={rail}>{"│"}</text>
+          </box>
+          <box flexDirection="column" flexGrow={1}>
+            {preview && preview.text ? (
+              <text attributes={DIM}>
+                {truncate(preview.text, 80)}
+                {preview.more > 0 ? `  (+${preview.more} more lines · ⌃O)` : ""}
+              </text>
+            ) : (
+              <text attributes={DIM}>
+                {countLabel}
+                {running ? " …" : ""}
+              </text>
+            )}
+          </box>
+        </box>
+      )}
+
+      {/* full body when expanded: left rail + items, then nested children */}
+      {showBody && (
         <box flexDirection="row">
           <box flexDirection="column" marginRight={1}>
             <text fg={rail}>{"│"}</text>
@@ -143,7 +265,14 @@ function ThreadBlock({
             {collapseToolRuns(thread.items).map((it, i) => (
               <ItemView key={i} item={it} />
             ))}
-            <ThreadChildren parentId={thread.id} state={state} depth={depth + 1} collapsed={collapsed} />
+            <ThreadChildren
+              parentId={thread.id}
+              state={state}
+              depth={depth + 1}
+              collapsed={collapsed}
+              expanded={expanded}
+              focusedId={focusedId}
+            />
           </box>
         </box>
       )}

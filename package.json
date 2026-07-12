@@ -15,7 +15,7 @@
     "chunky": "bun run chunky.ts",
     "pair": "bun run packages/server/src/relay/pair.ts",
     "install:cli": "bash scripts/install.sh",
-    "typecheck": "tsc -b && bun run --cwd packages/tui typecheck"
+    "typecheck": "tsc -b && bun run --cwd packages/tui typecheck && bun run --cwd packages/app typecheck"
   },
   "devDependencies": {
     "@types/bun": "^1.3.0",

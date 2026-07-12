@@ -1,8 +1,8 @@
 {
   "extends": "./tsconfig.base.json",
   "include": ["packages/**/*.ts", "packages/**/*.tsx"],
-  // The TUI compiles with its own jsxImportSource (@opentui/react); the root
-  // project would type its JSX against react-dom. `bun run typecheck` chains
-  // the package-local check so coverage is unchanged.
-  "exclude": ["packages/tui"]
+  // The TUI and desktop app have package-specific JSX/runtime boundaries.
+  // `bun run typecheck` chains both package-local checks so the renderer does
+  // not accidentally pull Electrobun's Bun-side dependency graph into tsc.
+  "exclude": ["packages/tui", "packages/app"]
 }

@@ -1,5 +1,5 @@
-import { useKeyboard } from "@opentui/react"
-import type { KeyEvent } from "@opentui/core"
+import { useKeyboard, usePaste } from "@opentui/react"
+import type { KeyEvent, PasteEvent } from "@opentui/core"
 
 /** Ink-shaped key flags, derived from OpenTUI's ParsedKey names. */
 export interface InputKey {
@@ -79,6 +79,33 @@ function printableInput(ev: KeyEvent, key: InputKey): string {
   const seq = ev.sequence ?? ""
   if (seq && !/[\x00-\x1f\x7f]/.test(seq)) return seq
   return name.length === 1 ? name : ""
+}
+
+/**
+ * Terminal paste (bracketed paste). OpenTUI delivers pastes on a SEPARATE
+ * channel from keystrokes — `useKeyboard` (and thus `useInput`) never sees them,
+ * so a paste is silently dropped unless a component also subscribes here. Decodes
+ * the event's bytes to text and forwards it. Gated by `isActive` like `useInput`
+ * (usePaste has no such option, so we check inside the always-on subscription).
+ */
+export function usePasteText(
+  handler: (text: string) => void,
+  options: { isActive?: boolean } = {},
+): void {
+  const { isActive = true } = options
+  usePaste((ev: PasteEvent) => {
+    if (!isActive) return
+    const text = decodePaste(ev)
+    if (text) handler(text)
+  })
+}
+
+/** The pasted text from a PasteEvent. `bytes` is a Uint8Array in this OpenTUI
+ *  version; older docs expose a `.text` string, so prefer that if present and
+ *  fall back to decoding the bytes as UTF-8. */
+export function decodePaste(ev: { text?: unknown; bytes: Uint8Array }): string {
+  if (typeof ev.text === "string") return ev.text
+  return new TextDecoder().decode(ev.bytes)
 }
 
 /** Whether stdin is a real TTY (raw keyboard input available). Replaces Ink's

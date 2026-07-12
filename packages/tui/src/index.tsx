@@ -29,6 +29,9 @@ else if (wantLive) mode = "live"
 else mode = (await serverIsUp()) ? "live" : "mock"
 
 const renderer = await createCliRenderer({ exitOnCtrlC: true })
+// CHUNKY_NO_DEMO skips the mock auto-run turn so the input starts idle (handy for
+// manually exercising the prompt, e.g. paste, without racing the demo).
+const autoDemo = !process.env.CHUNKY_NO_DEMO
 createRoot(renderer).render(
-  <App mode={mode} baseUrl={baseUrl} cwd={process.cwd()} demo={wantThreads ? "threads" : "basic"} />,
+  <App mode={mode} baseUrl={baseUrl} cwd={process.cwd()} autoDemo={autoDemo} demo={wantThreads ? "threads" : "basic"} />,
 )

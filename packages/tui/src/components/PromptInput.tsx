@@ -3,7 +3,7 @@ import { TextAttributes } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/react"
 import { ROUTES, type FileSearchItem, type FileSearchResponse } from "@chunky/protocol"
 import { ACCENT, BORDER } from "../theme.js"
-import { rawModeSupported, useInput } from "../useInput.js"
+import { rawModeSupported, useInput, usePasteText } from "../useInput.js"
 import { COMMANDS, SlashMenu, type Command } from "./SlashMenu.js"
 import { MentionMenu, activeMention } from "./MentionMenu.js"
 import { expandPastes, normalizePaste, pasteLabel, shouldCollapsePaste } from "../pastes.js"
@@ -135,6 +135,27 @@ export function PromptInput({
     setFileHits([])
   }
 
+  // Splice text in at the cursor. A big/multi-line chunk (only ever a paste)
+  // collapses to a chip so the single-line band can't be flooded or garbled by
+  // embedded newlines; the full body is stashed and restored at submit. Used by
+  // both typed keystrokes and the paste channel below.
+  const insertChunk = (raw: string) => {
+    const chunk = normalizePaste(raw)
+    let insert = chunk
+    if (shouldCollapsePaste(chunk)) {
+      insert = pasteLabel(++pasteSeqRef.current, chunk)
+      pastesRef.current.set(insert, chunk)
+    }
+    setBuf((b) => ({
+      value: b.value.slice(0, b.cursor) + insert + b.value.slice(b.cursor),
+      cursor: b.cursor + insert.length,
+    }))
+    setSelected(0)
+  }
+
+  // Bracketed paste arrives on OpenTUI's separate paste channel (not useInput).
+  usePasteText(insertChunk, { isActive: rawSupported && !disabled })
+
   useInput(
     (input, key) => {
       if (disabled) return
@@ -196,22 +217,7 @@ export function PromptInput({
         return
       }
       if (key.ctrl || key.meta || key.escape) return
-      if (input) {
-        // Ink hands a whole paste to the callback as one multi-char `input`, with
-        // terminal newlines as CR. Normalize CR→LF first so it never overwrites
-        // lines, then either collapse a big paste to a chip or insert inline.
-        const chunk = normalizePaste(input)
-        let insert = chunk
-        if (shouldCollapsePaste(chunk)) {
-          insert = pasteLabel(++pasteSeqRef.current, chunk)
-          pastesRef.current.set(insert, chunk)
-        }
-        setBuf((b) => ({
-          value: b.value.slice(0, b.cursor) + insert + b.value.slice(b.cursor),
-          cursor: b.cursor + insert.length,
-        }))
-        setSelected(0)
-      }
+      if (input) insertChunk(input)
     },
     { isActive: rawSupported && !disabled },
   )

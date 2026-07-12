@@ -73,6 +73,7 @@ export async function translateStream(
 
   let assistantOpen = false
   let finalText = ""
+  let sawAssistantOrTool = false
   const seenToolStart = new Set<string>()
   const seenToolEnd = new Set<string>()
   // Track the LAST LLM request's prompt size to feed the cache watch. Within a
@@ -106,6 +107,7 @@ export async function translateStream(
         if (getType(chunk) === "ai") {
           const t = contentToText(chunk?.content)
           if (t) {
+            sawAssistantOrTool = true
             openAssistant()
             finalText += t
             emitT({ type: "message.delta", text: t })
@@ -144,6 +146,7 @@ export async function translateStream(
                   const id = tc?.id ?? `${tc?.name}:${JSON.stringify(tc?.args)}`
                   if (seenToolStart.has(id)) continue
                   seenToolStart.add(id)
+                  sawAssistantOrTool = true
                   emitT({
                     type: "tool.start",
                     id,
@@ -153,6 +156,7 @@ export async function translateStream(
                 }
               }
             } else if (kind === "tool") {
+              sawAssistantOrTool = true
               const id = msg?.tool_call_id ?? msg?.id ?? "unknown"
               if (seenToolEnd.has(id)) continue
               seenToolEnd.add(id)
@@ -183,6 +187,10 @@ export async function translateStream(
   // tell whether the cache went cold (idle past the TTL or a model switch).
   if (cache && lastRequestUsage) {
     noteRequest(cache.conversationId, lastRequestUsage, lastRequestUsage.model ?? cache.model, Date.now())
+  }
+
+  if (!sawAssistantOrTool) {
+    throw new Error("provider returned an empty response — retry the turn or switch models")
   }
 
   return finalText

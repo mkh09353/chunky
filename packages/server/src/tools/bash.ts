@@ -22,6 +22,46 @@ export const bashInputShape = {
   timeout: z.number().optional().describe("Timeout in seconds (optional)."),
 }
 
+/** Return every descendant PID before killing anything, while parent/child
+ * links are still intact. Long-lived dev commands commonly add two or three
+ * wrapper layers (pnpm -> shell -> vite/tsx). */
+function descendantPids(rootPid: number): number[] {
+  const found: number[] = []
+  const visit = (parentPid: number) => {
+    const result = Bun.spawnSync(["pgrep", "-P", String(parentPid)], { stdout: "pipe", stderr: "ignore" })
+    const children = result.stdout
+      .toString()
+      .split(/\s+/)
+      .map(Number)
+      .filter((pid) => Number.isInteger(pid) && pid > 0)
+    for (const pid of children) {
+      visit(pid)
+      found.push(pid)
+    }
+  }
+  visit(rootPid)
+  return found
+}
+
+function signalPids(pids: number[], signal: NodeJS.Signals): void {
+  for (const pid of pids) {
+    try {
+      process.kill(pid, signal)
+    } catch {
+      // It exited between discovery and signaling.
+    }
+  }
+}
+
+/** Killing only the wrapper shell leaves descendants holding stdout/stderr
+ * open, so Response(stream).text() never settles. Snapshot and terminate the
+ * complete tree, deepest-first, then force any TERM-resistant processes down. */
+function terminateProcessTree(rootPid: number): void {
+  const pids = [...descendantPids(rootPid), rootPid]
+  signalPids(pids, "SIGTERM")
+  setTimeout(() => signalPids(pids, "SIGKILL"), 250)
+}
+
 export const bash = tool(
   async ({ command, timeout }: { command: string; timeout?: number }, config?: unknown) => {
     const proc = Bun.spawn(["bash", "-lc", command], {
@@ -35,7 +75,7 @@ export const bash = tool(
     if (timeout && timeout > 0) {
       timer = setTimeout(() => {
         timedOut = true
-        proc.kill()
+        terminateProcessTree(proc.pid)
       }, timeout * 1000)
     }
 

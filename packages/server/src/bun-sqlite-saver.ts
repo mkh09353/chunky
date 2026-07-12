@@ -24,6 +24,44 @@ import type { RunnableConfig } from "@langchain/core/runnables"
 
 const checkpointMetadataKeys = ["source", "step", "parents"] as const
 
+/** The latest checkpoint is sufficient to resume. A short tail preserves
+ * interrupted-step recovery and useful debugging without retaining a complete,
+ * repeatedly-copied conversation snapshot for every graph transition. */
+export const CHECKPOINT_HISTORY_LIMIT = 5
+
+export function pruneCheckpointHistory(
+  db: Database,
+  threadId: string,
+  checkpointNs: string,
+  limit = CHECKPOINT_HISTORY_LIMIT,
+): void {
+  const boundedLimit = Math.max(1, Math.floor(limit))
+  const tx = db.transaction(() => {
+    db.prepare(
+      `DELETE FROM checkpoints
+       WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id NOT IN (
+         SELECT checkpoint_id FROM checkpoints
+         WHERE thread_id = ? AND checkpoint_ns = ?
+         ORDER BY checkpoint_id DESC LIMIT ?
+       )`,
+    ).run(threadId, checkpointNs, threadId, checkpointNs, boundedLimit)
+    db.prepare(
+      `DELETE FROM writes
+       WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id NOT IN (
+         SELECT checkpoint_id FROM checkpoints WHERE thread_id = ? AND checkpoint_ns = ?
+       )`,
+    ).run(threadId, checkpointNs, threadId, checkpointNs)
+  })
+  tx()
+}
+
+function pruneAllCheckpointHistory(db: Database): void {
+  const threads = db
+    .prepare("SELECT DISTINCT thread_id, checkpoint_ns FROM checkpoints")
+    .all() as Array<{ thread_id: string; checkpoint_ns: string }>
+  for (const row of threads) pruneCheckpointHistory(db, row.thread_id, row.checkpoint_ns)
+}
+
 function nn<T>(v: T | undefined): T | null {
   return v === undefined ? null : v
 }
@@ -69,6 +107,7 @@ export class BunSqliteSaver extends BaseCheckpointSaver {
       thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL,
       task_id TEXT NOT NULL, idx INTEGER NOT NULL, channel TEXT NOT NULL, type TEXT, value BLOB,
       PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx));`)
+    pruneAllCheckpointHistory(this.db)
     this.withoutCheckpoint = prepareSql(this.db, false)
     this.withCheckpoint = prepareSql(this.db, true)
     this.isSetup = true
@@ -195,6 +234,8 @@ export class BunSqliteSaver extends BaseCheckpointSaver {
         `INSERT OR REPLACE INTO checkpoints (thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, type, checkpoint, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(thread_id, checkpoint_ns, checkpoint.id, nn(parent_checkpoint_id), type1, sCheckpoint, sMetadata)
+
+    pruneCheckpointHistory(this.db, thread_id, checkpoint_ns)
 
     return { configurable: { thread_id, checkpoint_ns, checkpoint_id: checkpoint.id } }
   }

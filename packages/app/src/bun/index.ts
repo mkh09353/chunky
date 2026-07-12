@@ -30,8 +30,14 @@ async function getMainViewUrl(): Promise<string> {
   return "views://mainview/index.html"
 }
 
+// The chunky harness (server) URL. Dev builds default to the DEV port 4620 —
+// the same port `bun run server` (scripts/dev-server.ts) and the dev TUI use, so
+// the whole dev stack agrees without relying on env reaching the app bundle
+// (electrobun doesn't forward CHUNKY_PORT into the launched .app). An explicit
+// CHUNKY_URL / CHUNKY_PORT still wins — e.g. an installed launcher pinning a
+// free port (chunky.ts), which is never 4620/4599.
 const baseUrl =
-  process.env.CHUNKY_URL || `http://localhost:${process.env.CHUNKY_PORT || 4599}`
+  process.env.CHUNKY_URL || `http://localhost:${process.env.CHUNKY_PORT || 4620}`
 const workspace = process.env.CHUNKY_WORKSPACE || process.cwd()
 const workspaceName = workspace.split(/[\\/]/).filter(Boolean).pop() || "workspace"
 

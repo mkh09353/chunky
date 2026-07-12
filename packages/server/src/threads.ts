@@ -64,6 +64,10 @@ export class ThreadManager implements ThreadSpawner {
   }
   private readonly agentFor: AgentForSelection
   private readonly advisorAgentFor: AgentForSelection
+  /** Injected agent factories own their own readiness contract. Only the real
+   *  provider-backed factories should consult Chunky's persisted OAuth state. */
+  private readonly preflightAgentProvider: boolean
+  private readonly preflightAdvisorProvider: boolean
   private readonly selections = new Map<string, AgentSelection>()
   /** The session's workspace: every child thread and advisor consult runs here —
    *  a child can never escape into another repo's folder. */
@@ -87,6 +91,8 @@ export class ThreadManager implements ThreadSpawner {
     this.rootId = rootId
     this.agentFor = agentFor
     this.advisorAgentFor = advisorAgentFor
+    this.preflightAgentProvider = agentFor === getAgent
+    this.preflightAdvisorProvider = advisorAgentFor === getAdvisorAgent
     this.workspace = workspace
     this.abort = abort
     this.selections.set(rootId, rootSelection)
@@ -125,11 +131,13 @@ export class ThreadManager implements ThreadSpawner {
     // Fail fast if the child's provider sign-in is expired: a stalled auth would
     // otherwise hang the child stream with no clear cause. Mirrors run.ts's
     // root-turn preflight, which never ran for spawned children.
-    try {
-      await getProvider(selection.provider)?.ensureAuth?.()
-    } catch (err) {
-      const detail = (err as Error)?.message ?? String(err)
-      return `error: provider "${selection.provider}" sign-in expired — run /login to re-authenticate. (${detail})`
+    if (this.preflightAgentProvider) {
+      try {
+        await getProvider(selection.provider)?.ensureAuth?.()
+      } catch (err) {
+        const detail = (err as Error)?.message ?? String(err)
+        return `error: provider "${selection.provider}" sign-in expired — run /login to re-authenticate. (${detail})`
+      }
     }
 
     // The child is itself a valid spawn context, so grandchildren route correctly.
@@ -261,11 +269,13 @@ export class ThreadManager implements ThreadSpawner {
     // Fail fast on an expired advisor sign-in — otherwise the consult stream can
     // hang silently (this was the "stuck on the advisor" wedge). run.ts only
     // preflights the ROOT provider's auth, never the advisor's separate provider.
-    try {
-      await getProvider(advisorSel.provider)?.ensureAuth?.()
-    } catch (err) {
-      const detail = (err as Error)?.message ?? String(err)
-      return `error: advisor provider "${advisorSel.provider}" sign-in expired — run /login to re-authenticate. (${detail})`
+    if (this.preflightAdvisorProvider) {
+      try {
+        await getProvider(advisorSel.provider)?.ensureAuth?.()
+      } catch (err) {
+        const detail = (err as Error)?.message ?? String(err)
+        return `error: advisor provider "${advisorSel.provider}" sign-in expired — run /login to re-authenticate. (${detail})`
+      }
     }
 
     const advisorThreadId = `${this.rootId}:advisor`

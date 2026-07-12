@@ -52,9 +52,22 @@ export interface Settings {
   cacheGuardTokens?: number | null
   /** Named executor+advisor pairings, applied as one unit via /mode. */
   modes?: Record<string, ModeSpec>
+  /** Global provider catalog overlays. Added ids supplement provider discovery;
+   *  hidden ids disappear from pickers without invalidating existing sessions. */
+  modelCatalog?: Record<string, ModelCatalogOverlay>
   /** Bearer token required from non-loopback HTTP clients (see index.ts).
    *  Generated on first use; settings.json is gitignored, so it stays local. */
   serverToken?: string
+}
+
+export interface CatalogModelRecord {
+  verified: boolean
+  addedAt: number
+}
+
+export interface ModelCatalogOverlay {
+  added?: Record<string, CatalogModelRecord>
+  hidden?: string[]
 }
 
 function settingsPath(): string {
@@ -115,6 +128,47 @@ export function setSelectionFor(id: string, sel: ModelSelection): void {
     ...(sel.speed !== undefined ? { speed: sel.speed } : {}),
   }
   save({ ...s, selections })
+}
+
+export function modelCatalogFor(provider: string): ModelCatalogOverlay {
+  const overlay = loadSettings().modelCatalog?.[provider]
+  return {
+    added: { ...(overlay?.added ?? {}) },
+    hidden: [...(overlay?.hidden ?? [])],
+  }
+}
+
+function saveModelCatalog(provider: string, overlay: ModelCatalogOverlay): void {
+  const s = loadSettings()
+  save({ ...s, modelCatalog: { ...(s.modelCatalog ?? {}), [provider]: overlay } })
+}
+
+/** Add a custom id, or restore it when it was hidden. */
+export function addCatalogModel(provider: string, model: string, verified = false): ModelCatalogOverlay {
+  const overlay = modelCatalogFor(provider)
+  const added = { ...(overlay.added ?? {}) }
+  added[model] = added[model] ?? { verified, addedAt: Date.now() }
+  if (verified && !added[model]!.verified) added[model] = { ...added[model]!, verified: true }
+  const next = { added, hidden: (overlay.hidden ?? []).filter((id) => id !== model) }
+  saveModelCatalog(provider, next)
+  return next
+}
+
+/** Hide an id from future picker listings. Existing selections remain valid. */
+export function hideCatalogModel(provider: string, model: string): ModelCatalogOverlay {
+  const overlay = modelCatalogFor(provider)
+  const hidden = [...new Set([...(overlay.hidden ?? []), model])]
+  const next = { ...overlay, hidden }
+  saveModelCatalog(provider, next)
+  return next
+}
+
+/** Make a hidden built-in, discovered, or custom id visible again. */
+export function restoreCatalogModel(provider: string, model: string): ModelCatalogOverlay {
+  const overlay = modelCatalogFor(provider)
+  const next = { ...overlay, hidden: (overlay.hidden ?? []).filter((id) => id !== model) }
+  saveModelCatalog(provider, next)
+  return next
 }
 
 /** A send that would re-send at least this many tokens on a cold cache is

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { TextAttributes } from "@opentui/core"
 import { useRenderer } from "@opentui/react"
 import { rawModeSupported, useInput } from "./useInput.js"
+import { providerModelLabel } from "./providerMark.js"
 import {
   ROUTES,
   readSSE,
@@ -342,6 +343,10 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         void doMode(command.slice("/mode".length).trim())
         return
       }
+      if (command === "/model" || command.startsWith("/model ")) {
+        void doModelCatalog(command.slice("/model".length).trim())
+        return
+      }
       const images = attachmentsRef.current
       setAttachments([]) // consume the pasted images with this message
       const shownText = display ?? text
@@ -609,6 +614,49 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     }
     setModelPickerOpen(true)
   }, [mode, printLine])
+
+  const doModelCatalog = useCallback(
+    async (rest: string) => {
+      if (!rest) {
+        doModel()
+        return
+      }
+      if (mode !== "live") {
+        printLine("Model catalog changes need the live server.")
+        return
+      }
+      const [action, provider, model] = rest.split(/\s+/).filter(Boolean)
+      if (!["add", "hide", "restore", "list"].includes(action ?? "") || !provider || (action !== "list" && !model)) {
+        printLine("Usage: /model add|hide|restore <provider> <model-id> · /model list <provider>")
+        return
+      }
+      try {
+        const res = await fetch(`${baseUrl}/api/providers/${encodeURIComponent(provider)}/models/catalog`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ action, ...(model ? { model } : {}) }),
+        })
+        const body = (await res.json()) as any
+        if (!res.ok || body.error) throw new Error(body.error || `HTTP ${res.status}`)
+        if (action === "list") {
+          const custom = Object.keys(body.added ?? {})
+          const hidden = body.hidden ?? []
+          printLine(
+            `${provider} catalog: ${body.visible?.length ?? 0} visible` +
+              `${custom.length ? ` · custom: ${custom.join(", ")}` : ""}` +
+              `${hidden.length ? ` · hidden: ${hidden.join(", ")}` : ""}`,
+          )
+        } else if (action === "add") {
+          printLine(`Model added: ${provider}/${model}${body.verified ? "" : " · unverified"}. Open /model to select it.`)
+        } else {
+          printLine(`Model ${action === "hide" ? "hidden" : "restored"}: ${provider}/${model}.`)
+        }
+      } catch (err) {
+        printLine(`Model catalog update failed: ${(err as Error).message}`)
+      }
+    },
+    [mode, baseUrl, printLine, doModel],
+  )
 
   // Called when the picker finishes selecting (or reports an error): close it,
   // update the status line, and echo a summary line into the transcript.
@@ -944,7 +992,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           break
         case "/help":
           printLine(
-            "Commands: /clear, /resume, /help, /login, /model, /advisor, /mode, /goal, /shipit, /cacheguard, /quit. Type a message and press Enter to talk to the agent. `/resume` reopens a previous thread in this repo (its full history replays). `/goal <objective>` works autonomously until the goal is done (`--workflows` makes it a workflow-orchestrator). `/shipit [notes]` hands this conversation's plan off to a fresh orchestrator session. `/mode <name>` switches a saved model+advisor pairing. `/cacheguard <tokens|off>` sets when a cold-cache re-send needs confirmation.",
+            "Commands: /clear, /resume, /help, /login, /model, /advisor, /mode, /goal, /shipit, /cacheguard, /quit. `/model add|hide|restore <provider> <model-id>` manages the global catalog; `/model list <provider>` shows overrides. Type a message and press Enter to talk to the agent.",
           )
           break
         case "/login":
@@ -1003,7 +1051,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   const effortParen = (e?: string | null) => (e ? ` (${e})` : "")
   const advisorPart =
     advisor && advisor.enabled && advisor.model
-      ? ` · advisor: ${prettyModel(advisor.model)}${effortParen(advisor.effort)}${advisor.active ? "" : " (inactive)"}`
+      ? ` · advisor: ${providerModelLabel(advisor.provider, prettyModel(advisor.model))}${effortParen(advisor.effort)}${advisor.active ? "" : " (inactive)"}`
       : " · advisor: off"
   // Goal segment: shown only when a goal exists; active goals carry the turn count.
   const goalPart = goal
@@ -1011,7 +1059,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     : ""
   const bottomStatus =
     mode === "live"
-      ? `${prettyModel(currentSel?.model)}${effortParen(currentSel?.effort)}${advisorPart}${goalPart}`
+      ? `${providerModelLabel(currentSel?.provider, prettyModel(currentSel?.model))}${effortParen(currentSel?.effort)}${advisorPart}${goalPart}`
       : "mock"
 
   return (

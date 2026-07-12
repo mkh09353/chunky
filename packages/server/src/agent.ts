@@ -33,6 +33,7 @@ import { sessionTools } from "./tools/sessions.ts"
 import { shipGoal } from "./tools/ship.ts"
 import { spawnThread } from "./tools/spawn-thread.ts"
 import { workflow } from "./tools/workflow.ts"
+import { manageModels } from "./tools/manage-models.ts"
 import { write } from "./tools/write.ts"
 
 /**
@@ -142,6 +143,7 @@ export function executorToolsFor(selection: AgentSelection) {
     shipGoal,
     ...sessionTools,
     workflow,
+    manageModels,
     ...editToolsForModel(selection.model, selection.provider),
     ...(advisorSel ? [advisor] : []),
   ]

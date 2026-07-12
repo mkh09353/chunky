@@ -3,6 +3,7 @@ import { CheckIcon, ChevronUpDownIcon } from "@heroicons/react/24/outline"
 import {
   listAllModels,
   prettyModel,
+  providerMark,
   setAdvisor,
   type AdvisorState,
   type ModelRow,
@@ -238,6 +239,11 @@ export function AdvisorPickerMenu({
         onClick={() => (open ? close() : openMenu())}
       >
         <span className="chunky-model-trigger-knobs">Advisor</span>
+        {advisor?.provider ? (
+          <span className="chunky-provider-mark" title={`Provider: ${advisor.provider}`} aria-label={`Provider ${advisor.provider}`}>
+            {providerMark(advisor.provider)}
+          </span>
+        ) : null}
         <span className="chunky-model-trigger-name">{triggerLabel}</span>
         {advisor?.enabled && advisor.effort ? (
           <span className="chunky-model-trigger-knobs">{KNOB_LABEL[advisor.effort] ?? advisor.effort}</span>
@@ -315,6 +321,11 @@ export function AdvisorPickerMenu({
                           <span className="chunky-model-row-provider">{row.provider}/</span>
                           {row.model.id}
                         </span>
+                        {row.model.custom ? (
+                          <span className="chunky-model-row-hint">
+                            {row.model.verified ? "custom" : "custom · unverified"}
+                          </span>
+                        ) : null}
                         {!row.ready ? (
                           <span className="chunky-model-row-hint">login needed</span>
                         ) : null}

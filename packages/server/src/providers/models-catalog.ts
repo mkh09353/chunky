@@ -20,6 +20,10 @@ export interface ModelInfo {
   name: string
   reasoning: boolean
   contextLimit?: number
+  /** User-added rather than currently advertised/built in. */
+  custom?: boolean
+  /** False when a custom id could not be verified before saving. */
+  verified?: boolean
 }
 
 const MODELS_DEV_URL = "https://models.dev/api.json"

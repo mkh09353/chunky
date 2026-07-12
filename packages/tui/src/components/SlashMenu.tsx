@@ -12,7 +12,7 @@ export const COMMANDS: Command[] = [
   { name: "/resume", description: "Resume a previous thread in this repo" },
   { name: "/help", description: "Show help" },
   { name: "/login", description: "Log in to an OAuth provider (Grok / Codex)" },
-  { name: "/model", description: "Pick a model (provider, model, effort/speed)" },
+  { name: "/model", description: "Pick or manage models (/model add|hide|restore|list)" },
   { name: "/advisor", description: "Set the advisor model (a stronger model, on tap)" },
   { name: "/mode", description: "Named model+advisor pairings (/mode <name>, /mode save <name>)" },
   { name: "/goal", description: "Work autonomously toward a goal (/goal [--workflows] <objective>)" },

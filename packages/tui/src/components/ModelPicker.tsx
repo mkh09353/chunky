@@ -12,6 +12,8 @@ export interface ModelInfo {
   name: string
   reasoning: boolean
   contextLimit?: number
+  custom?: boolean
+  verified?: boolean
 }
 type Effort = "low" | "medium" | "high" | "xhigh" | "max"
 type Speed = "standard" | "fast"
@@ -305,6 +307,7 @@ export function ModelPicker({ baseUrl, onDone, onCancel }: Props) {
               </text>
               <text attributes={DIM}>
                 {row.model.reasoning ? "  ◆ reasoning" : ""}
+                {row.model.custom ? (row.model.verified ? "  [custom]" : "  [custom · unverified]") : ""}
                 {row.ready ? "" : "  [login needed]"}
               </text>
             </box>

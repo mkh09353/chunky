@@ -19,6 +19,7 @@ import {
   selectionFor,
   setPersistedProvider,
   setSelectionFor,
+  modelCatalogFor,
   type Effort,
   type ModelSelection,
   type Speed,
@@ -128,11 +129,31 @@ export function getProvider(id: string): ProviderDef | undefined {
   return providers[id]
 }
 
+export function mergeModelCatalog(
+  advertised: ModelInfo[],
+  customModels: ModelInfo[],
+  overlay: ReturnType<typeof modelCatalogFor>,
+): ModelInfo[] {
+  const hidden = new Set(overlay.hidden ?? [])
+  const byId = new Map(advertised.map((model) => [model.id, model]))
+  for (const model of customModels) {
+    if (byId.has(model.id)) continue
+    const record = overlay.added?.[model.id]
+    byId.set(model.id, { ...model, custom: true, verified: record?.verified ?? false })
+  }
+  return [...byId.values()].filter((model) => !hidden.has(model.id))
+}
+
 /** List the models a provider can serve (throws if the provider is unknown). */
-export function listModelsFor(id: string): Promise<ModelInfo[]> {
+export async function listModelsFor(id: string): Promise<ModelInfo[]> {
   const p = providers[id]
   if (!p) throw new Error(`unknown provider "${id}"`)
-  return p.listModels()
+  const advertised = await p.listModels()
+  const overlay = modelCatalogFor(id)
+  const advertisedIds = new Set(advertised.map((model) => model.id))
+  const customIds = Object.keys(overlay.added ?? {}).filter((model) => !advertisedIds.has(model))
+  const custom = customIds.length ? await enrichModels(customIds, []) : []
+  return mergeModelCatalog(advertised, custom, overlay)
 }
 
 // ---- Active provider + per-provider selection (persisted) ----

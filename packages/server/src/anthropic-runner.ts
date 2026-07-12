@@ -38,11 +38,12 @@ import { read, readInputShape } from "./tools/read.ts"
 import { shipGoal, shipGoalInputShape } from "./tools/ship.ts"
 import { spawnThread, spawnThreadInputShape } from "./tools/spawn-thread.ts"
 import { workflow, workflowInputShape } from "./tools/workflow.ts"
+import { manageModels, manageModelsInputShape } from "./tools/manage-models.ts"
 import { write, writeInputShape } from "./tools/write.ts"
 
 const SERVER_NAME = "chunky"
 const ALLOWED_TOOLS = [`mcp__${SERVER_NAME}__*`]
-const CHUNKY_TOOLS = [read, bash, fffind, ffgrep, write, editTool, spawnThread, workflow, getGoalTool, createGoalTool, goalCompleteTool, goalBlockedTool, shipGoal]
+const CHUNKY_TOOLS = [read, bash, fffind, ffgrep, write, editTool, spawnThread, workflow, manageModels, getGoalTool, createGoalTool, goalCompleteTool, goalBlockedTool, shipGoal]
 const SDK_TOOL_NAMES = new Set(CHUNKY_TOOLS.map((chunkyTool) => `mcp__${SERVER_NAME}__${chunkyTool.name}`))
 const knownSessions = new Set<string>()
 
@@ -189,6 +190,13 @@ export function createChunkySdkMcpServer(
         workflow.description,
         workflowInputShape,
         (args) => workflow.invoke(args, runConfig),
+        emit,
+      ),
+      wrapChunkyTool(
+        manageModels.name,
+        manageModels.description,
+        manageModelsInputShape,
+        (args) => manageModels.invoke(args, runConfig),
         emit,
       ),
       // Goal-mode tools resolve the session from the caller thread the same way

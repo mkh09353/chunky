@@ -52,6 +52,8 @@ export interface ModelRow {
     name: string
     reasoning: boolean
     contextLimit?: number
+    custom?: boolean
+    verified?: boolean
   }
 }
 
@@ -502,4 +504,17 @@ export function prettyModel(id: string | null | undefined): string {
           : p[0]!.toUpperCase() + p.slice(1),
     )
     .join(" ")
+}
+
+const PROVIDER_MARKS: Record<string, string> = {
+  anthropic: "A",
+  codex: "C",
+  grok: "G",
+  zen: "Z",
+}
+
+/** Compact provider identity for dense model controls. */
+export function providerMark(provider: string | null | undefined): string {
+  if (!provider) return "?"
+  return PROVIDER_MARKS[provider.toLowerCase()] ?? provider[0]!.toUpperCase()
 }

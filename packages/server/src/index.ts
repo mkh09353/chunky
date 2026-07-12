@@ -57,6 +57,7 @@ import {
 } from "./repos.ts"
 import { loadRelayConfig } from "./relay/config.ts"
 import { startUplink } from "./relay/uplink.ts"
+import { manageModelCatalog, type ModelCatalogAction } from "./model-catalog.ts"
 
 type Subscriber = ReadableStreamDefaultController<Uint8Array>
 
@@ -249,6 +250,21 @@ const server = Bun.serve({
         return json({ models: await listModelsFor(id) })
       } catch (err) {
         return json({ error: (err as Error)?.message ?? String(err) }, 502)
+      }
+    }
+
+    // POST /api/providers/:id/models/catalog — live persistent add/hide/restore.
+    const catalogMatch = pathname.match(/^\/api\/providers\/([^/]+)\/models\/catalog$/)
+    if (catalogMatch && req.method === "POST") {
+      const provider = catalogMatch[1]!
+      try {
+        const body = (await req.json()) as { action?: ModelCatalogAction; model?: string }
+        if (!body.action || !["add", "hide", "restore", "list"].includes(body.action)) {
+          return json({ error: "action must be add, hide, restore, or list" }, 400)
+        }
+        return json(await manageModelCatalog(body.action, provider, body.model))
+      } catch (err) {
+        return json({ error: (err as Error)?.message ?? String(err) }, 400)
       }
     }
 

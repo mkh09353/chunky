@@ -10,6 +10,7 @@ import { StarIcon as StarIconSolid } from "@heroicons/react/24/solid"
 import {
   listAllModels,
   prettyModel,
+  providerMark,
   selectModel,
   type ModelRow,
   type ModelSelection,
@@ -332,6 +333,9 @@ export function ModelPickerMenu({
           <span className="chunky-model-row-provider">{row.provider}/</span>
           {row.model.id}
         </span>
+        {row.model.custom ? (
+          <span className="chunky-model-row-hint">{row.model.verified ? "custom" : "custom · unverified"}</span>
+        ) : null}
         {!row.ready ? <span className="chunky-model-row-hint">login needed</span> : null}
         {isCurrent ? <CheckIcon className="chunky-model-row-check" aria-hidden="true" /> : null}
         <span
@@ -396,6 +400,11 @@ export function ModelPickerMenu({
         title={model?.provider ? `Provider: ${model.provider} — click to change model` : "Pick a model"}
         onClick={() => (open ? close() : openMenu())}
       >
+        {model?.provider ? (
+          <span className="chunky-provider-mark" title={`Provider: ${model.provider}`} aria-label={`Provider ${model.provider}`}>
+            {providerMark(model.provider)}
+          </span>
+        ) : null}
         <span className="chunky-model-trigger-name">{triggerName}</span>
         {triggerKnobs ? <span className="chunky-model-trigger-knobs">{triggerKnobs}</span> : null}
         <ChevronUpDownIcon className="chunky-model-trigger-chevron" aria-hidden="true" />

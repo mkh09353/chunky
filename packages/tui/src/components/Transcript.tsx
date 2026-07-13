@@ -4,6 +4,7 @@ import type { Item, ThreadNode, TranscriptState } from "../transcript.js"
 import { MAIN } from "../transcript.js"
 import { rawModeSupported, useInput } from "../useInput.js"
 import { writeClipboard } from "../clipboard.js"
+import { useToast } from "./Toast.js"
 import { getSyntaxStyle } from "../syntaxStyle.js"
 import type { DisplayItem } from "../collapseToolRuns.js"
 import { buildRenderPlan } from "../renderPlan.js"
@@ -81,7 +82,7 @@ export function Transcript({
   // `Ctrl+O` toggles the focused thread (the newest one when nothing is focused).
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const [focusedId, setFocusedId] = useState<string | null>(null)
-  const [copyNotice, setCopyNotice] = useState<string | null>(null)
+  const toast = useToast()
   // Per-item expand state for reasoning blocks + tool output (click to toggle).
   const [expandedItems, setExpandedItems] = useState<Set<string>>(() => new Set())
   const toggleItem = useCallback((key: string) => {
@@ -104,8 +105,7 @@ export function Transcript({
           .find((item) => item.kind === "assistant" && item.text.trim())
         if (text?.kind === "assistant") {
           void writeClipboard(text.text)
-          setCopyNotice("Copied latest assistant message")
-          setTimeout(() => setCopyNotice(null), 1500)
+          toast.show({ message: "Copied latest assistant message", variant: "success" })
         }
         return
       }
@@ -141,7 +141,6 @@ export function Transcript({
   return (
     <ItemExpandContext.Provider value={{ expanded: expandedItems, toggle: toggleItem }}>
       <box flexDirection="column">
-        {copyNotice ? <text fg={SUCCESS} attributes={DIM}>✓ {copyNotice}</text> : null}
         <ParentBody
           items={main.items}
           parentId={MAIN}

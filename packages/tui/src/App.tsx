@@ -37,6 +37,7 @@ import { AdvisorPicker, type AdvisorSelectionResult } from "./components/Advisor
 import { openBrowser } from "./openBrowser.js"
 import { grabClipboardImage, type ClipboardImage } from "./clipboardImage.js"
 import { writeClipboard } from "./clipboard.js"
+import { ToastContext, ToastOverlay, useToastController } from "./components/Toast.js"
 import { MIN_NOTIFY_MS, notifyTurnEnd } from "./notify.js"
 
 interface Props {
@@ -99,49 +100,44 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     process.exit(0)
   }, [renderer])
 
+  // Ephemeral toast layer (the generalization of the old copy badge).
+  const { toasts, api: toast } = useToastController()
+
   // Copy-on-select. OpenTUI holds the mouse (useMouse defaults on), so a drag
   // builds OUR selection, not a native terminal one — the emulator's ⌘C would
-  // copy nothing. So when a drag finishes we grab the selected text, put it on
-  // the system clipboard ourselves (OSC 52 + native tool), and pop a bright
-  // badge RIGHT where the mouse was released — next to the selection, not off in
-  // the footer where it's easy to miss.
-  const [copyBadge, setCopyBadge] = useState<{ label: string; x: number; y: number } | null>(null)
-  const copyBadgeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const showCopyBadge = useCallback((chars: number, x: number, y: number) => {
-    setCopyBadge({ label: `✓ Copied ${chars} char${chars === 1 ? "" : "s"}`, x, y })
-    if (copyBadgeTimer.current) clearTimeout(copyBadgeTimer.current)
-    copyBadgeTimer.current = setTimeout(() => setCopyBadge(null), 1600)
-  }, [])
+  // copy nothing. On drag end we copy it ourselves (OSC 52 + native tool) and pop
+  // a toast anchored at the release point (where the cursor is), not off in a
+  // corner where it's easy to miss.
   const copySelection = useCallback(
     (e?: { x: number; y: number }) => {
       const text = renderer.getSelection()?.getSelectedText() ?? ""
       if (!text) return // a plain click (no drag) selects nothing — ignore
       void writeClipboard(text)
       renderer.clearSelection()
-      // Anchor the badge to the release point (= end of the selection, where the
-      // cursor is). Fall back to screen-centre when there's no mouse event.
-      showCopyBadge(
-        text.length,
-        e?.x ?? Math.floor(renderer.terminalWidth / 2),
-        e?.y ?? Math.floor(renderer.terminalHeight / 2),
-      )
+      toast.show({
+        message: `Copied ${text.length} char${text.length === 1 ? "" : "s"}`,
+        variant: "success",
+        at: {
+          x: e?.x ?? Math.floor(renderer.terminalWidth / 2),
+          y: e?.y ?? Math.floor(renderer.terminalHeight / 2),
+        },
+      })
     },
-    [renderer, showCopyBadge],
+    [renderer, toast],
   )
 
   // The debug console overlay (opened on error) keeps its own selection; route
-  // its copy through the same clipboard path. Clear the badge timer on unmount.
+  // its copy through the same clipboard path + a corner toast.
   useEffect(() => {
     renderer.console.onCopySelection = (text: string) => {
       if (!text) return
       void writeClipboard(text)
-      showCopyBadge(text.length, Math.floor(renderer.terminalWidth / 2), Math.floor(renderer.terminalHeight / 2))
+      toast.show({ message: `Copied ${text.length} chars`, variant: "success" })
     }
     return () => {
       renderer.console.onCopySelection = undefined
-      if (copyBadgeTimer.current) clearTimeout(copyBadgeTimer.current)
     }
-  }, [renderer, showCopyBadge])
+  }, [renderer, toast])
   const [state, setState] = useState<TranscriptState>(initialState)
   const [startedAt, setStartedAt] = useState<number | null>(null)
   const [threadsCollapsed, setThreadsCollapsed] = useState(false)
@@ -484,17 +480,17 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   // Ctrl+V in the input — grab an image off the clipboard and attach it.
   const onPasteImage = useCallback(async () => {
     if (mode !== "live") {
-      printLine("Image paste needs the live server (run with --live).")
+      toast.show({ message: "Image paste needs the live server (--live)", variant: "warning" })
       return
     }
     const img = await grabClipboardImage()
     if (img) {
       setAttachments((a) => [...a, img])
-      printLine("📎 image attached — type a message (optional) and press enter to send.")
+      toast.show({ message: "📎 Image attached — type a message and press enter", variant: "success" })
     } else {
-      printLine("No image on the clipboard. Copy an image (or screenshot), then press Ctrl+V.")
+      toast.show({ message: "No image on the clipboard", variant: "warning" })
     }
-  }, [mode, printLine])
+  }, [mode, toast])
 
   // GET /api/providers (live only). Returns [] on any failure.
   const fetchProviders = useCallback(async (): Promise<ProviderRow[]> => {
@@ -1211,6 +1207,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       : "mock"
 
   return (
+    <ToastContext.Provider value={toast}>
     <box
       flexDirection="column"
       width="100%"
@@ -1291,27 +1288,10 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           {hasThreads ? "  ·  ctrl+t to " + (threadsCollapsed ? "expand" : "collapse") + " threads" : ""}
         </text>
       </box>
-      {copyBadge ? (
-        // A bright, solid badge floated at the release point (where the cursor
-        // is), on top of everything, so "it copied" reads instantly right where
-        // you're looking — not in the footer. Clamped to stay on-screen.
-        <box
-          position="absolute"
-          left={Math.min(
-            Math.max(0, copyBadge.x + 1),
-            Math.max(0, renderer.terminalWidth - (copyBadge.label.length + 2)),
-          )}
-          top={Math.min(Math.max(0, copyBadge.y - 1), Math.max(0, renderer.terminalHeight - 1))}
-          zIndex={1000}
-          backgroundColor="#22c55e"
-          paddingLeft={1}
-          paddingRight={1}
-        >
-          <text fg="#04160b" attributes={TextAttributes.BOLD}>
-            {copyBadge.label}
-          </text>
-        </box>
-      ) : null}
+      {/* Ephemeral toasts (copy confirmation at the cursor, image-attach, etc.),
+          floated on top of everything. */}
+      <ToastOverlay toasts={toasts} />
     </box>
+    </ToastContext.Provider>
   )
 }

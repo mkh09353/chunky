@@ -58,6 +58,7 @@ import {
 import { loadRelayConfig } from "./relay/config.ts"
 import { startUplink } from "./relay/uplink.ts"
 import { getModelAvailability, manageModelCatalog, setModelAvailability, type ModelCatalogAction } from "./model-catalog.ts"
+import { manageSkillRepos, type SkillRepoAction } from "./skill-repos.ts"
 
 type Subscriber = ReadableStreamDefaultController<Uint8Array>
 
@@ -411,6 +412,38 @@ const server = Bun.serve({
       if (!isApply && req.method === "DELETE") {
         if (!deleteMode(name)) return json({ error: `unknown mode "${name}"` }, 404)
         return json({ modes: listModes(), current: currentModeSpec() })
+      }
+    }
+
+    // GET /api/skill-repos -> { repos: SkillRepoStatus[] }
+    // POST /api/skill-repos { action, url?, id?, branch? } -> manageSkillRepos result
+    if (pathname === "/api/skill-repos") {
+      if (req.method === "GET") {
+        try {
+          return json(await manageSkillRepos("list"))
+        } catch (err) {
+          return json({ error: (err as Error)?.message ?? String(err) }, 400)
+        }
+      }
+      if (req.method === "POST") {
+        try {
+          const body = (await req.json()) as {
+            action?: SkillRepoAction
+            url?: string
+            id?: string
+            branch?: string
+          }
+          if (!body.action || !["add", "remove", "update", "list"].includes(body.action)) {
+            return json({ error: "action must be add, remove, update, or list" }, 400)
+          }
+          return json(await manageSkillRepos(body.action, {
+            url: body.url,
+            id: body.id,
+            branch: body.branch,
+          }))
+        } catch (err) {
+          return json({ error: (err as Error)?.message ?? String(err) }, 400)
+        }
       }
     }
 

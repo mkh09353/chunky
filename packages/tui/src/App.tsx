@@ -394,6 +394,10 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         void doModelCatalog(command.slice("/model".length).trim())
         return
       }
+      if (command === "/skills" || command.startsWith("/skills ")) {
+        void doSkills(command.slice("/skills".length).trim())
+        return
+      }
       if (command === "/provider" || command.startsWith("/provider ")) {
         if (mode !== "live") printLine("The provider picker needs the live server.")
         else setProviderPickerOpen(true)
@@ -713,6 +717,87 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       }
     },
     [mode, baseUrl, printLine, doModel],
+  )
+
+  // /skills — manage git skill repositories (add/remove/update/list).
+  const doSkills = useCallback(
+    async (rest: string) => {
+      if (mode !== "live") {
+        printLine("Skill repo management needs the live server.")
+        return
+      }
+      const parts = rest.split(/\s+/).filter(Boolean)
+      const action = (parts[0] ?? "list").toLowerCase()
+      if (!["add", "remove", "rm", "update", "list", "ls"].includes(action)) {
+        printLine(
+          "Usage: /skills list · /skills add <git-url> [branch] · /skills remove <id|url> · /skills update [id]",
+        )
+        return
+      }
+      const normalized =
+        action === "rm" ? "remove" : action === "ls" ? "list" : action
+      let body: Record<string, string> = { action: normalized }
+      if (normalized === "add") {
+        const url = parts[1]
+        if (!url) {
+          printLine("Usage: /skills add <git-url> [branch]")
+          return
+        }
+        body = { action: "add", url }
+        if (parts[2]) body.branch = parts[2]
+      } else if (normalized === "remove") {
+        const key = parts[1]
+        if (!key) {
+          printLine("Usage: /skills remove <id|url>")
+          return
+        }
+        body = { action: "remove", id: key }
+      } else if (normalized === "update") {
+        body = { action: "update" }
+        if (parts[1]) body.id = parts[1]
+      }
+      try {
+        const res = await fetch(`${baseUrl}/api/skill-repos`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        })
+        const data = (await res.json()) as any
+        if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`)
+        if (normalized === "list") {
+          const repos = data.repos ?? []
+          if (repos.length === 0) {
+            printLine("No managed skill repos. /skills add <git-url> to install a pack.")
+          } else {
+            printLine(
+              repos
+                .map(
+                  (r: { id: string; url: string; present: boolean; branch?: string; lastError?: string }) =>
+                    `· ${r.id}${r.present ? "" : " (missing)"}${r.branch ? ` @${r.branch}` : ""} — ${r.url}` +
+                    (r.lastError ? ` · error: ${r.lastError}` : ""),
+                )
+                .join("\n"),
+            )
+          }
+        } else if (normalized === "add") {
+          printLine(
+            `Skill repo added: ${data.repo?.id} → ${data.repo?.path}. Skills appear in search_skills immediately.`,
+          )
+        } else if (normalized === "remove") {
+          printLine(`Skill repo removed: ${data.id}.`)
+        } else {
+          const failed = data.failed ?? 0
+          printLine(
+            `Updated ${data.updated ?? 0} skill repo(s)` +
+              (failed ? ` · ${failed} failed` : "") +
+              ".",
+          )
+        }
+      } catch (err) {
+        printLine(`Skill repo update failed: ${(err as Error).message}`)
+      }
+    },
+    [mode, baseUrl, printLine],
   )
 
   // Called when the picker finishes selecting (or reports an error): close it,
@@ -1049,7 +1134,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           break
         case "/help":
           printLine(
-            "Commands: /clear, /resume, /help, /login, /model, /provider, /advisor, /mode, /goal, /shipit, /cacheguard, /quit. `/provider` configures available models; `/model add|hide|restore <provider> <model-id>` manages the global catalog; `/model list <provider>` shows overrides.",
+            "Commands: /clear, /resume, /help, /login, /model, /skills, /provider, /advisor, /mode, /goal, /shipit, /cacheguard, /quit. `/skills add <git-url>` installs a skill pack; `/skills list|remove|update` manages them; `/model add|hide|restore <provider> <model-id>` manages the global catalog.",
           )
           break
         case "/login":
@@ -1057,6 +1142,9 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           break
         case "/model":
           doModel()
+          break
+        case "/skills":
+          void doSkills("")
           break
         case "/provider":
           doProvider()
@@ -1078,7 +1166,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           break
       }
     },
-    [printLine, doLogin, doModel, doProvider, doAdvisor, doGoal, doShipIt, doCacheGuard, doMode, doResume, exit, mode, baseUrl],
+    [printLine, doLogin, doModel, doSkills, doProvider, doAdvisor, doGoal, doShipIt, doCacheGuard, doMode, doResume, exit, mode, baseUrl],
   )
 
   // Mock demo turn so the transcript streams even without a TTY.

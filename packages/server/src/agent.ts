@@ -39,6 +39,7 @@ import { shipGoal } from "./tools/ship.ts"
 import { spawnThread } from "./tools/spawn-thread.ts"
 import { workflow } from "./tools/workflow.ts"
 import { manageModels } from "./tools/manage-models.ts"
+import { manageSkillReposTool } from "./tools/manage-skill-repos.ts"
 import { skillTools } from "./tools/skills.ts"
 import { write } from "./tools/write.ts"
 
@@ -163,6 +164,7 @@ export function executorToolsFor(selection: AgentSelection) {
     ...sessionTools,
     workflow,
     manageModels,
+    manageSkillReposTool,
     ...skillTools,
     ...editToolsForModel(selection.model, selection.provider),
     ...(advisorSel ? [advisor] : []),

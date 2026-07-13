@@ -40,6 +40,10 @@ import { spawnThread, spawnThreadInputShape } from "./tools/spawn-thread.ts"
 import { workflow, workflowInputShape } from "./tools/workflow.ts"
 import { manageModels, manageModelsInputShape } from "./tools/manage-models.ts"
 import {
+  manageSkillReposTool,
+  manageSkillReposInputShape,
+} from "./tools/manage-skill-repos.ts"
+import {
   loadSkillInputShape,
   loadSkillTool,
   searchSkillsInputShape,
@@ -59,6 +63,7 @@ const CHUNKY_TOOLS = [
   spawnThread,
   workflow,
   manageModels,
+  manageSkillReposTool,
   searchSkillsTool,
   loadSkillTool,
   getGoalTool,
@@ -222,6 +227,13 @@ export function createChunkySdkMcpServer(
         (args) => manageModels.invoke(args, runConfig),
         emit,
       ),
+      wrapChunkyTool(
+        manageSkillReposTool.name,
+        manageSkillReposTool.description,
+        manageSkillReposInputShape,
+        (args) => manageSkillReposTool.invoke(args, runConfig),
+        emit,
+      ),
       // Lazy Agent Skills — metadata via search, full body only on explicit load.
       wrapChunkyTool(
         searchSkillsTool.name,
@@ -374,6 +386,27 @@ export async function translateAnthropicMessages(
     emit({ type: "message.delta", text })
   }
 
+  // Extended-thinking blocks arrive as `thinking_delta` content deltas BEFORE the
+  // answer text. Stream them as reasoning.* so the TUI shows a collapsible thought.
+  let reasoningOpen = false
+  const openReasoning = () => {
+    if (!reasoningOpen) {
+      reasoningOpen = true
+      emit({ type: "reasoning.start" })
+    }
+  }
+  const closeReasoning = () => {
+    if (reasoningOpen) {
+      reasoningOpen = false
+      emit({ type: "reasoning.end" })
+    }
+  }
+  const appendReasoning = (text: string) => {
+    if (!text) return
+    openReasoning()
+    emit({ type: "reasoning.delta", text })
+  }
+
   try {
     for await (const message of messages) {
       if (message.type === "system" && message.subtype === "init") {
@@ -385,11 +418,15 @@ export async function translateAnthropicMessages(
       if (message.type === "stream_event") {
         const event = message.event as any
         if (event?.type === "content_block_delta" && event?.delta?.type === "text_delta") {
+          closeReasoning() // answer text has begun — the thinking block is done
           appendText(event.delta.text ?? "")
+        } else if (event?.type === "content_block_delta" && event?.delta?.type === "thinking_delta") {
+          appendReasoning(event.delta.thinking ?? "")
         } else if (event?.type === "message_delta") {
           const stopReason = event?.delta?.stop_reason
           pendingEndReason = stopReason === "max_tokens" ? "max_tokens" : "complete"
         } else if (event?.type === "message_stop") {
+          closeReasoning()
           closeAssistant()
         }
         continue

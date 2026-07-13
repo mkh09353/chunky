@@ -61,9 +61,9 @@ export function buildSystemPrompt(
 - ffgrep: content search (prefer over bash rg/grep)
 ${editListLine}
 - write: create or overwrite a file
-- search_skills / load_skill: discover and on-demand load Agent Skills (SKILL.md packages under ~/.chunky|agents|claude|codex/skills and project .agents|.claude|.chunky|.codex/skills). Bodies are never in the prompt — search first, load only when a description matches
+- search_skills / load_skill: discover and on-demand load Agent Skills (SKILL.md packages under ~/.chunky|agents|claude|codex/skills, managed skill-repos, and project .agents|.claude|.chunky|.codex/skills). Bodies are never in the prompt — search first, load only when a description matches
 
-Additional tools (threads, workflows, goals, sessions, model catalog, and advisor when configured) are deferred behind native tool search — use tool search to discover them when needed; do not assume a fixed full list in this prompt.`
+Additional tools (threads, workflows, goals, sessions, model catalog, skill repos, and advisor when configured) are deferred behind native tool search — use tool search to discover them when needed; do not assume a fixed full list in this prompt.`
     : `Available tools:
 - read: read file contents (raw text, no line numbers)
 - bash: run shell commands
@@ -76,14 +76,16 @@ ${editListLine}
 - get_goal / create_goal / goal_complete / goal_blocked: goal-mode tools — relevant when a goal is set via /goal, or when the user explicitly asks for autonomous work-until-done (create_goal)
 - ship_goal: hand the plan agreed in THIS conversation off to a fresh, context-clean session that pursues it as an autonomous workflow-orchestrated goal — use when the user says to ship or hand off the plan (/shipit); write a distilled handoff brief as the objective
 - list_sessions / send_to_session: see and message the OTHER live sessions on this server (parallel repos/tasks) — hand off follow-ups or ask questions; a busy target processes your message after its current turn
-- search_skills / load_skill: discover and on-demand load Agent Skills (SKILL.md packages under ~/.chunky|agents|claude|codex/skills and project .agents|.claude|.chunky|.codex/skills). Bodies are never in the prompt — search first, load only when a description matches`
+- search_skills / load_skill: discover and on-demand load Agent Skills (SKILL.md packages under ~/.chunky|agents|claude|codex/skills, managed skill-repos, and project .agents|.claude|.chunky|.codex/skills). Bodies are never in the prompt — search first, load only when a description matches
+- manage_skill_repos: add/remove/update/list git remotes that supply skill packs (only when the user asks to install or manage skills)`
 
   const multiAgentGuideline = nativeToolSearch
     ? "- For work that spans many files or wants many parallel sub-agents (audits, reviewing a whole directory, large refactors, cross-checked research), prefer a workflow over many spawn_thread calls once you have discovered those tools via tool search — the fan-out stays out of your context."
     : "- For work that spans many files or wants many parallel sub-agents (audits, reviewing a whole directory, large refactors, cross-checked research), prefer a single workflow over many spawn_thread calls — the fan-out stays out of your context."
 
   const skillsGuideline =
-    "- Skills: when a task matches specialized workflows (PDF tools, deploy runbooks, domain APIs, etc.), call search_skills then load_skill before improvising. Do not load skills speculatively; re-loading re-emits the full body (safe after compaction)."
+    "- Skills: when a task matches specialized workflows (PDF tools, deploy runbooks, domain APIs, etc.), call search_skills then load_skill before improvising. Do not load skills speculatively; re-loading re-emits the full body (safe after compaction)." +
+    " When the user asks to install a skill pack from git, use manage_skill_repos (or tell them about /skills add <url>)."
 
   const goalGuideline = nativeToolSearch
     ? "- Goal mode: if a message is prefixed \"[goal mode…]\", you're working autonomously toward a set goal — follow that message's instructions without asking for confirmation; when the goal is fully done and verified call goal_complete with evidence, or goal_blocked if you hit a real impasse (discover those tools via tool search if not already loaded). An \"[goal mode: orchestrator]\" goal means delegate the hands-on work to workflow runs instead of doing it yourself."

@@ -4,10 +4,11 @@
 // `search_skills` / `load_skill` tools; skill bodies arrive as tool output when
 // explicitly loaded. Default behavior never auto-loads.
 //
-// Locations (user → project; project wins on name collision):
-//   User:    ~/.chunky/skills, ~/.agents/skills, ~/.claude/skills, ~/.codex/skills
-//   Project: .chunky/skills, .agents/skills, .claude/skills, .codex/skills
-//            (workspace + ancestors up to git root / filesystem root)
+// Locations (user → managed repos → project; project wins on name collision):
+//   User:     ~/.chunky/skills, ~/.agents/skills, ~/.claude/skills, ~/.codex/skills
+//   Managed:  skill-repos/<id>/ clones registered via /skills or manage_skill_repos
+//   Project:  .chunky/skills, .agents/skills, .claude/skills, .codex/skills
+//             (workspace + ancestors up to git root / filesystem root)
 import {
   existsSync,
   readdirSync,
@@ -17,6 +18,7 @@ import {
 } from "node:fs"
 import { homedir } from "node:os"
 import { basename, dirname, join, resolve, sep } from "node:path"
+import { managedSkillRoots } from "./skill-repos.ts"
 import { MAX_BYTES, MAX_LINES, truncateOutput } from "./tools/fs-util.ts"
 
 const MAX_NAME_LENGTH = 64
@@ -38,7 +40,7 @@ const PROJECT_SKILL_ROOTS = [
   ".codex/skills",
 ] as const
 
-export type SkillSource = "user" | "project"
+export type SkillSource = "user" | "project" | "repo"
 
 export interface SkillMeta {
   name: string
@@ -48,7 +50,7 @@ export interface SkillMeta {
   /** Directory containing SKILL.md (for relative asset resolution). */
   baseDir: string
   source: SkillSource
-  /** Human label for the root, e.g. "~/.claude/skills" or ".agents/skills". */
+  /** Human label for the root, e.g. "~/.claude/skills", ".agents/skills", or "repo:id". */
   sourceLabel: string
 }
 
@@ -310,6 +312,13 @@ export function discoverSkills(workspace: string): SkillMeta[] {
     }
   }
 
+  // Managed skill git repos: after user skills, before project (project wins).
+  for (const { root, label } of managedSkillRoots()) {
+    for (const file of findSkillFiles(root)) {
+      add(loadMetaFromFile(file, "repo", label), true)
+    }
+  }
+
   // Project: walk workspace → root; nearer (workspace-first) wins over farther.
   // Scan farthest first so nearer overwrites.
   const ancestors = projectAncestors(workspace)
@@ -407,7 +416,7 @@ export function formatSearchResults(skills: SkillMeta[], query?: string): string
     const q = (query ?? "").trim()
     return q
       ? `No skills matching "${q}". Try a broader query or call search_skills with no query to list all.`
-      : "No skills discovered. Install Agent Skills under ~/.chunky/skills, ~/.agents/skills, ~/.claude/skills, or project .agents/skills / .claude/skills / .chunky/skills (each skill is a dir with SKILL.md)."
+      : "No skills discovered. Install Agent Skills under ~/.chunky/skills, ~/.agents/skills, ~/.claude/skills, project .agents/skills / .claude/skills / .chunky/skills, or add a managed skill repo via manage_skill_repos / /skills add <git-url> (each skill is a dir with SKILL.md)."
   }
   const lines = skills.map((s) => {
     const desc = s.description.replace(/\s+/g, " ").trim()

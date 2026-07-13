@@ -7,6 +7,7 @@
 // model + knobs. Missing/corrupt file → defaults (never throws).
 import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { randomBytes } from "node:crypto"
+import { join } from "node:path"
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max"
 export type Speed = "standard" | "fast"
@@ -58,6 +59,24 @@ export interface Settings {
   /** Bearer token required from non-loopback HTTP clients (see index.ts).
    *  Generated on first use; settings.json is gitignored, so it stays local. */
   serverToken?: string
+  /** Managed skill git repositories (cloned under stateDir/skill-repos/). */
+  skillRepos?: SkillRepoRecord[]
+}
+
+/** A user-registered git remote that supplies Agent Skills (SKILL.md packages). */
+export interface SkillRepoRecord {
+  /** Filesystem-safe id (also the clone directory name). */
+  id: string
+  /** Git remote URL (https / git@ / ssh://git@). */
+  url: string
+  /** Optional branch pin; omit = remote default. */
+  branch?: string
+  /** When the repo was first added. */
+  addedAt: number
+  /** Last successful sync (clone or pull). */
+  lastSync?: number
+  /** Last sync error message, if any. */
+  lastError?: string
 }
 
 export interface CatalogModelRecord {
@@ -286,5 +305,74 @@ export function setAdvisor(patch: Partial<AdvisorConfig>): AdvisorConfig {
     ...(patch.effort !== undefined ? { effort: patch.effort } : {}),
   }
   save({ ...s, advisor: next })
+  return next
+}
+
+// ---- Managed skill repositories ----
+
+/** Absolute root for skill-repo clones, next to settings.json. */
+export function skillReposRoot(stateDir: string): string {
+  return join(stateDir, "skill-repos")
+}
+
+/** All registered skill repos, sorted by id. */
+export function listSkillRepos(): SkillRepoRecord[] {
+  const repos = loadSettings().skillRepos ?? []
+  return [...repos].sort((a, b) => a.id.localeCompare(b.id))
+}
+
+export function skillRepoById(id: string): SkillRepoRecord | undefined {
+  return (loadSettings().skillRepos ?? []).find((r) => r.id === id)
+}
+
+/** Register a skill repo (caller clones first). Throws if id already exists. */
+export function addSkillRepo(record: SkillRepoRecord): SkillRepoRecord {
+  const s = loadSettings()
+  const repos = [...(s.skillRepos ?? [])]
+  if (repos.some((r) => r.id === record.id)) {
+    throw new Error(`skill repo "${record.id}" already exists`)
+  }
+  repos.push(record)
+  save({ ...s, skillRepos: repos })
+  return record
+}
+
+/** Remove a skill repo registration. Returns whether it existed. */
+export function removeSkillRepo(id: string): boolean {
+  const s = loadSettings()
+  const repos = s.skillRepos ?? []
+  if (!repos.some((r) => r.id === id)) return false
+  save({ ...s, skillRepos: repos.filter((r) => r.id !== id) })
+  return true
+}
+
+/** Merge-update a skill repo record. Pass `lastError: undefined` to clear it.
+ *  Returns the updated record or undefined if id is unknown. */
+export function updateSkillRepo(
+  id: string,
+  patch: Partial<Pick<SkillRepoRecord, "branch" | "lastSync" | "lastError">>,
+): SkillRepoRecord | undefined {
+  const s = loadSettings()
+  const repos = [...(s.skillRepos ?? [])]
+  const idx = repos.findIndex((r) => r.id === id)
+  if (idx < 0) return undefined
+  const prev = repos[idx]!
+  const next: SkillRepoRecord = {
+    id: prev.id,
+    url: prev.url,
+    addedAt: prev.addedAt,
+  }
+  const branch = patch.branch !== undefined ? patch.branch : prev.branch
+  if (branch) next.branch = branch
+  const lastSync = patch.lastSync !== undefined ? patch.lastSync : prev.lastSync
+  if (lastSync !== undefined) next.lastSync = lastSync
+  if ("lastError" in patch) {
+    if (patch.lastError !== undefined) next.lastError = patch.lastError
+    // else: intentionally omit lastError (clear)
+  } else if (prev.lastError !== undefined) {
+    next.lastError = prev.lastError
+  }
+  repos[idx] = next
+  save({ ...s, skillRepos: repos })
   return next
 }

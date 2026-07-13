@@ -28,6 +28,7 @@ import {
   listSessions,
   loadConfig,
   loginStatus,
+  manageSkillRepos,
   openEventStream,
   postGoal,
   prettyModel,
@@ -487,6 +488,66 @@ export default function App() {
     [config, notice],
   )
 
+  // /skills — manage git skill repositories (add/remove/update/list).
+  const doSkills = useCallback(
+    async (rest: string) => {
+      if (!config) return
+      const parts = rest.split(/\s+/).filter(Boolean)
+      const action = (parts[0] ?? "list").toLowerCase()
+      if (!["add", "remove", "rm", "update", "list", "ls"].includes(action)) {
+        notice("Usage: /skills list · /skills add <git-url> [branch] · /skills remove <id|url> · /skills update [id]")
+        return
+      }
+      const normalized =
+        action === "rm" ? "remove" : action === "ls" ? "list" : (action as "add" | "remove" | "update" | "list")
+      const payload: { action: "add" | "remove" | "update" | "list"; url?: string; id?: string; branch?: string } = {
+        action: normalized,
+      }
+      if (normalized === "add") {
+        if (!parts[1]) {
+          notice("Usage: /skills add <git-url> [branch]")
+          return
+        }
+        payload.url = parts[1]
+        if (parts[2]) payload.branch = parts[2]
+      } else if (normalized === "remove") {
+        if (!parts[1]) {
+          notice("Usage: /skills remove <id|url>")
+          return
+        }
+        payload.id = parts[1]
+      } else if (normalized === "update" && parts[1]) {
+        payload.id = parts[1]
+      }
+      const data = await manageSkillRepos(config.baseUrl, payload)
+      if (normalized === "list") {
+        const repos = (data.repos as Array<{ id: string; url: string; present: boolean; branch?: string; lastError?: string }>) ?? []
+        if (repos.length === 0) {
+          notice("No managed skill repos. `/skills add <git-url>` to install a pack.")
+        } else {
+          notice(
+            repos
+              .map(
+                (r) =>
+                  `${r.id}${r.present ? "" : " (missing)"}${r.branch ? ` @${r.branch}` : ""} — ${r.url}` +
+                  (r.lastError ? ` · error: ${r.lastError}` : ""),
+              )
+              .join(" · "),
+          )
+        }
+      } else if (normalized === "add") {
+        const repo = data.repo as { id?: string } | undefined
+        notice(`Skill repo added: ${repo?.id ?? "?"}. Skills appear in search_skills immediately.`)
+      } else if (normalized === "remove") {
+        notice(`Skill repo removed: ${data.id ?? payload.id}.`)
+      } else {
+        const failed = Number(data.failed ?? 0)
+        notice(`Updated ${data.updated ?? 0} skill repo(s)${failed ? ` · ${failed} failed` : ""}.`)
+      }
+    },
+    [config, notice],
+  )
+
   // Execute a KNOWN slash command (see lib/commands.ts) against the current
   // session. Anything the server does in response (goal.update markers, the
   // shipit brief-writing turn) streams back over the session's SSE.
@@ -554,6 +615,9 @@ export default function App() {
             // Same affordance as the composer's model button — just open it.
             setModelOpenSignal((n) => n + 1)
             return
+          case "/skills":
+            await doSkills(rest)
+            return
           case "/advisor":
             setAdvisorOpenSignal((n) => n + 1)
             return
@@ -568,7 +632,7 @@ export default function App() {
             return
           case "/help":
             notice(
-              "Commands: /clear, /resume, /help, /login, /model, /advisor, /mode, /goal, /shipit, /cacheguard. `/resume [title]` reopens a previous thread in this repo (its full history replays). `/goal <objective>` works autonomously until the goal is done (`--workflows` makes it a workflow-orchestrator). `/shipit [notes]` hands this conversation's plan off to a fresh orchestrator thread. `/mode <name>` switches a saved model+advisor pairing. `/cacheguard <tokens|off>` sets when a cold-cache re-send needs confirmation. Paste an image to attach it to your next message.",
+              "Commands: /clear, /resume, /help, /login, /model, /skills, /advisor, /mode, /goal, /shipit, /cacheguard. `/skills add <git-url>` installs a skill pack; `/skills list|remove|update` manages them. `/resume [title]` reopens a previous thread. `/goal <objective>` works autonomously until done (`--workflows` orchestrates). `/shipit [notes]` hands this plan to a fresh orchestrator. `/mode <name>` switches a saved pairing. `/cacheguard <tokens|off>` sets cold-cache confirm. Paste an image to attach it.",
             )
             return
         }
@@ -576,7 +640,7 @@ export default function App() {
         notice(`${name} failed: ${(err as Error).message}`)
       }
     },
-    [config, sessionId, handleNewThread, notice, refreshSessions, attachSession, doLogin, doCacheGuard, doMode],
+    [config, sessionId, handleNewThread, notice, refreshSessions, attachSession, doLogin, doCacheGuard, doMode, doSkills],
   )
 
   const handleSubmit = useCallback(

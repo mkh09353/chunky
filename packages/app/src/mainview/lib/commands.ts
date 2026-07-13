@@ -38,6 +38,11 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     insert: "/model",
   },
   {
+    name: "/skills",
+    description: "Manage skill repos: /skills list · add <url> · remove <id> · update [id]",
+    insert: "/skills ",
+  },
+  {
     name: "/advisor",
     description: "Set the always-on advisor model (a second opinion the executor consults)",
     insert: "/advisor",

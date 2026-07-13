@@ -13,6 +13,7 @@ export const COMMANDS: Command[] = [
   { name: "/help", description: "Show help" },
   { name: "/login", description: "Log in to an OAuth provider (Grok / Codex)" },
   { name: "/model", description: "Pick or manage models (/model add|hide|restore|list)" },
+  { name: "/skills", description: "Manage skill repos (/skills add|remove|update|list)" },
   { name: "/provider", description: "Configure available models for a provider" },
   { name: "/advisor", description: "Set the advisor model (a stronger model, on tap)" },
   { name: "/mode", description: "Named model+advisor pairings (/mode <name>, /mode save <name>)" },

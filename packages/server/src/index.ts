@@ -70,6 +70,10 @@ type Subscriber = ReadableStreamDefaultController<Uint8Array>
 const live = new Map<string, Set<Subscriber>>()
 // AbortController for each session's in-flight turn, so /interrupt can cancel it.
 const running = new Map<string, AbortController>()
+// The in-flight turn's completion promise, so a steer can abort the current turn
+// and WAIT for it to fully tear down before starting the superseding one — that
+// ordering (old idle → message.user → new running) keeps the stream flicker-free.
+const runDone = new Map<string, Promise<void>>()
 const encoder = new TextEncoder()
 
 function subscribers(sessionId: string): Set<Subscriber> {
@@ -106,15 +110,28 @@ function startRun(
 ): Promise<void> {
   const ac = new AbortController()
   running.set(sessionId, ac)
-  return runAgent(sessionId, text, (ev) => emitTo(sessionId, ev), images, ac, options)
+  const done = runAgent(sessionId, text, (ev) => emitTo(sessionId, ev), images, ac, options)
     .catch((err) => {
       emitTo(sessionId, { type: "error", message: (err as Error)?.message ?? String(err) })
       emitTo(sessionId, { type: "session.status", sessionId, status: "idle" })
     })
     .finally(() => {
       if (running.get(sessionId) === ac) running.delete(sessionId)
+      if (runDone.get(sessionId) === done) runDone.delete(sessionId)
       drainQueue(sessionId)
     })
+  runDone.set(sessionId, done)
+  return done
+}
+
+/** Abort the session's in-flight turn as a STEER (reason "steer", so the run
+ *  reports no interrupt and doesn't pause its goal) and wait for it to fully tear
+ *  down. No-op when nothing is running. */
+async function abortForSteer(sessionId: string): Promise<void> {
+  const ac = running.get(sessionId)
+  if (!ac) return
+  ac.abort("steer")
+  await runDone.get(sessionId)?.catch(() => {})
 }
 
 /** Abort any in-flight turn for a session, then start a fresh agent run.
@@ -658,11 +675,13 @@ const server = Bun.serve({
       if (kind === "messages" && req.method === "POST") {
         let text = ""
         let force = false
+        let steer = false
         let images: { base64: string; mediaType: string }[] | undefined
         try {
-          const body = (await req.json()) as { text?: unknown; images?: unknown; force?: unknown }
+          const body = (await req.json()) as { text?: unknown; images?: unknown; force?: unknown; steer?: unknown }
           text = typeof body?.text === "string" ? body.text : ""
           force = body?.force === true
+          steer = body?.steer === true
           if (Array.isArray(body?.images)) {
             images = body.images.filter(
               (i): i is { base64: string; mediaType: string } =>
@@ -674,10 +693,17 @@ const server = Bun.serve({
         }
         if (!text && !(images && images.length)) return json({ error: "missing text or image" }, 400)
 
+        // Steer: the client held this message until a tool boundary and now wants
+        // to cut into the in-flight turn. Abort the current run and WAIT for it to
+        // tear down before emitting/starting below, so events stay ordered. The
+        // agent is checkpointed per-node, so the completed tool result survives
+        // into the superseding turn. Cache is warm mid-turn → skip the cold guard.
+        if (steer) await abortForSteer(sessionId)
+
         // Cache guard: BEFORE running (or billing) anything, refuse a send that
         // would rebuild a big cold cache. 409 carries the details; the client
         // asks the user and re-POSTs with force: true (or starts a fresh thread).
-        if (!force) {
+        if (!force && !steer) {
           const model = activeSelection().model
           const guardTokens = getCacheGuardTokens()
           const cold = model ? checkCacheCold(sessionId, model, Date.now()) : undefined

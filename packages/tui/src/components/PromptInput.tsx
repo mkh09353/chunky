@@ -13,9 +13,14 @@ const { DIM, INVERSE } = TextAttributes
 interface Props {
   disabled?: boolean
   /** `text` is the full message (pastes expanded) sent to the model; `display`
-   *  is the shortened echo (paste placeholders kept) shown in the transcript. */
-  onSubmit: (text: string, display?: string) => void
+   *  is the shortened echo (paste placeholders kept) shown in the transcript.
+   *  `opts.steer` is set when the user held Alt/Option (Alt+Enter) — a request to
+   *  cut into a running turn at the next tool result instead of queueing it. */
+  onSubmit: (text: string, display: string | undefined, opts?: { steer?: boolean }) => void
   onCommand: (name: string) => void
+  /** A turn is in flight — the composer stays live for type-ahead; a plain Enter
+   *  queues the message, Alt+Enter steers it. Only drives the placeholder hint. */
+  running?: boolean
   /** Right-aligned status (model/effort/advisor) drawn INTO the bottom rule. */
   status?: string
   /** Ctrl+V: grab an image off the clipboard and attach it (async, in App). */
@@ -44,6 +49,7 @@ export function PromptInput({
   attachmentCount = 0,
   baseUrl,
   prefill,
+  running = false,
 }: Props) {
   const rawSupported = rawModeSupported
   // value + cursor live in ONE state so the key handler edits them with a
@@ -247,8 +253,11 @@ export function PromptInput({
           if (h.length > HISTORY_CAP) h.shift()
         }
         histIdxRef.current = null
+        // Alt/Option+Enter marks a STEER (cut into a running turn at the next tool
+        // result); a plain Enter queues/sends. App decides based on run state.
+        const steer = key.meta
         reset()
-        onSubmit(text, display)
+        onSubmit(text, display, { steer })
         return
       }
       // Ctrl+V — pull an image off the clipboard (Cmd+V is owned by the terminal).
@@ -305,7 +314,7 @@ export function PromptInput({
         flexShrink={0}
       >
         <text fg={ACCENT}>{"❯ "}</text>
-        <CursorText value={value} cursor={cursor} showCursor={rawSupported && !disabled} />
+        <CursorText value={value} cursor={cursor} showCursor={rawSupported && !disabled} running={running} />
       </box>
       <BottomRule status={status} />
     </box>
@@ -339,9 +348,23 @@ function BottomRule({ status }: { status?: string }) {
 }
 
 /** Render the line with an inverse-block cursor, like Claude Code's input. */
-function CursorText({ value, cursor, showCursor }: { value: string; cursor: number; showCursor: boolean }) {
+function CursorText({
+  value,
+  cursor,
+  showCursor,
+  running,
+}: {
+  value: string
+  cursor: number
+  showCursor: boolean
+  running?: boolean
+}) {
   if (value.length === 0) {
-    return <text attributes={DIM}>Try &quot;fix lint errors&quot; or @file</text>
+    return (
+      <text attributes={DIM}>
+        {running ? "type to queue · alt+enter to steer" : 'Try "fix lint errors" or @file'}
+      </text>
+    )
   }
   const before = value.slice(0, cursor)
   const at = value.slice(cursor, cursor + 1) || " "

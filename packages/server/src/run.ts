@@ -388,8 +388,13 @@ export async function runAgent(
     // Either way, pause an active goal so it never silently resumes on a later
     // unrelated message; /goal resume restarts it deliberately.
     if (abort?.signal.aborted || (err as Error)?.name === "AbortError") {
-      emit({ type: "error", message: "⏹ Interrupted." })
-      pauseGoal(sessionId, emit, "⏸ Goal paused (interrupted). Use /goal resume to keep going.")
+      // A STEER abort (reason "steer") is a course-correction, not a stop: the
+      // superseding turn is already starting, so stay quiet and leave the goal
+      // running — the steer message continues the work.
+      if (abort?.signal.reason !== "steer") {
+        emit({ type: "error", message: "⏹ Interrupted." })
+        pauseGoal(sessionId, emit, "⏸ Goal paused (interrupted). Use /goal resume to keep going.")
+      }
     } else {
       const message = (err as Error)?.message ?? String(err)
       emit({ type: "error", message })

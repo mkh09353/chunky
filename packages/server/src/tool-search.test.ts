@@ -1,6 +1,8 @@
 // Unit tests for native provider tool search gating + core/deferred partition.
 // Run: bun test packages/server/src/tool-search.test.ts
 import { describe, expect, test } from "bun:test"
+import { tool } from "@langchain/core/tools"
+import { z } from "zod"
 import {
   CORE_TOOL_NAMES,
   buildToolSearchMiddleware,
@@ -9,6 +11,7 @@ import {
   isGptVersionAtLeast,
   parseGptVersion,
   partitionTools,
+  portableToolSetFor,
   supportsNativeToolSearch,
   toolSearchMiddlewareConfigFor,
 } from "./tool-search.ts"
@@ -160,6 +163,51 @@ describe("middleware inclusion configuration", () => {
     expect(off.nativeToolSearch).toBe(false)
     expect(off.toolSearchConfig).toBeNull()
     expect(off.editToolName).toBe("edit")
+  })
+})
+
+describe("portable deferred tool search", () => {
+  test("Grok binds core tools plus compact search and dispatch tools", () => {
+    const { tools } = executorToolsFor({ provider: "grok", model: "grok-4.5" })
+    const bound = portableToolSetFor("grok", tools)
+    const names = bound.map((tool) => tool.name)
+
+    expect(names).toContain("read")
+    expect(names).toContain("edit")
+    expect(names).toContain("search_skills")
+    expect(names).toContain("search_tools")
+    expect(names).toContain("call_deferred_tool")
+    expect(names).not.toContain("workflow")
+    expect(names).not.toContain("spawn_thread")
+    expect(names).not.toContain("advisor")
+  })
+
+  test("other providers keep their original bound tool set", () => {
+    const { tools } = executorToolsFor({ provider: "zen", model: "glm-5.2" })
+    expect(portableToolSetFor("zen", tools)).toBe(tools)
+  })
+
+  test("search exposes a deferred schema and dispatch executes the original tool", async () => {
+    const core = tool(async () => "read", {
+      name: "read",
+      description: "Read a file",
+      schema: z.object({ path: z.string() }),
+    })
+    const deferred = tool(async ({ value }: { value: string }) => `ran:${value}`, {
+      name: "workflow",
+      description: "Run a parallel workflow",
+      schema: z.object({ value: z.string() }),
+    })
+    const bound = portableToolSetFor("grok", [core, deferred])
+    const search = bound.find((item) => item.name === "search_tools")!
+    const dispatch = bound.find((item) => item.name === "call_deferred_tool")!
+
+    const matches = JSON.parse(String(await search.invoke({ query: "parallel" })))
+    expect(matches).toHaveLength(1)
+    expect(matches[0].name).toBe("workflow")
+    expect(matches[0].input_schema.type).toBe("object")
+    expect(matches[0].input_schema.properties.value.type).toBe("string")
+    expect(await dispatch.invoke({ name: "workflow", arguments: { value: "ok" } })).toBe("ran:ok")
   })
 })
 

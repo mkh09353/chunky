@@ -313,9 +313,11 @@ export function discoverSkills(workspace: string): SkillMeta[] {
   }
 
   // Managed skill git repos: after user skills, before project (project wins).
-  for (const { root, label } of managedSkillRoots()) {
+  for (const { root, label, disabledSkills } of managedSkillRoots()) {
     for (const file of findSkillFiles(root)) {
-      add(loadMetaFromFile(file, "repo", label), true)
+      const meta = loadMetaFromFile(file, "repo", label)
+      if (!meta || disabledSkills.has(meta.name)) continue
+      add(meta, true)
     }
   }
 

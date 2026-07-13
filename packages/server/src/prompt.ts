@@ -1,5 +1,5 @@
-// The lean system prompt (~300 tokens) that replaces DeepAgents' ~600-token
-// BASE_AGENT_PROMPT + filesystem-conventions block. It names the four real tools,
+// The lean system prompt that replaces DeepAgents' BASE_AGENT_PROMPT and
+// filesystem-conventions block. It names the eagerly bound core tools,
 // gives a handful of behavior guidelines, and adapts the edit line to whichever
 // edit tool the active model gets (edit for most models, apply_patch for
 // GPT/Codex — see agent.ts's editToolsForModel).
@@ -14,6 +14,8 @@ export const ADVISOR_SYSTEM_PROMPT = `You are an expert software-engineering adv
 export interface SystemPromptOpts {
   /** When true, only list core (always-bound) tools; deferred tools are found via native tool search. */
   nativeToolSearch?: boolean
+  /** Grok fallback: deferred tools are discovered and invoked through two compact local meta-tools. */
+  portableToolSearch?: boolean
 }
 
 export function buildSystemPrompt(
@@ -25,6 +27,8 @@ export function buildSystemPrompt(
   const date = new Date().toISOString().slice(0, 10)
   const isEdit = activeEditToolName === "edit"
   const nativeToolSearch = opts.nativeToolSearch === true
+  const portableToolSearch = opts.portableToolSearch === true
+  const deferredToolSearch = nativeToolSearch || portableToolSearch
 
   const editListLine = isEdit
     ? "- edit: edit a file with exact text replacement (one or more disjoint edits per call)"
@@ -38,11 +42,11 @@ export function buildSystemPrompt(
   // buildAgent's auto-suppress), so the model never offers a tool it can't call.
   // Under native tool search, advisor is deferred — do not enumerate it here.
   const advisorListLine =
-    hasAdvisor && !nativeToolSearch
+    hasAdvisor && !deferredToolSearch
       ? "\n- advisor: consult a stronger model (a persistent side thread that can read the code itself) for hard decisions, subtle bugs, design questions, or when stuck"
       : ""
   const advisorGuideline = hasAdvisor
-    ? nativeToolSearch
+    ? deferredToolSearch
       ? "\n- advisor (discover via tool search when configured): consult it before committing to an approach on risky or ambiguous work — design trade-offs, auth/data/migrations/concurrency — and when a fix fails twice. Point at specific files/lines."
       : "\n- advisor: consult it before committing to an approach on risky or ambiguous work — a design decision with real trade-offs, or anything touching auth, data, migrations, or concurrency — so it catches problems before you write code. Also consult it the moment a fix fails twice, before you attempt a third. Point it at specific files/lines. It's for genuinely hard calls, not routine edits."
     : ""
@@ -53,7 +57,7 @@ export function buildSystemPrompt(
   // Full catalog (fallback / non-native): enumerate every bound tool so the model
   // knows what it can call. Native tool search: list ONLY core tools — deferred
   // tools must not be falsely enumerated; the provider surfaces them on demand.
-  const toolsBlock = nativeToolSearch
+  const toolsBlock = deferredToolSearch
     ? `Available tools (always bound):
 - read: read file contents (raw text, no line numbers)
 - bash: run shell commands
@@ -62,8 +66,9 @@ export function buildSystemPrompt(
 ${editListLine}
 - write: create or overwrite a file
 - search_skills / load_skill: discover and on-demand load Agent Skills (SKILL.md packages under ~/.chunky|agents|claude|codex/skills, managed skill-repos, and project .agents|.claude|.chunky|.codex/skills). Bodies are never in the prompt — search first, load only when a description matches
+${portableToolSearch ? "- search_tools / call_deferred_tool: discover deferred tools by capability, then invoke one using its returned name and input schema\n" : ""}
 
-Additional tools (threads, workflows, goals, sessions, model catalog, skill repos, and advisor when configured) are deferred behind native tool search — use tool search to discover them when needed; do not assume a fixed full list in this prompt.`
+Additional tools (threads, workflows, goals, sessions, model catalog, skill repos, and advisor when configured) are deferred behind ${portableToolSearch ? "search_tools" : "native tool search"} — use tool search to discover them when needed; do not assume a fixed full list in this prompt.`
     : `Available tools:
 - read: read file contents (raw text, no line numbers)
 - bash: run shell commands
@@ -79,7 +84,7 @@ ${editListLine}
 - search_skills / load_skill: discover and on-demand load Agent Skills (SKILL.md packages under ~/.chunky|agents|claude|codex/skills, managed skill-repos, and project .agents|.claude|.chunky|.codex/skills). Bodies are never in the prompt — search first, load only when a description matches
 - manage_skill_repos: add/remove/update/list git remotes that supply skill packs (only when the user asks to install or manage skills)`
 
-  const multiAgentGuideline = nativeToolSearch
+  const multiAgentGuideline = deferredToolSearch
     ? "- For work that spans many files or wants many parallel sub-agents (audits, reviewing a whole directory, large refactors, cross-checked research), prefer a workflow over many spawn_thread calls once you have discovered those tools via tool search — the fan-out stays out of your context."
     : "- For work that spans many files or wants many parallel sub-agents (audits, reviewing a whole directory, large refactors, cross-checked research), prefer a single workflow over many spawn_thread calls — the fan-out stays out of your context."
 
@@ -87,7 +92,7 @@ ${editListLine}
     "- Skills: when a task matches specialized workflows (PDF tools, deploy runbooks, domain APIs, etc.), call search_skills then load_skill before improvising. Do not load skills speculatively; re-loading re-emits the full body (safe after compaction)." +
     " When the user asks to install a skill pack from git, use manage_skill_repos (or tell them about /skills add <url>)."
 
-  const goalGuideline = nativeToolSearch
+  const goalGuideline = deferredToolSearch
     ? "- Goal mode: if a message is prefixed \"[goal mode…]\", you're working autonomously toward a set goal — follow that message's instructions without asking for confirmation; when the goal is fully done and verified call goal_complete with evidence, or goal_blocked if you hit a real impasse (discover those tools via tool search if not already loaded). An \"[goal mode: orchestrator]\" goal means delegate the hands-on work to workflow runs instead of doing it yourself."
     : "- Goal mode: if a message is prefixed \"[goal mode…]\", you're working autonomously toward a set goal — follow that message's instructions without asking for confirmation; when the goal is fully done and verified call goal_complete with evidence, or goal_blocked if you hit a real impasse. An \"[goal mode: orchestrator]\" goal means delegate the hands-on work to workflow runs instead of doing it yourself."
 

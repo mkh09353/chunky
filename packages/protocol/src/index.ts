@@ -190,6 +190,36 @@ export interface AddRepoRequest {
   path: string
 }
 
+// ---- Managed skill repositories -------------------------------------------
+export interface ManagedSkill {
+  name: string
+  description: string
+  enabled: boolean
+}
+export interface SkillRepoStatus {
+  id: string
+  url: string
+  branch?: string
+  subdir?: string
+  disabledSkills?: string[]
+  addedAt: number
+  lastSync?: number
+  lastError?: string
+  path: string
+  present: boolean
+  skills: ManagedSkill[]
+}
+export type SkillRepoAction = "add" | "remove" | "update" | "list" | "enable" | "disable"
+export interface ManageSkillReposRequest {
+  action: SkillRepoAction
+  url?: string
+  id?: string
+  branch?: string
+  subdir?: string
+  skill?: string
+}
+export interface SkillReposResponse { action: SkillRepoAction; repos?: SkillRepoStatus[]; repo?: SkillRepoStatus; id?: string; updated?: number; failed?: number }
+
 // ---- Modes (named executor + advisor pairings) ----
 
 /** The advisor half of a mode. */
@@ -274,6 +304,8 @@ export const ROUTES = {
   applyMode: (name: string) => `/api/modes/${encodeURIComponent(name)}/apply`,
   // DELETE -> ModesResponse.
   deleteMode: (name: string) => `/api/modes/${encodeURIComponent(name)}`,
+  // GET list; POST ManageSkillReposRequest. Skill state is persisted per repo.
+  skillRepos: `/api/skill-repos`,
 } as const
 
 /** Body for POST ROUTES.goal. Exactly one of `objective` (set + start the goal)

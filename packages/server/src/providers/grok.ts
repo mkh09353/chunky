@@ -116,7 +116,7 @@ function accessTokenIsExpiring(token: string | undefined, skewMs = ACCESS_TOKEN_
 
 // ---------- token endpoint calls ----------
 
-function buildAuthorizeUrl(pkce: PkceCodes, state: string, nonce: string): string {
+export function buildAuthorizeUrl(pkce: PkceCodes, state: string, nonce: string): string {
   // plan=generic opts into xAI's generic OAuth plan tier (required for
   // non-allowlisted clients); referrer attributes the login in xAI's logs.
   const params = new URLSearchParams({
@@ -129,7 +129,7 @@ function buildAuthorizeUrl(pkce: PkceCodes, state: string, nonce: string): strin
     state,
     nonce,
     plan: "generic",
-    referrer: "chunky",
+    referrer: "opencode",
   })
   return `${AUTHORIZE_URL}?${params.toString()}`
 }
@@ -407,6 +407,9 @@ export const grokProvider: ProviderDef = {
     new ChatOpenAI({
       model: selection.model || DEFAULT_MODEL,
       apiKey: "oauth", // dummy; the real token is injected by the fetch override
+      // Match OpenCode's native xAI provider: subscription OAuth inference goes
+      // through POST /v1/responses instead of the generic chat-completions lane.
+      useResponsesApi: true,
       streaming: true,
       // Don't silently retry — an auth failure should surface fast, not back off
       // through several exponential retries (which reads as a hang).

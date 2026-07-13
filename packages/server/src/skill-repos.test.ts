@@ -20,6 +20,8 @@ const settings = await import("./settings.ts")
 const {
   skillRepoIdFromUrl,
   validateSkillRepoUrl,
+  validateSkillSubdir,
+  parseSkillRepoUrl,
   manageSkillRepos,
   listSkillRepoStatus,
   managedSkillRoots,
@@ -92,6 +94,18 @@ describe("url / id helpers", () => {
     expect(() => validateSkillRepoUrl("not a url")).toThrow()
     expect(() => validateSkillRepoUrl("./relative")).toThrow()
     expect(() => validateSkillRepoUrl("../escape")).toThrow()
+  })
+
+  test("parses GitHub tree links and rejects unsafe skill subdirectories", () => {
+    expect(parseSkillRepoUrl("https://github.com/owner/repo/tree/main/skills/collection")).toEqual({
+      url: "https://github.com/owner/repo.git",
+      branch: "main",
+      subdir: "skills/collection",
+    })
+    expect(validateSkillSubdir("skills/collection/")).toBe("skills/collection")
+    expect(() => validateSkillSubdir("../outside")).toThrow()
+    expect(() => validateSkillSubdir("skills/../outside")).toThrow()
+    expect(() => validateSkillSubdir("/absolute")).toThrow()
   })
 })
 
@@ -196,5 +210,28 @@ describe("manageSkillRepos lifecycle", () => {
     expect(hit).toBeDefined()
     expect(hit!.source).toBe("project")
     expect(hit!.description).toBe("Project wins")
+  })
+
+  test("disabling a managed skill persists and removes it from discovery", async () => {
+    seedBare()
+    await manageSkillRepos("add", { url: BARE, id: "disable-test" })
+
+    const disabled = (await manageSkillRepos("disable", { id: "disable-test", skill: "hello-skill" })) as {
+      repo: { skills: Array<{ name: string; description: string; enabled: boolean }> }
+    }
+    expect(disabled.repo.skills).toContainEqual({
+      name: "hello-skill",
+      description: "A hello skill from a managed repo",
+      enabled: false,
+    })
+    const ws = join(ROOT, "disabled-ws")
+    mkdirSync(ws, { recursive: true })
+    expect(discoverSkills(ws).find((s) => s.name === "hello-skill")).toBeUndefined()
+
+    const enabled = (await manageSkillRepos("enable", { id: "disable-test", skill: "hello-skill" })) as {
+      repo: { skills: Array<{ name: string; enabled: boolean }> }
+    }
+    expect(enabled.repo.skills.find((skill) => skill.name === "hello-skill")?.enabled).toBe(true)
+    expect(discoverSkills(ws).find((s) => s.name === "hello-skill")?.source).toBe("repo")
   })
 })

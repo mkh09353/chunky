@@ -71,6 +71,10 @@ export interface SkillRepoRecord {
   url: string
   /** Optional branch pin; omit = remote default. */
   branch?: string
+  /** Optional path inside the clone containing the skill collection. */
+  subdir?: string
+  /** Skill names explicitly disabled by the user. Kept per repository. */
+  disabledSkills?: string[]
   /** When the repo was first added. */
   addedAt: number
   /** Last successful sync (clone or pull). */
@@ -350,7 +354,7 @@ export function removeSkillRepo(id: string): boolean {
  *  Returns the updated record or undefined if id is unknown. */
 export function updateSkillRepo(
   id: string,
-  patch: Partial<Pick<SkillRepoRecord, "branch" | "lastSync" | "lastError">>,
+  patch: Partial<Pick<SkillRepoRecord, "branch" | "subdir" | "disabledSkills" | "lastSync" | "lastError">>,
 ): SkillRepoRecord | undefined {
   const s = loadSettings()
   const repos = [...(s.skillRepos ?? [])]
@@ -364,6 +368,10 @@ export function updateSkillRepo(
   }
   const branch = patch.branch !== undefined ? patch.branch : prev.branch
   if (branch) next.branch = branch
+  const subdir = patch.subdir !== undefined ? patch.subdir : prev.subdir
+  if (subdir) next.subdir = subdir
+  const disabledSkills = patch.disabledSkills !== undefined ? patch.disabledSkills : prev.disabledSkills
+  if (disabledSkills?.length) next.disabledSkills = [...new Set(disabledSkills)].sort()
   const lastSync = patch.lastSync !== undefined ? patch.lastSync : prev.lastSync
   if (lastSync !== undefined) next.lastSync = lastSync
   if ("lastError" in patch) {

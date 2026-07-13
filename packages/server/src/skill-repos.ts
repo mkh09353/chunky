@@ -4,7 +4,7 @@
 // Registry lives in settings.json (`skillRepos`). Working trees live next to
 // settings under `skill-repos/<id>/`. Mutations go through manageSkillRepos so
 // HTTP, TUI, and the agent tool share one path.
-import { existsSync, mkdirSync, rmSync } from "node:fs"
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync } from "node:fs"
 import { dirname, join, resolve } from "node:path"
 import { spawn } from "node:child_process"
 import {
@@ -18,12 +18,21 @@ import {
 } from "./settings.ts"
 
 export type SkillRepoAction = "add" | "remove" | "update" | "list"
+export type SkillRepoMutationAction = SkillRepoAction | "enable" | "disable"
+
+export interface ManagedSkillStatus {
+  name: string
+  description: string
+  enabled: boolean
+}
 
 export interface SkillRepoStatus extends SkillRepoRecord {
   /** Absolute path of the local clone (may not exist yet / after failed add). */
   path: string
   /** Whether the local tree currently exists. */
   present: boolean
+  /** Metadata for skills in this repo, including the persisted enabled state. */
+  skills: ManagedSkillStatus[]
 }
 
 function stateDir(): string {
@@ -41,19 +50,78 @@ export function skillRepoPath(id: string): string {
 export function listSkillRepoStatus(): SkillRepoStatus[] {
   return listSkillRepos().map((repo) => {
     const path = skillRepoPath(repo.id)
-    return { ...repo, path, present: existsSync(path) }
+    return { ...repo, path, present: existsSync(path), skills: skillsForRepo(repo, path) }
   })
 }
 
 /** Absolute roots to scan for SKILL.md during discovery (existing clones only). */
-export function managedSkillRoots(): Array<{ root: string; label: string; id: string }> {
+export function managedSkillRoots(): Array<{ root: string; label: string; id: string; disabledSkills: Set<string> }> {
   return listSkillRepos()
     .map((repo) => {
-      const root = skillRepoPath(repo.id)
-      return { root, label: `repo:${repo.id}`, id: repo.id, present: existsSync(root) }
+      const clone = skillRepoPath(repo.id)
+      const root = repo.subdir ? join(clone, repo.subdir) : clone
+      return { root, label: `repo:${repo.id}`, id: repo.id, disabledSkills: new Set(repo.disabledSkills ?? []), present: existsSync(root) }
     })
     .filter((r) => r.present)
-    .map(({ root, label, id }) => ({ root, label, id }))
+    .map(({ root, label, id, disabledSkills }) => ({ root, label, id, disabledSkills }))
+}
+
+/** Convert a GitHub web tree link into the actual git remote plus its ref/path.
+ * GitHub's normal /tree/<ref>/<directory> form is accepted in addition to raw
+ * git URLs. A separately supplied branch overrides the URL ref. */
+export function parseSkillRepoUrl(input: string): { url: string; branch?: string; subdir?: string } {
+  const raw = input.trim()
+  let parsed: URL
+  try { parsed = new URL(raw) } catch { return { url: validateSkillRepoUrl(raw) } }
+  if (parsed.hostname.toLowerCase() !== "github.com") return { url: validateSkillRepoUrl(raw) }
+  const parts = parsed.pathname.split("/").filter(Boolean)
+  if (parts.length >= 4 && parts[2] === "tree") {
+    const [, , , ref, ...directory] = parts
+    if (!ref) throw new Error("GitHub tree URL is missing a ref")
+    const subdir = directory.join("/") || undefined
+    validateSkillSubdir(subdir)
+    return { url: `https://github.com/${parts[0]}/${parts[1]}.git`, branch: decodeURIComponent(ref), subdir }
+  }
+  return { url: validateSkillRepoUrl(raw) }
+}
+
+export function validateSkillSubdir(subdir: string | undefined): string | undefined {
+  if (!subdir) return undefined
+  const raw = subdir.trim()
+  // Do not normalize a leading slash away: it denotes an absolute path.
+  if (raw.startsWith("/")) throw new Error("subdir must be a relative path inside the repository")
+  const value = raw.replace(/\/+$/g, "")
+  if (!value || value === "." || value.split("/").some((part) => !part || part === "." || part === ".." || part.includes("\\"))) {
+    throw new Error("subdir must be a relative path inside the repository")
+  }
+  return value
+}
+
+function skillsForRepo(repo: SkillRepoRecord, path: string): ManagedSkillStatus[] {
+  if (!existsSync(path)) return []
+  // Avoid importing skills.ts (which imports this module). This intentionally
+  // only reads metadata; discovery remains the single authority for loading.
+  const root = repo.subdir ? join(path, repo.subdir) : path
+  const disabled = new Set(repo.disabledSkills ?? [])
+  const results: ManagedSkillStatus[] = []
+  const visit = (dir: string, depth: number) => {
+    if (depth > 8) return
+    let entries: import("node:fs").Dirent[]
+    try { entries = readdirSync(dir, { withFileTypes: true }) } catch { return }
+    const skill = entries.find((entry) => entry.name === "SKILL.md")
+    if (skill) {
+      try {
+        const body = readFileSync(join(dir, "SKILL.md"), "utf8")
+        const name = (body.match(/^name:\s*["']?([^\n"']+)/m)?.[1]?.trim() || dir.split(/[\\/]/).pop() || "skill")
+        const description = body.match(/^description:\s*["']?([^\n"']+)/m)?.[1]?.trim() || ""
+        if (description) results.push({ name, description, enabled: !disabled.has(name) })
+      } catch { /* unreadable skill is simply omitted */ }
+      return
+    }
+    for (const entry of entries) if (entry.isDirectory() && !entry.name.startsWith(".") && entry.name !== "node_modules") visit(join(dir, entry.name), depth + 1)
+  }
+  visit(root, 0)
+  return results.sort((a, b) => a.name.localeCompare(b.name))
 }
 
 // ── URL / id helpers ─────────────────────────────────────────────────────────
@@ -197,11 +265,14 @@ async function pullRepo(dest: string, branch?: string): Promise<void> {
 export async function addManagedSkillRepo(opts: {
   url: string
   branch?: string
+  subdir?: string
   id?: string
 }): Promise<SkillRepoStatus> {
-  const url = validateSkillRepoUrl(opts.url)
+  const parsed = parseSkillRepoUrl(opts.url)
+  const url = parsed.url
   const id = opts.id ? validateSkillRepoId(opts.id) : skillRepoIdFromUrl(url)
-  const branch = opts.branch?.trim() || undefined
+  const branch = opts.branch?.trim() || parsed.branch
+  const subdir = validateSkillSubdir(opts.subdir ?? parsed.subdir)
   if (branch && /[^\w./-]+/.test(branch)) {
     throw new Error("branch contains invalid characters")
   }
@@ -232,10 +303,11 @@ export async function addManagedSkillRepo(opts: {
     id,
     url,
     ...(branch ? { branch } : {}),
+    ...(subdir ? { subdir } : {}),
     addedAt: Date.now(),
     lastSync: Date.now(),
   })
-  return { ...record, path, present: true }
+  return { ...record, path, present: true, skills: skillsForRepo(record, path) }
 }
 
 export async function removeManagedSkillRepo(idOrUrl: string): Promise<{ id: string; removed: boolean }> {
@@ -282,7 +354,7 @@ export async function updateManagedSkillRepo(id?: string): Promise<SkillRepoStat
         await pullRepo(path, repo.branch)
       }
       const next = updateSkillRepo(repo.id, { lastSync: Date.now(), lastError: undefined })
-      results.push({ ...(next ?? repo), path, present: true })
+      results.push({ ...(next ?? repo), path, present: true, skills: skillsForRepo(next ?? repo, path) })
     } catch (err) {
       const msg = (err as Error).message
       const next = updateSkillRepo(repo.id, { lastError: msg })
@@ -290,6 +362,7 @@ export async function updateManagedSkillRepo(id?: string): Promise<SkillRepoStat
         ...(next ?? repo),
         path,
         present: existsSync(path),
+        skills: skillsForRepo(next ?? repo, path),
         lastError: msg,
       })
     }
@@ -299,8 +372,8 @@ export async function updateManagedSkillRepo(id?: string): Promise<SkillRepoStat
 
 /** Shared mutation path for HTTP, TUI, and the agent tool. */
 export async function manageSkillRepos(
-  action: SkillRepoAction,
-  opts: { url?: string; id?: string; branch?: string } = {},
+  action: SkillRepoMutationAction,
+  opts: { url?: string; id?: string; branch?: string; subdir?: string; skill?: string } = {},
 ): Promise<unknown> {
   if (action === "list") {
     return { action, repos: listSkillRepoStatus() }
@@ -310,6 +383,7 @@ export async function manageSkillRepos(
     const repo = await addManagedSkillRepo({
       url: opts.url,
       branch: opts.branch,
+      subdir: opts.subdir,
       id: opts.id,
     })
     return { action, repo }
@@ -329,6 +403,19 @@ export async function manageSkillRepos(
       failed: failed.length,
       repos,
     }
+  }
+  if (action === "enable" || action === "disable") {
+    const id = opts.id?.trim()
+    const skill = opts.skill?.trim()
+    if (!id || !skill) throw new Error("id and skill are required to enable or disable a skill")
+    const repo = skillRepoById(id)
+    if (!repo) throw new Error(`skill repo "${id}" not found`)
+    const disabled = new Set(repo.disabledSkills ?? [])
+    if (action === "disable") disabled.add(skill)
+    else disabled.delete(skill)
+    const next = updateSkillRepo(id, { disabledSkills: [...disabled] })!
+    const path = skillRepoPath(id)
+    return { action, repo: { ...next, path, present: existsSync(path), skills: skillsForRepo(next, path) } }
   }
   throw new Error(`unknown action "${action as string}"`)
 }

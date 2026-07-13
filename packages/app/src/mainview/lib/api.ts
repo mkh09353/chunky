@@ -17,6 +17,9 @@ import {
   type ReposResponse,
   type SendBlockedResponse,
   type SessionSummary,
+  type ManageSkillReposRequest,
+  type SkillRepoStatus,
+  type SkillReposResponse,
 } from "@chunky/protocol"
 
 import { getRpc } from "./rpc"
@@ -491,27 +494,25 @@ export async function deleteMode(baseUrl: string, name: string): Promise<ModesRe
 
 // ---- Managed skill repositories ---------------------------------------------
 
-export interface SkillRepoStatus {
-  id: string
-  url: string
-  branch?: string
-  addedAt: number
-  lastSync?: number
-  lastError?: string
-  path: string
-  present: boolean
+export type { SkillRepoStatus } from "@chunky/protocol"
+
+export async function listManagedSkillRepos(baseUrl: string): Promise<SkillRepoStatus[]> {
+  const res = await fetch(baseUrl + ROUTES.skillRepos)
+  const body = (await res.json().catch(() => ({}))) as SkillReposResponse & { error?: string }
+  if (!res.ok || body.error) throw new Error(body.error || `skill-repos list failed (${res.status})`)
+  return body.repos ?? []
 }
 
 export async function manageSkillRepos(
   baseUrl: string,
-  payload: { action: "add" | "remove" | "update" | "list"; url?: string; id?: string; branch?: string },
-): Promise<Record<string, unknown>> {
-  const res = await fetch(baseUrl + "/api/skill-repos", {
+  payload: ManageSkillReposRequest,
+): Promise<SkillReposResponse> {
+  const res = await fetch(baseUrl + ROUTES.skillRepos, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(payload),
   })
-  const body = (await res.json().catch(() => ({}))) as Record<string, unknown> & { error?: string }
+  const body = (await res.json().catch(() => ({}))) as SkillReposResponse & { error?: string }
   if (!res.ok || body.error) throw new Error(body.error || `skill-repos ${payload.action} failed (${res.status})`)
   return body
 }

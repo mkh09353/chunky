@@ -4,10 +4,10 @@ import { manageSkillRepos } from "../skill-repos.ts"
 
 export const manageSkillReposInputShape = {
   action: z
-    .enum(["add", "remove", "update", "list"])
+    .enum(["add", "remove", "update", "list", "enable", "disable"])
     .describe(
       "add = clone+register a git remote; remove = unregister and delete the local clone; " +
-        "update = git pull (all repos, or one by id); list = show registered repos.",
+        "update = git pull (all repos, or one by id); list = show repos and skills; enable/disable changes one skill's persisted state.",
     ),
   url: z
     .string()
@@ -23,11 +23,13 @@ export const manageSkillReposInputShape = {
     .string()
     .optional()
     .describe("Optional branch to pin when adding (default: remote HEAD)."),
+  subdir: z.string().optional().describe("Optional relative path inside the clone holding skills. GitHub /tree URLs derive this automatically."),
+  skill: z.string().optional().describe("Skill name for enable or disable."),
 }
 
 export const manageSkillReposTool = tool(
-  async ({ action, url, id, branch }) =>
-    JSON.stringify(await manageSkillRepos(action, { url, id, branch }), null, 2),
+  async ({ action, url, id, branch, subdir, skill }) =>
+    JSON.stringify(await manageSkillRepos(action, { url, id, branch, subdir, skill }), null, 2),
   {
     name: "manage_skill_repos",
     description:

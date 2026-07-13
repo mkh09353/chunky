@@ -5,8 +5,8 @@
 // LEAN HARNESS: we call `createAgent` from `langchain` directly — the same
 // primitive `createDeepAgent` wraps — instead of `createDeepAgent`. This sheds
 // DeepAgents' heavy defaults (BASE_AGENT_PROMPT, write_todos, the 6 verbose
-// filesystem tools, the `task` tool) and replaces them with our own ~300-token
-// system prompt and four lean tools (read/bash/write/edit) that operate directly
+// filesystem tools, the `task` tool) and replaces them with a compact system
+// prompt and core tool set that operate directly
 // on the run's workspace (resolved per-call from `configurable.workspace`) via
 // node:fs. Checkpointer, streaming, threads, and providers are all unchanged —
 // only the agent-construction call differs.
@@ -25,6 +25,7 @@ import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { ADVISOR_SYSTEM_PROMPT, buildSystemPrompt, type EditToolName } from "./prompt.ts"
 import {
   buildToolSearchMiddleware,
+  portableToolSetFor,
   supportsNativeToolSearch,
   toolSearchMiddlewareConfigFor,
 } from "./tool-search.ts"
@@ -52,6 +53,7 @@ export {
   isGptVersionAtLeast,
   parseGptVersion,
   partitionTools,
+  portableToolSetFor,
   supportsNativeToolSearch,
   toolSearchMiddlewareConfigFor,
 } from "./tool-search.ts"
@@ -224,11 +226,13 @@ export function buildAgent(
   // non-core tools behind OpenAI Responses tool_search. Unsupported provider/model
   // keeps the full always-bound catalog (safe fallback; no middleware, no defer).
   const toolSearchMw = buildToolSearchMiddleware(providerId, modelId, plan.tools)
+  const boundTools = portableToolSetFor(providerId, plan.tools)
   return createAgent({
     model,
-    tools: plan.tools,
+    tools: boundTools,
     systemPrompt: buildSystemPrompt(plan.editToolName, plan.hasAdvisor, workspace, {
       nativeToolSearch: plan.nativeToolSearch,
+      portableToolSearch: providerId === "grok",
     }),
     checkpointer: makeCheckpointer(),
     // Auto-compaction — the context-management half of Pi's efficiency win (a

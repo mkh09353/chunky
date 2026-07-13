@@ -5,7 +5,8 @@
 // Core tools stay eagerly available (filesystem/edit + skill discovery/load).
 // Everything else is deferred/searchable when the gate is on.
 import { providerToolSearchMiddleware } from "langchain"
-import type { StructuredToolInterface } from "@langchain/core/tools"
+import { tool, type StructuredToolInterface } from "@langchain/core/tools"
+import { z } from "zod"
 
 /** Essential tools that must remain bound (not deferred) under native tool search. */
 export const CORE_TOOL_NAMES = Object.freeze([
@@ -85,6 +86,68 @@ export function partitionTools<T extends ToolLike>(tools: readonly T[]): {
 /** Names of tools that should be marked searchable/deferred under native mode. */
 export function deferredToolNames(tools: readonly ToolLike[]): string[] {
   return partitionTools(tools).deferred.map((t) => t.name)
+}
+
+/** Grok has Responses function calling but not OpenAI's server-side tool_search. */
+export function supportsPortableToolSearch(provider: string): boolean {
+  return provider === "grok"
+}
+
+/**
+ * Provider-neutral deferred tools for Grok. Only core schemas plus these two
+ * compact meta-tools are sent up front; search returns matching deferred tool
+ * contracts and dispatch invokes one of the original LangChain tools locally.
+ */
+export function portableToolSetFor<T extends StructuredToolInterface>(
+  provider: string,
+  tools: T[],
+): StructuredToolInterface[] {
+  if (!supportsPortableToolSearch(provider)) return tools
+
+  const { core, deferred } = partitionTools(tools)
+  const byName = new Map(deferred.map((item) => [item.name, item]))
+  const searchTools = tool(
+    async ({ query }: { query: string }) => {
+      const terms = query.toLowerCase().split(/\s+/).filter(Boolean)
+      const matches = deferred
+        .map((item) => {
+          const haystack = `${item.name} ${item.description ?? ""}`.toLowerCase()
+          const score = terms.reduce((total, term) => total + (haystack.includes(term) ? 1 : 0), 0)
+          return { item, score }
+        })
+        .filter(({ score }) => terms.length === 0 || score > 0)
+        .sort((a, b) => b.score - a.score || a.item.name.localeCompare(b.item.name))
+        .slice(0, 8)
+        .map(({ item }) => ({
+          name: item.name,
+          description: item.description,
+          input_schema: z.toJSONSchema(item.schema as z.ZodType),
+        }))
+      return JSON.stringify(matches)
+    },
+    {
+      name: "search_tools",
+      description: "Search deferred tools by capability. Returns names, descriptions, and input schemas for matching tools.",
+      schema: z.object({ query: z.string().describe("Short capability query, such as workflow, sessions, goals, or models.") }),
+    },
+  )
+  const callDeferredTool = tool(
+    async ({ name, arguments: args }: { name: string; arguments: Record<string, unknown> }, config) => {
+      const target = byName.get(name)
+      if (!target) return `error: unknown deferred tool ${JSON.stringify(name)}; call search_tools first.`
+      return target.invoke(args, config)
+    },
+    {
+      name: "call_deferred_tool",
+      description: "Invoke a deferred tool discovered with search_tools using its exact name and schema-compliant arguments.",
+      schema: z.object({
+        name: z.string().describe("Exact deferred tool name returned by search_tools."),
+        arguments: z.record(z.string(), z.unknown()).describe("Arguments matching the discovered input_schema."),
+      }),
+    },
+  )
+
+  return [...core, searchTools, callDeferredTool]
 }
 
 /**

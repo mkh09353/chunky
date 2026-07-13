@@ -54,6 +54,12 @@ export type AgentEvent =
   | { type: "message.start"; role: "assistant"; threadId?: string }
   | { type: "message.delta"; text: string; threadId?: string }
   | { type: "message.end"; reason?: MessageEndReason; threadId?: string }
+  /** Extended-thinking / reasoning tokens streamed BEFORE the assistant answer.
+   *  Providers that expose thinking (e.g. Claude) emit these; clients render them
+   *  as a collapsible "thought" block. Absent for providers that don't. */
+  | { type: "reasoning.start"; threadId?: string }
+  | { type: "reasoning.delta"; text: string; threadId?: string }
+  | { type: "reasoning.end"; threadId?: string }
   /** Provider usage for a completed model request. Persisted for diagnostics and
    *  future cost/context reporting; clients may ignore it. */
   | { type: "usage.update"; usage: UsageDelta; threadId?: string }

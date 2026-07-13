@@ -1,4 +1,4 @@
-import { Fragment, useEffect, useState } from "react"
+import { createContext, Fragment, useCallback, useContext, useEffect, useState } from "react"
 import { TextAttributes } from "@opentui/core"
 import type { Item, ThreadNode, TranscriptState } from "../transcript.js"
 import { MAIN } from "../transcript.js"
@@ -14,12 +14,25 @@ import {
   DOT,
   ERROR,
   MARKER,
+  SPARKLE,
   SPINNER_FRAMES,
   SUCCESS,
   WARNING,
 } from "../theme.js"
 
 const { BOLD, DIM } = TextAttributes
+
+/** Per-item collapse/expand state (reasoning blocks + tool output), shared with
+ *  the deeply-nested ItemView without prop-drilling. Keyed by a stable per-item
+ *  id ("r:<id>" for reasoning, "t:<toolId>" for tools). Mouse-click toggles it. */
+const ItemExpandContext = createContext<{ expanded: Set<string>; toggle: (key: string) => void }>({
+  expanded: new Set(),
+  toggle: () => {},
+})
+
+/** Max output lines shown when a tool result is expanded (guards against a
+ *  100k-line bash dump flooding the transcript). */
+const TOOL_OUTPUT_MAX_LINES = 200
 
 // Max chars for a coalesced group's trailing input hint, mirroring kimi's
 // TOOL_SUMMARY_MAX_LENGTH — tighter than a lone tool's header so the "×N" count
@@ -69,6 +82,16 @@ export function Transcript({
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
   const [focusedId, setFocusedId] = useState<string | null>(null)
   const [copyNotice, setCopyNotice] = useState<string | null>(null)
+  // Per-item expand state for reasoning blocks + tool output (click to toggle).
+  const [expandedItems, setExpandedItems] = useState<Set<string>>(() => new Set())
+  const toggleItem = useCallback((key: string) => {
+    setExpandedItems((prev) => {
+      const next = new Set(prev)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }, [])
 
   const threadIds = state.order.filter((id) => id !== MAIN)
 
@@ -116,18 +139,20 @@ export function Transcript({
   // The caret target (highlighted, toggled by a bare Ctrl+O) defaults to newest.
   const effectiveFocus = focusedId && threadIds.includes(focusedId) ? focusedId : (threadIds[threadIds.length - 1] ?? null)
   return (
-    <box flexDirection="column">
-      {copyNotice ? <text fg={SUCCESS} attributes={DIM}>✓ {copyNotice}</text> : null}
-      <ParentBody
-        items={main.items}
-        parentId={MAIN}
-        state={state}
-        depth={0}
-        collapsed={collapsed}
-        expanded={expanded}
-        focusedId={effectiveFocus}
-      />
-    </box>
+    <ItemExpandContext.Provider value={{ expanded: expandedItems, toggle: toggleItem }}>
+      <box flexDirection="column">
+        {copyNotice ? <text fg={SUCCESS} attributes={DIM}>✓ {copyNotice}</text> : null}
+        <ParentBody
+          items={main.items}
+          parentId={MAIN}
+          state={state}
+          depth={0}
+          collapsed={collapsed}
+          expanded={expanded}
+          focusedId={effectiveFocus}
+        />
+      </box>
+    </ItemExpandContext.Provider>
   )
 }
 
@@ -312,7 +337,42 @@ function Spinner({ color }: { color: string }) {
 }
 
 export function ItemView({ item }: { item: DisplayItem }) {
+  const expandCtx = useContext(ItemExpandContext)
   switch (item.kind) {
+    case "reasoning": {
+      // Collapsible thought block. While streaming, the body shows live (watch it
+      // think) with a spinner; once done it collapses to a one-line header you can
+      // click to re-expand. Dimmed throughout — it's subordinate to the answer.
+      const key = `r:${item.id}`
+      const open = expandCtx.expanded.has(key)
+      const showBody = item.streaming || open
+      return (
+        <box marginTop={1} flexDirection="column">
+          <box
+            flexDirection="row"
+            onMouseDown={
+              item.streaming
+                ? undefined
+                : (e) => {
+                    e.stopPropagation()
+                    expandCtx.toggle(key)
+                  }
+            }
+          >
+            {item.streaming ? <Spinner color={MARKER} /> : <text fg={MARKER}>{SPARKLE}</text>}
+            <text fg={MARKER} attributes={DIM}>
+              {item.streaming ? " Thinking…" : ` Thought${open ? "  ▾" : "  ▸"}`}
+            </text>
+          </box>
+          {showBody && item.text ? (
+            <box marginLeft={2} flexDirection="column">
+              <text attributes={DIM}>{item.text}</text>
+            </box>
+          ) : null}
+        </box>
+      )
+    }
+
     case "tool-group": {
       // A coalesced run: one line, a status dot (grey spinner while any call is
       // in flight → purple ⏺ once all done), a by-category summary ("read 5 files ·
@@ -370,7 +430,14 @@ export function ItemView({ item }: { item: DisplayItem }) {
         </box>
       )
 
-    case "tool":
+    case "tool": {
+      const output = item.output ?? ""
+      const lines = output.split("\n")
+      // Expandable when there's more than the one-line summary shows.
+      const expandable = item.done && (lines.length > 1 || output.length > 80)
+      const key = `t:${item.id}`
+      const open = expandable && expandCtx.expanded.has(key)
+      const shown = open ? lines.slice(0, TOOL_OUTPUT_MAX_LINES) : []
       return (
         <box marginTop={1} flexDirection="column">
           <box flexDirection="row">
@@ -379,16 +446,41 @@ export function ItemView({ item }: { item: DisplayItem }) {
             <text attributes={DIM}>({summarizeInput(item.input)})</text>
           </box>
           {item.done && (
-            <box flexDirection="row" marginLeft={2}>
+            <box
+              flexDirection="row"
+              marginLeft={2}
+              onMouseDown={
+                expandable
+                  ? (e) => {
+                      e.stopPropagation()
+                      expandCtx.toggle(key)
+                    }
+                  : undefined
+              }
+            >
               <text attributes={DIM}>
                 {"  ⎿  "}
                 <span fg={item.ok ? SUCCESS : ERROR}>{item.ok ? "" : "error: "}</span>
-                {summarizeOutput(item.output ?? "")}
+                {open ? `${lines.length} lines` : summarizeOutput(output)}
+                {expandable ? (open ? "  ▾" : "  ▸") : ""}
               </text>
+            </box>
+          )}
+          {open && (
+            <box flexDirection="column" marginLeft={4}>
+              {shown.map((l, k) => (
+                <text key={k} attributes={DIM}>
+                  {l.length === 0 ? " " : l}
+                </text>
+              ))}
+              {lines.length > TOOL_OUTPUT_MAX_LINES ? (
+                <text attributes={DIM}>{`  … +${lines.length - TOOL_OUTPUT_MAX_LINES} more lines`}</text>
+              ) : null}
             </box>
           )}
         </box>
       )
+    }
 
     case "error":
       return (

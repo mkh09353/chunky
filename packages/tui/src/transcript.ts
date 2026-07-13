@@ -12,6 +12,9 @@ export type Item =
   /** `from` marks a message injected by ANOTHER session via send_to_session. */
   | { kind: "user"; text: string; from?: string }
   | { kind: "assistant"; text: string; streaming: boolean; endReason?: MessageEndReason }
+  /** Extended-thinking block streamed before the answer. `id` is thread-stable so
+   *  the renderer can key its collapsed/expanded state. */
+  | { kind: "reasoning"; id: string; text: string; streaming: boolean }
   | { kind: "tool"; id: string; name: string; input: unknown; done: boolean; ok?: boolean; output?: string }
   | { kind: "error"; text: string }
   /** A goal-mode lifecycle marker (set / continuing / complete / blocked / paused / cleared). */
@@ -61,11 +64,48 @@ export const initialState: TranscriptState = {
   status: "idle",
 }
 
-/** Fold one item-level event into a thread's item list (the classic flat reducer). */
-function reduceItems(items: Item[], ev: AgentEvent): Item[] {
+/** Mark any still-streaming reasoning block as finished (the answer or a tool has
+ *  started, so thinking is over even if no explicit reasoning.end arrived). */
+function closeOpenReasoning(items: Item[]): Item[] {
+  let changed = false
+  const next = items.map((it) => {
+    if (it.kind === "reasoning" && it.streaming) {
+      changed = true
+      return { ...it, streaming: false }
+    }
+    return it
+  })
+  return changed ? next : items
+}
+
+/** Fold one item-level event into a thread's item list (the classic flat reducer).
+ *  `threadId` scopes generated ids (reasoning) so they're unique across threads. */
+function reduceItems(items: Item[], ev: AgentEvent, threadId: string): Item[] {
   switch (ev.type) {
+    case "reasoning.start": {
+      const seq = items.filter((it) => it.kind === "reasoning").length
+      return [...items, { kind: "reasoning", id: `${threadId}:r${seq}`, text: "", streaming: true }]
+    }
+
+    case "reasoning.delta": {
+      const next = [...items]
+      for (let i = next.length - 1; i >= 0; i--) {
+        const it = next[i]!
+        if (it.kind === "reasoning" && it.streaming) {
+          next[i] = { ...it, text: it.text + ev.text }
+          return next
+        }
+      }
+      // A delta with no open block (e.g. resume mid-stream) still opens one.
+      const seq = items.filter((it) => it.kind === "reasoning").length
+      return [...next, { kind: "reasoning", id: `${threadId}:r${seq}`, text: ev.text, streaming: true }]
+    }
+
+    case "reasoning.end":
+      return closeOpenReasoning(items)
+
     case "message.start":
-      return [...items, { kind: "assistant", text: "", streaming: true }]
+      return [...closeOpenReasoning(items), { kind: "assistant", text: "", streaming: true }]
 
     case "message.delta": {
       const next = [...items]
@@ -93,8 +133,8 @@ function reduceItems(items: Item[], ev: AgentEvent): Item[] {
     }
 
     case "tool.start": {
-      // Close any open assistant block so text after the tool renders below it.
-      const closed = items.map((it) =>
+      // Close any open assistant/reasoning block so text after the tool renders below it.
+      const closed = closeOpenReasoning(items).map((it) =>
         it.kind === "assistant" && it.streaming ? { ...it, streaming: false } : it,
       )
       return [...closed, { kind: "tool", id: ev.id, name: ev.name, input: ev.input, done: false }]
@@ -232,6 +272,9 @@ export function reduce(state: TranscriptState, ev: AgentEvent): TranscriptState 
       return updateThreadItems(state, threadId, (items) => [...items, { kind: "workflow-log", message: ev.message }])
     }
 
+    case "reasoning.start":
+    case "reasoning.delta":
+    case "reasoning.end":
     case "message.start":
     case "message.delta":
     case "message.end":
@@ -239,7 +282,7 @@ export function reduce(state: TranscriptState, ev: AgentEvent): TranscriptState 
     case "tool.end":
     case "error": {
       const threadId = ("threadId" in ev && ev.threadId) || MAIN
-      return updateThreadItems(state, threadId, (items) => reduceItems(items, ev))
+      return updateThreadItems(state, threadId, (items) => reduceItems(items, ev, threadId))
     }
 
     default:

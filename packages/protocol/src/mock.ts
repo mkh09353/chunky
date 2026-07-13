@@ -8,6 +8,16 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 export async function* mockRun(userText: string): AsyncGenerator<AgentEvent> {
   const sessionId = "mock-session"
   yield { type: "session.status", sessionId, status: "running" }
+
+  // A short reasoning/thinking block before the answer (mirrors a thinking model).
+  yield { type: "reasoning.start" }
+  const thinking = `The user asked me to "${userText}". Let me think about the shape of this before answering — I should look at the project layout, figure out the entry point, then outline concrete steps rather than guessing.`
+  for (const chunk of chunks(thinking)) {
+    yield { type: "reasoning.delta", text: chunk }
+    await sleep(12)
+  }
+  yield { type: "reasoning.end" }
+
   yield { type: "message.start", role: "assistant" }
 
   const preface = `I'll help you with "${userText}". Let me look at the project first.`

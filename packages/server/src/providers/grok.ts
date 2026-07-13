@@ -392,6 +392,7 @@ async function startBrowserLogin(): Promise<LoginInitiation> {
 export const grokProvider: ProviderDef = {
   id: "grok",
   label: "Grok · xAI (SuperGrok OAuth)",
+  billing: "subscription",
   // Ready once we have a stored token that is either still valid or refreshable.
   ready: () => {
     const auth = AuthStore.get("grok")

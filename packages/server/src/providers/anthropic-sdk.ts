@@ -168,6 +168,7 @@ async function loginWithClaudeOAuth(): Promise<LoginInitiation> {
 export const anthropicProvider: ProviderDef = {
   id: "anthropic",
   label: "Anthropic Agent SDK · Claude subscription OAuth",
+  billing: "subscription",
   runtime: "anthropic-sdk",
   ready: anthropicOAuthReady,
   listModels: listAnthropicModels,

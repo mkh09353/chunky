@@ -10,19 +10,19 @@ import { threadContextFor } from "../thread-context.ts"
 const DESCRIPTION = `Run a dynamic workflow: a JavaScript orchestration script that fans out many sub-agents in parallel, then returns ONE synthesized result. Use it for multi-file / multi-phase / large work where calling spawn_thread one at a time would be too slow or wouldn't reliably cover everything (codebase-wide audits, reviewing every file in a dir, cross-checked research, big refactors). Intermediate results stay in script variables — only the final return value enters your context, keeping it lean.
 
 The script is JavaScript with top-level \`await\`; \`return\` the final value. Available globals:
-- agent(prompt, opts?) -> the sub-agent's final text; if opts.schema (a JSON Schema) is set, returns the parsed object (or null on failure). opts: { label, phase, tier:'small'|'medium'|'big', provider, model, effort, speed }.
+- agent(prompt, opts?) -> the sub-agent's final text; if opts.schema (a JSON Schema) is set, returns the parsed object (or null on failure). opts: { label, phase, tags: string[], tier:'small'|'medium'|'big', provider, model, effort, speed }.
 - parallel(thunks) -> run an array of () => agent(...) concurrently; returns results in order (a failed one is null).
 - pipeline(items, ...stages) -> run each item through the stages independently (no barrier); stage signature (prev, item, index).
 - phase(title) / log(msg) -> progress grouping + a narrator line the user sees.
 - args -> the args you passed to this tool. budget -> { total, spent(), remaining() } (stub for now).
-Concurrency is capped automatically. Date.now()/Math.random() are disabled (runs must be deterministic) — vary work by array index. Give every agent a tier (or an explicit model): small/medium run the session's default executor model at low/default effort, big routes to the advisor/premium model — reserve it for the hardest judgment calls.
+Concurrency is capped automatically. Date.now()/Math.random() are disabled (runs must be deterministic) — vary work by array index. Prefer semantic tags over raw model ids: general, fast, research, frontend, design, premium. Chunky resolves tags to provider-qualified routes, preferring subscription and known-free targets; unmatched specialties stop so you can ask the user. Explicit provider/model is for a user-requested override.
 
 Example:
-const files = (await agent('List the route files under src/routes, one path per line, no prose.', { tier: 'small' })).split('\\n').filter(Boolean)
+const files = (await agent('List the route files under src/routes, one path per line, no prose.', { tags: ['fast', 'general'] })).split('\\n').filter(Boolean)
 phase('Review')
-const found = await parallel(files.map(f => () => agent(\`Audit \${f} for missing auth checks. Be specific.\`, { tier: 'medium' })))
+const found = await parallel(files.map(f => () => agent(\`Audit \${f} for missing auth checks. Be specific.\`, { tags: ['general'] })))
 phase('Synthesize')
-return await agent('Synthesize these audit findings into the top risks:\\n' + found.filter(Boolean).join('\\n\\n'), { tier: 'big' })`
+return await agent('Synthesize these audit findings into the top risks:\\n' + found.filter(Boolean).join('\\n\\n'), { tags: ['premium'] })`
 
 export const workflowInputShape = {
   script: z.string().describe("The JavaScript orchestration script (top-level await; `return` the final value)."),

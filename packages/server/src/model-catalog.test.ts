@@ -71,3 +71,25 @@ describe("model catalog overlay", () => {
     expect(settings.modelCatalogFor("codex")).toEqual(before)
   })
 })
+
+describe("workflow target overrides", () => {
+  test("validates effort values at JSON boundaries", () => {
+    expect(settings.isEffort("xhigh")).toBe(true)
+    expect(settings.isEffort("expensive")).toBe(false)
+  })
+
+  test("stores provider-qualified tags and automatic fan-out permission as optional exceptions", () => {
+    settings.setWorkflowTargetOverride("anthropic", "opus[1m]", {
+      tags: [" Frontend ", "design", "frontend"],
+      automatic: true,
+      effort: "high",
+    })
+    expect(settings.workflowTargetOverrides()["anthropic/opus[1m]"]).toEqual({
+      tags: ["frontend", "design"],
+      automatic: true,
+      effort: "high",
+    })
+    settings.setWorkflowTargetOverride("anthropic", "opus[1m]", null)
+    expect(settings.workflowTargetOverrides()["anthropic/opus[1m]"]).toBeUndefined()
+  })
+})

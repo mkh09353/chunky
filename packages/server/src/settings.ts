@@ -11,6 +11,11 @@ import { join } from "node:path"
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max"
 export type Speed = "standard" | "fast"
+export const EFFORTS: readonly Effort[] = ["low", "medium", "high", "xhigh", "max"]
+
+export function isEffort(value: unknown): value is Effort {
+  return typeof value === "string" && EFFORTS.includes(value as Effort)
+}
 
 /** Per-provider selection: which model + reasoning knobs. */
 export interface ModelSelection {
@@ -61,6 +66,14 @@ export interface Settings {
   serverToken?: string
   /** Managed skill git repositories (cloned under stateDir/skill-repos/). */
   skillRepos?: SkillRepoRecord[]
+  /** Optional user exceptions to Chunky's zero-config workflow routing. Keys are provider/model. */
+  workflowTargets?: Record<string, WorkflowTargetOverride>
+}
+
+export interface WorkflowTargetOverride {
+  tags?: string[]
+  automatic?: boolean
+  effort?: Effort
 }
 
 /** A user-registered git remote that supplies Agent Skills (SKILL.md packages). */
@@ -91,6 +104,43 @@ export interface CatalogModelRecord {
 export interface ModelCatalogOverlay {
   added?: Record<string, CatalogModelRecord>
   hidden?: string[]
+}
+
+export function workflowTargetKey(provider: string, model: string): string {
+  return `${provider}/${model}`
+}
+
+export function normalizeWorkflowTags(tags: string[]): string[] {
+  return [...new Set(tags.map((tag) => tag.trim().toLowerCase()).filter(Boolean))]
+}
+
+export function workflowTargetOverrides(): Record<string, WorkflowTargetOverride> {
+  return { ...(loadSettings().workflowTargets ?? {}) }
+}
+
+export function setWorkflowTargetOverride(
+  provider: string,
+  model: string,
+  patch: WorkflowTargetOverride | null,
+): WorkflowTargetOverride | null {
+  const s = loadSettings()
+  const workflowTargets = { ...(s.workflowTargets ?? {}) }
+  const key = workflowTargetKey(provider, model)
+  if (patch === null) {
+    delete workflowTargets[key]
+    save({ ...s, workflowTargets })
+    return null
+  }
+  const previous = workflowTargets[key] ?? {}
+  const next: WorkflowTargetOverride = {
+    ...previous,
+    ...(patch.tags !== undefined ? { tags: normalizeWorkflowTags(patch.tags) } : {}),
+    ...(patch.automatic !== undefined ? { automatic: patch.automatic } : {}),
+    ...(patch.effort !== undefined ? { effort: patch.effort } : {}),
+  }
+  workflowTargets[key] = next
+  save({ ...s, workflowTargets })
+  return next
 }
 
 function settingsPath(): string {

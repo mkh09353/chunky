@@ -30,6 +30,10 @@ export interface WorkflowHost {
   /** Resolve a small/medium/big tier to a model override (undefined = inherit).
    *  Optional so a test host can omit it (tier then inherits). */
   tierOverride?: (tier: WorkflowTier) => AgentSelectionOverride | undefined
+  /** Resolve semantic tags (and legacy tiers) to a provider-qualified target. */
+  routeOverride?: (request: { tags?: string[]; tier?: WorkflowTier }) => AgentSelectionOverride | undefined | Promise<AgentSelectionOverride | undefined>
+  /** Guard raw provider/model overrides so a model cannot silently select a metered route. */
+  validateExplicit?: (selection: AgentSelectionOverride) => AgentSelectionOverride | Promise<AgentSelectionOverride>
 }
 
 export type WorkflowTier = "small" | "medium" | "big"
@@ -40,6 +44,8 @@ export interface AgentOpts {
   label?: string
   phase?: string
   tier?: WorkflowTier
+  /** Semantic capabilities requested from the host router (for example frontend, research, or fast). */
+  tags?: string[]
   provider?: string
   model?: string
   effort?: Effort
@@ -150,13 +156,17 @@ function buildScope(host: WorkflowHost, args: unknown): Record<string, unknown> 
   let currentPhase: string | undefined
   let totalAgents = 0
 
-  const selectionFor = (opts: AgentOpts): AgentSelectionOverride | undefined => {
+  const selectionFor = async (opts: AgentOpts): Promise<AgentSelectionOverride | undefined> => {
     const explicit: AgentSelectionOverride = {}
     if (opts.provider) explicit.provider = opts.provider
     if (opts.model) explicit.model = opts.model
     if (opts.effort) explicit.effort = opts.effort
     if (opts.speed) explicit.speed = opts.speed
-    if (Object.keys(explicit).length > 0) return explicit
+    if (Object.keys(explicit).length > 0) return host.validateExplicit ? await host.validateExplicit(explicit) : explicit
+    if (host.routeOverride) {
+      const routed = await host.routeOverride({ tags: opts.tags, tier: opts.tier })
+      if (routed) return routed
+    }
     if (opts.tier && host.tierOverride) return host.tierOverride(opts.tier)
     return undefined
   }
@@ -168,7 +178,7 @@ function buildScope(host: WorkflowHost, args: unknown): Record<string, unknown> 
     if (++totalAgents > MAX_AGENTS_PER_RUN) {
       throw new Error(`workflow exceeded the ${MAX_AGENTS_PER_RUN}-agent per-run cap (likely a runaway loop).`)
     }
-    const selection = selectionFor(opts)
+    const selection = await selectionFor(opts)
     const label = opts.label ?? deriveLabel(prompt)
     const phase = opts.phase ?? currentPhase
     const title = phase ? `${phase} · ${label}` : label
@@ -202,7 +212,8 @@ function buildScope(host: WorkflowHost, args: unknown): Record<string, unknown> 
         if (typeof t !== "function") throw new Error("parallel(thunks) — each item must be a function: () => agent(...).")
         try {
           return await t()
-        } catch {
+        } catch (err) {
+          if (isWorkflowRoutingError(err)) throw err
           return null
         }
       }),
@@ -218,7 +229,8 @@ function buildScope(host: WorkflowHost, args: unknown): Record<string, unknown> 
         for (const stage of fns) {
           try {
             value = await stage(value, item, index)
-          } catch {
+          } catch (err) {
+            if (isWorkflowRoutingError(err)) throw err
             return null
           }
         }
@@ -242,6 +254,10 @@ function buildScope(host: WorkflowHost, args: unknown): Record<string, unknown> 
   const budget = { total: null as number | null, spent: () => 0, remaining: () => Infinity }
 
   return { agent, parallel, pipeline, phase, log, budget, args }
+}
+
+function isWorkflowRoutingError(error: unknown): boolean {
+  return (error as Error)?.message?.startsWith("WORKFLOW_ROUTING_REQUIRES_USER:") ?? false
 }
 
 /**

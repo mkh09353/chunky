@@ -37,13 +37,16 @@ import {
   getCacheGuardTokens,
   getMode,
   getServerToken,
+  isEffort,
   listModes,
   saveMode,
   setAdvisor,
   setCacheGuardTokens,
+  setWorkflowTargetOverride,
   type AdvisorConfig,
   type ModeSpec,
 } from "./settings.ts"
+import { availableWorkflowTargets } from "./workflow/router.ts"
 import { drainQueue, installSessionBus } from "./session-bus.ts"
 import { cacheColdPayload, checkCacheCold, exceedsGuard } from "./cache-watch.ts"
 import { getFinder } from "./fff.ts"
@@ -195,10 +198,49 @@ const server = Bun.serve({
         providers: listProviders().map((p) => ({
           id: p.id,
           label: p.label,
+          billing: p.billing,
           ready: p.ready(),
           active: p.id === active,
         })),
       })
+    }
+
+    // Workflow worker routing: zero-config effective targets plus optional user exceptions.
+    if (pathname === "/api/workflow-targets" && req.method === "GET") {
+      return json({ targets: await availableWorkflowTargets() })
+    }
+    if (pathname === "/api/workflow-targets" && (req.method === "PUT" || req.method === "DELETE")) {
+      try {
+        const body = (await req.json()) as {
+          provider?: string
+          model?: string
+          tags?: unknown
+          automatic?: unknown
+          effort?: Effort
+        }
+        if (!body.provider || !body.model) return json({ error: "provider and model are required" }, 400)
+        if (req.method === "DELETE") {
+          setWorkflowTargetOverride(body.provider, body.model, null)
+        } else {
+          if (body.tags !== undefined && (!Array.isArray(body.tags) || body.tags.some((tag) => typeof tag !== "string"))) {
+            return json({ error: "tags must be an array of strings" }, 400)
+          }
+          if (body.automatic !== undefined && typeof body.automatic !== "boolean") {
+            return json({ error: "automatic must be a boolean" }, 400)
+          }
+          if (body.effort !== undefined && !isEffort(body.effort)) {
+            return json({ error: "effort must be low, medium, high, xhigh, or max" }, 400)
+          }
+          setWorkflowTargetOverride(body.provider, body.model, {
+            ...(body.tags !== undefined ? { tags: body.tags as string[] } : {}),
+            ...(body.automatic !== undefined ? { automatic: body.automatic } : {}),
+            ...(body.effort !== undefined ? { effort: body.effort } : {}),
+          })
+        }
+        return json({ ok: true })
+      } catch (err) {
+        return json({ error: (err as Error).message }, 400)
+      }
     }
 
     // POST /api/auth/:id/login -> { url, userCode?, instructions } (initiate login)

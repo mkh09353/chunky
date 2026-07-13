@@ -25,6 +25,7 @@ import {
 import { registerThread, unregisterThread, type ThreadSpawner } from "./thread-context.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { runWorkflowScript, workflowConcurrency, type WorkflowHost, type WorkflowTier } from "./workflow/engine.ts"
+import { workflowRouteResolver } from "./workflow/router.ts"
 
 /** Reasoning-effort cap for `big`-tier workflow agents: keep a lower configured
  *  effort, clamp anything at/above medium (or unset) to medium. */
@@ -201,6 +202,8 @@ export class ThreadManager implements ThreadSpawner {
    * the concurrency cap, and the small/medium/big → model-selection tier policy.
    */
   async runWorkflow(opts: { callerThreadId: string; script: string; args?: unknown }): Promise<string> {
+    let routerPromise: ReturnType<typeof workflowRouteResolver> | undefined
+    const router = () => (routerPromise ??= workflowRouteResolver())
     const host: WorkflowHost = {
       runId: randomUUID(),
       // Owner tagging mirrors spawn()'s parent linkage: root → undefined (events
@@ -211,6 +214,8 @@ export class ThreadManager implements ThreadSpawner {
       emit: this.emit,
       spawn: ({ title, instructions, selection }) =>
         this.spawn({ callerThreadId: opts.callerThreadId, title, instructions, selection }),
+      routeOverride: async (request) => (await router()).resolve(request),
+      validateExplicit: async (selection) => (await router()).validateExplicit(selection),
       tierOverride: (tier) => this.tierOverride(tier),
     }
     return runWorkflowScript(host, opts.script, opts.args)

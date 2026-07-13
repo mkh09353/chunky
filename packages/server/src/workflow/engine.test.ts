@@ -43,6 +43,10 @@ function makeHost(opts: {
     },
     tierOverride: (tier) =>
       tier === "big" ? { effort: "high" } : tier === "small" ? { effort: "low" } : undefined,
+    routeOverride: ({ tags }) => {
+      if (tags?.includes("blocked")) throw new Error("WORKFLOW_ROUTING_REQUIRES_USER: choose a model")
+      return tags?.includes("frontend") ? { provider: "anthropic", model: "opus[1m]", effort: "high" } : undefined
+    },
   }
   return { host, events, spawns, maxActive: () => maxActive }
 }
@@ -165,6 +169,23 @@ describe("workflow engine — concurrency + tiers", () => {
     expect(spawns[2]!.selection).toEqual({ provider: "codex", model: "gpt-5.5" })
     // No tier, no explicit fields → inherit (undefined).
     expect(spawns[3]!.selection).toBeUndefined()
+  })
+
+  test("semantic tags route through the host while explicit provider/model still win", async () => {
+    const { host, spawns } = makeHost()
+    await runWorkflowScript(
+      host,
+      `await agent('frontend', { tags: ['frontend'] })
+       await agent('explicit', { tags: ['frontend'], provider: 'grok', model: 'grok-4.5', effort: 'high' })`,
+    )
+    expect(spawns[0]!.selection).toEqual({ provider: "anthropic", model: "opus[1m]", effort: "high" })
+    expect(spawns[1]!.selection).toEqual({ provider: "grok", model: "grok-4.5", effort: "high" })
+  })
+
+  test("pipeline surfaces routing decisions instead of silently returning null", async () => {
+    const { host } = makeHost()
+    const out = await runWorkflowScript(host, `return await pipeline(['ui'], item => agent(item, { tags: ['blocked'] }))`)
+    expect(out).toContain("WORKFLOW_ROUTING_REQUIRES_USER")
   })
 
   test("workflowConcurrency() is a sane positive cap", () => {

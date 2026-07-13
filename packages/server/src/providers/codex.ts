@@ -414,6 +414,7 @@ async function startBrowserLogin(): Promise<LoginInitiation> {
 export const codexProvider: ProviderDef = {
   id: "codex",
   label: "Codex · ChatGPT (Pro/Plus OAuth)",
+  billing: "subscription",
   ready: () => {
     const auth = AuthStore.get("codex")
     return Boolean(auth && (auth.refresh || (auth.expires && auth.expires > Date.now())))

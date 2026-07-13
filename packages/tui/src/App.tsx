@@ -399,6 +399,10 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         else setProviderPickerOpen(true)
         return
       }
+      if (command === "/workers" || command.startsWith("/workers ")) {
+        void doWorkers(command.slice("/workers".length).trim())
+        return
+      }
       const images = attachmentsRef.current
       setAttachments([]) // consume the pasted images with this message
       const shownText = display ?? text
@@ -671,6 +675,73 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     if (mode !== "live") { printLine("The provider picker needs the live server."); return }
     setProviderPickerOpen(true)
   }, [mode, printLine])
+
+  // /workers — inspect zero-config routes or override one provider-qualified target.
+  const doWorkers = useCallback(
+    async (rest: string) => {
+      if (mode !== "live") { printLine("Workflow worker routing needs the live server."); return }
+      const parts = rest.split(/\s+/).filter(Boolean)
+      const action = (parts[0] ?? "list").toLowerCase()
+      interface WorkerTarget {
+        provider: string
+        model: string
+        billing: "subscription" | "free" | "metered" | "unknown"
+        automatic: boolean
+        effort: string
+        tags: string[]
+      }
+      const request = async (method: string, payload?: Record<string, unknown>): Promise<WorkerTarget[]> => {
+        const res = await fetch(baseUrl + "/api/workflow-targets", {
+          method,
+          headers: payload ? { "content-type": "application/json" } : undefined,
+          body: payload ? JSON.stringify(payload) : undefined,
+        })
+        const body = (await res.json()) as { targets?: WorkerTarget[]; error?: string }
+        if (!res.ok || body.error) throw new Error(body.error || `HTTP ${res.status}`)
+        return body.targets ?? []
+      }
+      try {
+        if (action === "list" || action === "ls") {
+          const targets = await request("GET")
+          const useful = targets.filter((target) => Array.isArray(target.tags) && (target.tags.length || target.automatic))
+          printLine(
+            useful.length
+              ? useful.map((target) =>
+                  `· ${target.provider}/${target.model} · ${target.billing} · ${target.automatic ? "auto" : "manual"} · ${target.effort}` +
+                  `${target.tags.length ? ` · ${target.tags.join(", ")}` : ""}`,
+                ).join("\n")
+              : "No workflow worker targets are currently available.",
+          )
+          return
+        }
+        const provider = parts[1], modelId = parts[2]
+        if (!provider || !modelId) throw new Error("Usage: /workers tag|auto|reset <provider> <model> [value]")
+        if (action === "reset") {
+          await request("DELETE", { provider, model: modelId })
+          printLine(`Workflow routing reset: ${provider}/${modelId}.`)
+          return
+        }
+        if (action === "tag") {
+          const tags = parts.slice(3).join(" ").split(",").map((tag) => tag.trim()).filter(Boolean)
+          if (!tags.length) throw new Error("Provide comma-separated tags, for example: frontend,design")
+          await request("PUT", { provider, model: modelId, tags })
+          printLine(`Workflow tags: ${provider}/${modelId} → ${tags.join(", ")}.`)
+          return
+        }
+        if (action === "auto") {
+          const value = parts[3]?.toLowerCase()
+          if (value !== "on" && value !== "off") throw new Error("Use /workers auto <provider> <model> on|off")
+          await request("PUT", { provider, model: modelId, automatic: value === "on" })
+          printLine(`Automatic workflow routing ${value}: ${provider}/${modelId}.`)
+          return
+        }
+        throw new Error("Usage: /workers list · /workers tag <provider> <model> <tag,tag> · /workers auto <provider> <model> on|off · /workers reset <provider> <model>")
+      } catch (err) {
+        printLine(`Workflow routing: ${(err as Error).message}`)
+      }
+    },
+    [mode, baseUrl, printLine],
+  )
 
   const doModelCatalog = useCallback(
     async (rest: string) => {
@@ -1130,7 +1201,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           break
         case "/help":
           printLine(
-            "Commands: /clear, /resume, /help, /login, /model, /skills, /provider, /advisor, /mode, /goal, /shipit, /cacheguard, /quit. `/skills add <git-url>` installs a skill pack; `/skills list|remove|update` manages them; `/model add|hide|restore <provider> <model-id>` manages the global catalog.",
+            "Commands: /clear, /resume, /help, /login, /model, /skills, /provider, /workers, /advisor, /mode, /goal, /shipit, /cacheguard, /quit. `/workers` shows automatic workflow routes; `/workers tag|auto|reset` changes exceptions.",
           )
           break
         case "/login":
@@ -1144,6 +1215,9 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           break
         case "/provider":
           doProvider()
+          break
+        case "/workers":
+          void doWorkers("")
           break
         case "/advisor":
           doAdvisor()
@@ -1162,7 +1236,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           break
       }
     },
-    [printLine, doLogin, doModel, doSkills, doProvider, doAdvisor, doGoal, doShipIt, doCacheGuard, doMode, doResume, exit, mode, baseUrl],
+    [printLine, doLogin, doModel, doSkills, doProvider, doWorkers, doAdvisor, doGoal, doShipIt, doCacheGuard, doMode, doResume, exit, mode, baseUrl],
   )
 
   // Mock demo turn so the transcript streams even without a TTY.

@@ -15,6 +15,7 @@ export const COMMANDS: Command[] = [
   { name: "/model", description: "Pick or manage models (/model add|hide|restore|list)" },
   { name: "/skills", description: "Manage skill repos (/skills add|remove|update|list)" },
   { name: "/provider", description: "Configure available models for a provider" },
+  { name: "/workers", description: "Inspect or tune automatic workflow model routing" },
   { name: "/advisor", description: "Set the advisor model (a stronger model, on tap)" },
   { name: "/mode", description: "Named model+advisor pairings (/mode <name>, /mode save <name>)" },
   { name: "/goal", description: "Work autonomously toward a goal (/goal [--workflows] <objective>)" },

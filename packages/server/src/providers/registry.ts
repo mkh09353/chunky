@@ -48,6 +48,8 @@ export interface AgentSelectionOverride {
 interface ProviderBase {
   id: string
   label: string
+  /** Billing route used by automatic workflow routing. Free models may override a metered provider. */
+  billing: "subscription" | "metered" | "unknown"
   /** True once this provider has usable credentials (API key present / logged in). */
   ready: () => boolean
   /** The models this provider can serve, enriched with capability metadata. */
@@ -102,6 +104,7 @@ const providers: Record<string, ProviderDef> = {
   zen: {
     id: "zen",
     label: "Zen · OpenAI-compatible (API key)",
+    billing: "metered",
     ready: () => Boolean(process.env.ZEN_API_KEY),
     listModels: listZenModels,
     buildModel: (selection) =>

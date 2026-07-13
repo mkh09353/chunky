@@ -157,18 +157,22 @@ function buildScope(host: WorkflowHost, args: unknown): Record<string, unknown> 
   let totalAgents = 0
 
   const selectionFor = async (opts: AgentOpts): Promise<AgentSelectionOverride | undefined> => {
-    const explicit: AgentSelectionOverride = {}
-    if (opts.provider) explicit.provider = opts.provider
-    if (opts.model) explicit.model = opts.model
-    if (opts.effort) explicit.effort = opts.effort
-    if (opts.speed) explicit.speed = opts.speed
-    if (Object.keys(explicit).length > 0) return host.validateExplicit ? await host.validateExplicit(explicit) : explicit
+    const identity: AgentSelectionOverride = {}
+    if (opts.provider) identity.provider = opts.provider
+    if (opts.model) identity.model = opts.model
+    const tuning: AgentSelectionOverride = {}
+    if (opts.effort) tuning.effort = opts.effort
+    if (opts.speed) tuning.speed = opts.speed
+    if (Object.keys(identity).length > 0) {
+      const explicit = { ...identity, ...tuning }
+      return host.validateExplicit ? await host.validateExplicit(explicit) : explicit
+    }
     if (host.routeOverride) {
       const routed = await host.routeOverride({ tags: opts.tags, tier: opts.tier })
-      if (routed) return routed
+      if (routed) return { ...routed, ...tuning }
     }
-    if (opts.tier && host.tierOverride) return host.tierOverride(opts.tier)
-    return undefined
+    if (opts.tier && host.tierOverride) return { ...host.tierOverride(opts.tier), ...tuning }
+    return Object.keys(tuning).length ? tuning : undefined
   }
 
   async function agent(prompt: unknown, opts: AgentOpts = {}): Promise<unknown> {

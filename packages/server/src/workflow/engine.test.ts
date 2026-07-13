@@ -175,16 +175,22 @@ describe("workflow engine — concurrency + tiers", () => {
     const { host, spawns } = makeHost()
     await runWorkflowScript(
       host,
-      `await agent('frontend', { tags: ['frontend'] })
+      `await agent('frontend', { tags: ['frontend'], effort: 'xhigh' })
        await agent('explicit', { tags: ['frontend'], provider: 'grok', model: 'grok-4.5', effort: 'high' })`,
     )
-    expect(spawns[0]!.selection).toEqual({ provider: "anthropic", model: "opus[1m]", effort: "high" })
+    expect(spawns[0]!.selection).toEqual({ provider: "anthropic", model: "opus[1m]", effort: "xhigh" })
     expect(spawns[1]!.selection).toEqual({ provider: "grok", model: "grok-4.5", effort: "high" })
   })
 
   test("pipeline surfaces routing decisions instead of silently returning null", async () => {
     const { host } = makeHost()
     const out = await runWorkflowScript(host, `return await pipeline(['ui'], item => agent(item, { tags: ['blocked'] }))`)
+    expect(out).toContain("WORKFLOW_ROUTING_REQUIRES_USER")
+  })
+
+  test("parallel surfaces routing decisions instead of silently returning null", async () => {
+    const { host } = makeHost()
+    const out = await runWorkflowScript(host, `return await parallel([() => agent('ui', { tags: ['blocked'] })])`)
     expect(out).toContain("WORKFLOW_ROUTING_REQUIRES_USER")
   })
 

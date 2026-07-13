@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import {
   chooseWorkflowTarget,
   defaultWorkflowTarget,
+  validateExplicitWorkflowTarget,
   type WorkflowTarget,
 } from "./router.ts"
 
@@ -66,10 +67,25 @@ describe("workflow target routing", () => {
     expect(chooseWorkflowTarget(targets.filter((target) => target.provider !== "anthropic"), { tags: ["frontend"] })).toBeNull()
   })
 
+  test("does not silently substitute a generalist for an unknown user tag", () => {
+    expect(chooseWorkflowTarget(targets, { tags: ["security"] })).toBeNull()
+  })
+
   test("allows a metered target only after the user opts it into automatic routing", () => {
     const onlyMetered = targets
       .filter((target) => target.provider === "zen" && target.model === "grok-4.5")
       .map((target) => ({ ...target, automatic: true, tags: [...target.tags, "research"] }))
     expect(chooseWorkflowTarget(onlyMetered, { tags: ["research"] })?.selection.provider).toBe("zen")
+  })
+
+  test("fails closed on partial or unapproved explicit routes", () => {
+    const byKey = new Map(targets.map((target) => [`${target.provider}/${target.model}`, target]))
+    expect(() => validateExplicitWorkflowTarget(byKey, { provider: "zen" })).toThrow("both provider and model")
+    expect(() => validateExplicitWorkflowTarget(byKey, { model: "grok-4.5" })).toThrow("both provider and model")
+    expect(() => validateExplicitWorkflowTarget(byKey, { provider: "zen", model: "grok-4.5" })).toThrow("not allowed")
+    expect(validateExplicitWorkflowTarget(byKey, { provider: "grok", model: "grok-4.5" })).toEqual({
+      provider: "grok",
+      model: "grok-4.5",
+    })
   })
 })

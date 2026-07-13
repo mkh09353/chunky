@@ -89,12 +89,12 @@ function requestedTags(request: WorkflowRouteRequest): string[] {
 
 export function chooseWorkflowTarget(targets: WorkflowTarget[], request: WorkflowRouteRequest): WorkflowTarget | null {
   const tags = requestedTags(request)
-  const specialist = tags.some((tag) => tag === "frontend" || tag === "design" || tag === "research" || tag === "premium")
+  const requiresMatch = Boolean(request.tags?.length)
   let best: { target: WorkflowTarget; score: number } | undefined
   for (const target of targets) {
     if (!target.automatic) continue
     const matches = tags.filter((tag) => target.tags.includes(tag)).length
-    if (specialist && matches === 0) continue
+    if (requiresMatch && matches === 0) continue
     const score =
       matches * 1000 +
       (target.billing === "subscription" ? 100 : target.billing === "free" ? 80 : 0) +
@@ -102,6 +102,24 @@ export function chooseWorkflowTarget(targets: WorkflowTarget[], request: Workflo
     if (!best || score > best.score) best = { target, score }
   }
   return best?.target ?? null
+}
+
+export function validateExplicitWorkflowTarget(
+  targetsByKey: ReadonlyMap<string, WorkflowTarget>,
+  selection: AgentSelectionOverride,
+): AgentSelectionOverride {
+  if (!selection.provider || !selection.model) {
+    throw new Error(
+      "WORKFLOW_ROUTING_REQUIRES_USER: Explicit workflow overrides must name both provider and model so Chunky can verify the billing route. Ask the user which provider/model to use.",
+    )
+  }
+  const target = targetsByKey.get(workflowTargetKey(selection.provider, selection.model))
+  if (!target || !target.automatic) {
+    throw new Error(
+      `WORKFLOW_ROUTING_REQUIRES_USER: ${selection.provider}/${selection.model} is not allowed for automatic fan-out. Ask the user to approve it with /workers auto ${selection.provider} ${selection.model} on.`,
+    )
+  }
+  return selection
 }
 
 export async function availableWorkflowTargets(): Promise<WorkflowTarget[]> {
@@ -146,14 +164,7 @@ export async function workflowRouteResolver(): Promise<{
       )
     },
     validateExplicit(selection) {
-      if (!selection.provider || !selection.model) return selection
-      const target = targetsByKey.get(workflowTargetKey(selection.provider, selection.model))
-      if (!target || !target.automatic) {
-        throw new Error(
-          `WORKFLOW_ROUTING_REQUIRES_USER: ${selection.provider}/${selection.model} is not allowed for automatic fan-out. Ask the user to approve it with /workers auto ${selection.provider} ${selection.model} on.`,
-        )
-      }
-      return selection
+      return validateExplicitWorkflowTarget(targetsByKey, selection)
     },
   }
 }

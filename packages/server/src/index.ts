@@ -21,6 +21,7 @@ import {
   activeProviderId,
   activeSelection,
   getProvider,
+  listAllKnownModelsFor,
   listModelsFor,
   listProviders,
   resolveAdvisorSelection,
@@ -236,6 +237,14 @@ const server = Bun.serve({
           effort?: Effort
         }
         if (!body.provider || !body.model) return json({ error: "provider and model are required" }, 400)
+        const workflowProvider = getProvider(body.provider)
+        if (!workflowProvider) return json({ error: `unknown provider "${body.provider}"` }, 404)
+        if (req.method === "PUT" && workflowProvider.ready()) {
+          const known = await listAllKnownModelsFor(body.provider)
+          if (!known.some((model) => model.id === body.model)) {
+            return json({ error: `unknown model "${body.model}" for provider "${body.provider}"` }, 404)
+          }
+        }
         if (req.method === "DELETE") {
           setWorkflowTargetOverride(body.provider, body.model, null)
         } else {

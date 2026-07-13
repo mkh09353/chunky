@@ -30,7 +30,11 @@ describe("fffind / ffgrep live", () => {
   })
 
   test("fffind finds this package's tools", async () => {
-    const out = await fffind.invoke({ pattern: "fff", path: "packages/server" })
+    // No `path` constraint: the finder indexes LAUNCH_WORKSPACE (= cwd), which is
+    // the repo root under `bun test` but `packages/server` when this package is
+    // tested on its own. A "packages/server" prefix only resolves from the former,
+    // so scope by a filename that matches under either root instead.
+    const out = await fffind.invoke({ pattern: "fff.ts" })
     expect(typeof out).toBe("string")
     expect(out).toMatch(/fff\.ts/)
   })

@@ -11,13 +11,20 @@ export type EditToolName = "edit" | "apply_patch"
  *  persistent side thread. Terse on purpose. */
 export const ADVISOR_SYSTEM_PROMPT = `You are an expert software-engineering advisor to a coding agent working in this repository. You have read-only tools (read, bash, fffind, ffgrep) — use them to inspect exactly what you're pointed at before answering; read the actual code, don't guess. You must NOT modify anything: no edits, no writes, no mutating shell commands — use bash only for read-only inspection (ls, cat, git). Prefer fffind for paths and ffgrep for content over shell grep/find. The executor applies changes, not you. Reply with concise, specific, actionable guidance: the decision, the why, the concrete next step, and any risks or better alternatives. Be direct.`
 
+export interface SystemPromptOpts {
+  /** When true, only list core (always-bound) tools; deferred tools are found via native tool search. */
+  nativeToolSearch?: boolean
+}
+
 export function buildSystemPrompt(
   activeEditToolName: EditToolName,
   hasAdvisor = false,
   workspace: string = LAUNCH_WORKSPACE,
+  opts: SystemPromptOpts = {},
 ): string {
   const date = new Date().toISOString().slice(0, 10)
   const isEdit = activeEditToolName === "edit"
+  const nativeToolSearch = opts.nativeToolSearch === true
 
   const editListLine = isEdit
     ? "- edit: edit a file with exact text replacement (one or more disjoint edits per call)"
@@ -29,19 +36,35 @@ export function buildSystemPrompt(
 
   // Always-on advisor: only advertised when one is configured-and-different (see
   // buildAgent's auto-suppress), so the model never offers a tool it can't call.
-  const advisorListLine = hasAdvisor
-    ? "\n- advisor: consult a stronger model (a persistent side thread that can read the code itself) for hard decisions, subtle bugs, design questions, or when stuck"
-    : ""
+  // Under native tool search, advisor is deferred — do not enumerate it here.
+  const advisorListLine =
+    hasAdvisor && !nativeToolSearch
+      ? "\n- advisor: consult a stronger model (a persistent side thread that can read the code itself) for hard decisions, subtle bugs, design questions, or when stuck"
+      : ""
   const advisorGuideline = hasAdvisor
-    ? "\n- advisor: consult it before committing to an approach on risky or ambiguous work — a design decision with real trade-offs, or anything touching auth, data, migrations, or concurrency — so it catches problems before you write code. Also consult it the moment a fix fails twice, before you attempt a third. Point it at specific files/lines. It's for genuinely hard calls, not routine edits."
+    ? nativeToolSearch
+      ? "\n- advisor (discover via tool search when configured): consult it before committing to an approach on risky or ambiguous work — design trade-offs, auth/data/migrations/concurrency — and when a fix fails twice. Point at specific files/lines."
+      : "\n- advisor: consult it before committing to an approach on risky or ambiguous work — a design decision with real trade-offs, or anything touching auth, data, migrations, or concurrency — so it catches problems before you write code. Also consult it the moment a fix fails twice, before you attempt a third. Point it at specific files/lines. It's for genuinely hard calls, not routine edits."
     : ""
   // Reconcile the "keep working" guideline with consulting: only mentioned when
   // an advisor exists, so we never reference a tool the model can't call.
   const keepGoingAdvisorClause = hasAdvisor ? " Pausing to consult the advisor is part of the work, not stopping." : ""
 
-  return `You are Chunky, an expert coding assistant. You help by reading files, running commands, editing code, and writing files. The user sees your responses and tool output in real time.
+  // Full catalog (fallback / non-native): enumerate every bound tool so the model
+  // knows what it can call. Native tool search: list ONLY core tools — deferred
+  // tools must not be falsely enumerated; the provider surfaces them on demand.
+  const toolsBlock = nativeToolSearch
+    ? `Available tools (always bound):
+- read: read file contents (raw text, no line numbers)
+- bash: run shell commands
+- fffind: fuzzy path/filename search (default file finder; frecency-ranked)
+- ffgrep: content search (prefer over bash rg/grep)
+${editListLine}
+- write: create or overwrite a file
+- search_skills / load_skill: discover and on-demand load Agent Skills (SKILL.md packages under ~/.chunky|agents|claude|codex/skills and project .agents|.claude|.chunky|.codex/skills). Bodies are never in the prompt — search first, load only when a description matches
 
-Available tools:
+Additional tools (threads, workflows, goals, sessions, model catalog, and advisor when configured) are deferred behind native tool search — use tool search to discover them when needed; do not assume a fixed full list in this prompt.`
+    : `Available tools:
 - read: read file contents (raw text, no line numbers)
 - bash: run shell commands
 - fffind: fuzzy path/filename search (default file finder; frecency-ranked)
@@ -53,16 +76,33 @@ ${editListLine}
 - get_goal / create_goal / goal_complete / goal_blocked: goal-mode tools — relevant when a goal is set via /goal, or when the user explicitly asks for autonomous work-until-done (create_goal)
 - ship_goal: hand the plan agreed in THIS conversation off to a fresh, context-clean session that pursues it as an autonomous workflow-orchestrated goal — use when the user says to ship or hand off the plan (/shipit); write a distilled handoff brief as the objective
 - list_sessions / send_to_session: see and message the OTHER live sessions on this server (parallel repos/tasks) — hand off follow-ups or ask questions; a busy target processes your message after its current turn
+- search_skills / load_skill: discover and on-demand load Agent Skills (SKILL.md packages under ~/.chunky|agents|claude|codex/skills and project .agents|.claude|.chunky|.codex/skills). Bodies are never in the prompt — search first, load only when a description matches`
+
+  const multiAgentGuideline = nativeToolSearch
+    ? "- For work that spans many files or wants many parallel sub-agents (audits, reviewing a whole directory, large refactors, cross-checked research), prefer a workflow over many spawn_thread calls once you have discovered those tools via tool search — the fan-out stays out of your context."
+    : "- For work that spans many files or wants many parallel sub-agents (audits, reviewing a whole directory, large refactors, cross-checked research), prefer a single workflow over many spawn_thread calls — the fan-out stays out of your context."
+
+  const skillsGuideline =
+    "- Skills: when a task matches specialized workflows (PDF tools, deploy runbooks, domain APIs, etc.), call search_skills then load_skill before improvising. Do not load skills speculatively; re-loading re-emits the full body (safe after compaction)."
+
+  const goalGuideline = nativeToolSearch
+    ? "- Goal mode: if a message is prefixed \"[goal mode…]\", you're working autonomously toward a set goal — follow that message's instructions without asking for confirmation; when the goal is fully done and verified call goal_complete with evidence, or goal_blocked if you hit a real impasse (discover those tools via tool search if not already loaded). An \"[goal mode: orchestrator]\" goal means delegate the hands-on work to workflow runs instead of doing it yourself."
+    : "- Goal mode: if a message is prefixed \"[goal mode…]\", you're working autonomously toward a set goal — follow that message's instructions without asking for confirmation; when the goal is fully done and verified call goal_complete with evidence, or goal_blocked if you hit a real impasse. An \"[goal mode: orchestrator]\" goal means delegate the hands-on work to workflow runs instead of doing it yourself."
+
+  return `You are Chunky, an expert coding assistant. You help by reading files, running commands, editing code, and writing files. The user sees your responses and tool output in real time.
+
+${toolsBlock}
 
 Guidelines:
 - Read a file before editing it; match its existing style and indentation.
 - Use fffind to locate files and ffgrep for content search; use bash for everything else (ls, git, builds, tests).
 ${editGuideline}
 - Use write only for new files or full rewrites.
-- For work that spans many files or wants many parallel sub-agents (audits, reviewing a whole directory, large refactors, cross-checked research), prefer a single workflow over many spawn_thread calls — the fan-out stays out of your context.${advisorGuideline}
+${multiAgentGuideline}${advisorGuideline}
+${skillsGuideline}
 - Be concise. Don't say "I'll now…" — just act. No emojis unless asked.
 - Keep working until the task is complete; stop only when done or genuinely blocked.${keepGoingAdvisorClause}
-- Goal mode: if a message is prefixed "[goal mode…]", you're working autonomously toward a set goal — follow that message's instructions without asking for confirmation; when the goal is fully done and verified call goal_complete with evidence, or goal_blocked if you hit a real impasse. An "[goal mode: orchestrator]" goal means delegate the hands-on work to workflow runs instead of doing it yourself.
+${goalGuideline}
 
 Current date: ${date}
 Working directory: ${workspace}`

@@ -39,11 +39,34 @@ import { shipGoal, shipGoalInputShape } from "./tools/ship.ts"
 import { spawnThread, spawnThreadInputShape } from "./tools/spawn-thread.ts"
 import { workflow, workflowInputShape } from "./tools/workflow.ts"
 import { manageModels, manageModelsInputShape } from "./tools/manage-models.ts"
+import {
+  loadSkillInputShape,
+  loadSkillTool,
+  searchSkillsInputShape,
+  searchSkillsTool,
+} from "./tools/skills.ts"
 import { write, writeInputShape } from "./tools/write.ts"
 
 const SERVER_NAME = "chunky"
 const ALLOWED_TOOLS = [`mcp__${SERVER_NAME}__*`]
-const CHUNKY_TOOLS = [read, bash, fffind, ffgrep, write, editTool, spawnThread, workflow, manageModels, getGoalTool, createGoalTool, goalCompleteTool, goalBlockedTool, shipGoal]
+const CHUNKY_TOOLS = [
+  read,
+  bash,
+  fffind,
+  ffgrep,
+  write,
+  editTool,
+  spawnThread,
+  workflow,
+  manageModels,
+  searchSkillsTool,
+  loadSkillTool,
+  getGoalTool,
+  createGoalTool,
+  goalCompleteTool,
+  goalBlockedTool,
+  shipGoal,
+]
 const SDK_TOOL_NAMES = new Set(CHUNKY_TOOLS.map((chunkyTool) => `mcp__${SERVER_NAME}__${chunkyTool.name}`))
 const knownSessions = new Set<string>()
 
@@ -198,6 +221,23 @@ export function createChunkySdkMcpServer(
         manageModelsInputShape,
         (args) => manageModels.invoke(args, runConfig),
         emit,
+      ),
+      // Lazy Agent Skills — metadata via search, full body only on explicit load.
+      wrapChunkyTool(
+        searchSkillsTool.name,
+        searchSkillsTool.description,
+        searchSkillsInputShape,
+        (args) => searchSkillsTool.invoke(args, runConfig),
+        emit,
+        readOnly,
+      ),
+      wrapChunkyTool(
+        loadSkillTool.name,
+        loadSkillTool.description,
+        loadSkillInputShape,
+        (args) => loadSkillTool.invoke(args, runConfig),
+        emit,
+        { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false },
       ),
       // Goal-mode tools resolve the session from the caller thread the same way
       // spawn_thread does, so goal_complete/goal_blocked reach the right goal.

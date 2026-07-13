@@ -23,6 +23,11 @@ import {
 import { threadContextFor } from "./thread-context.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { ADVISOR_SYSTEM_PROMPT, buildSystemPrompt, type EditToolName } from "./prompt.ts"
+import {
+  buildToolSearchMiddleware,
+  supportsNativeToolSearch,
+  toolSearchMiddlewareConfigFor,
+} from "./tool-search.ts"
 import { applyPatch } from "./tools/apply-patch.ts"
 import { bash } from "./tools/bash.ts"
 import { editTool } from "./tools/edit.ts"
@@ -34,7 +39,21 @@ import { shipGoal } from "./tools/ship.ts"
 import { spawnThread } from "./tools/spawn-thread.ts"
 import { workflow } from "./tools/workflow.ts"
 import { manageModels } from "./tools/manage-models.ts"
+import { skillTools } from "./tools/skills.ts"
 import { write } from "./tools/write.ts"
+
+// Re-export pure gating/classification helpers for tests and callers.
+export {
+  CORE_TOOL_NAMES,
+  buildToolSearchMiddleware,
+  deferredToolNames,
+  isCoreToolName,
+  isGptVersionAtLeast,
+  parseGptVersion,
+  partitionTools,
+  supportsNativeToolSearch,
+  toolSearchMiddlewareConfigFor,
+} from "./tool-search.ts"
 
 /**
  * advisor — consult a stronger model on demand. Unlike spawn_thread (a fresh,
@@ -144,6 +163,7 @@ export function executorToolsFor(selection: AgentSelection) {
     ...sessionTools,
     workflow,
     manageModels,
+    ...skillTools,
     ...editToolsForModel(selection.model, selection.provider),
     ...(advisorSel ? [advisor] : []),
   ]
@@ -157,6 +177,29 @@ export function executorToolsFor(selection: AgentSelection) {
  *  (run.ts, threads.ts). Override with CHUNKY_RECURSION_LIMIT. */
 export const RECURSION_LIMIT = Number(process.env.CHUNKY_RECURSION_LIMIT) || 500
 
+/**
+ * Agent construction plan for a selection: tools, prompt flags, and optional
+ * native tool-search middleware config. Pure enough for unit tests — does not
+ * call resolveModel / createAgent.
+ */
+export function agentPlanFor(selection: AgentSelection) {
+  const { tools, hasAdvisor } = executorToolsFor(selection)
+  const nativeToolSearch = supportsNativeToolSearch(selection.provider, selection.model)
+  const toolSearchConfig = toolSearchMiddlewareConfigFor(
+    selection.provider,
+    selection.model,
+    tools,
+  )
+  return {
+    tools,
+    hasAdvisor,
+    nativeToolSearch,
+    /** Non-null only when gate is open and there is at least one deferred tool. */
+    toolSearchConfig,
+    editToolName: editToolNameForModel(selection.model, selection.provider),
+  }
+}
+
 /** Build the lean agent for one explicit provider/model selection + workspace.
  * Tools resolve the run's workspace from `configurable.workspace` at execute
  * time; the workspace here only feeds the system prompt (working directory).
@@ -169,15 +212,22 @@ export function buildAgent(
   const providerId = selection.provider
   const modelId = selection.model
   const model = resolveModel(selection)
-  const { tools, hasAdvisor } = executorToolsFor(selection)
+  const plan = agentPlanFor(selection)
   // TODO: prompt-caching middleware. langchain exports anthropicPromptCachingMiddleware,
   // but every current provider builds an OpenAI-compatible ChatOpenAI (zen/grok/codex),
   // not ChatAnthropic, so it would be a no-op here. Wire it in if/when an Anthropic
   // provider lands.
+  //
+  // Native tool search (Codex + GPT ≥ 5.4): providerToolSearchMiddleware defers
+  // non-core tools behind OpenAI Responses tool_search. Unsupported provider/model
+  // keeps the full always-bound catalog (safe fallback; no middleware, no defer).
+  const toolSearchMw = buildToolSearchMiddleware(providerId, modelId, plan.tools)
   return createAgent({
     model,
-    tools,
-    systemPrompt: buildSystemPrompt(editToolNameForModel(modelId, providerId), hasAdvisor, workspace),
+    tools: plan.tools,
+    systemPrompt: buildSystemPrompt(plan.editToolName, plan.hasAdvisor, workspace, {
+      nativeToolSearch: plan.nativeToolSearch,
+    }),
     checkpointer: makeCheckpointer(),
     // Auto-compaction — the context-management half of Pi's efficiency win (a
     // "tighter working set" so long sessions don't grow unbounded, which is what we
@@ -193,6 +243,7 @@ export function buildAgent(
         trigger: { tokens: 60_000 },
         keep: { messages: 15 },
       }),
+      ...(toolSearchMw ? [toolSearchMw] : []),
     ],
   })
 }

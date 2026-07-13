@@ -24,6 +24,8 @@ import { CHUNKY_USER_AGENT } from "./app-info.ts"
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 const ISSUER = "https://auth.openai.com"
 const CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
+const CODEX_COMPATIBILITY_VERSION = "0.144.0"
+const RESPONSES_LITE_MODEL = "gpt-5.6-luna"
 const OAUTH_PORT = 1455
 const OAUTH_REDIRECT_PATH = "/auth/callback"
 const REDIRECT_URI = `http://localhost:${OAUTH_PORT}${OAUTH_REDIRECT_PATH}`
@@ -37,6 +39,7 @@ const DEFAULT_MODEL = process.env.CODEX_MODEL || "gpt-5.5"
 const CODEX_MODELS = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"]
 // Per-process session id sent on the `session-id` header (matches codex CLI).
 const CODEX_SESSION_ID = crypto.randomUUID()
+const LUNA_CODEX_SESSION_ID = Bun.randomUUIDv7()
 
 const ACCESS_TOKEN_REFRESH_SKEW_MS = 60_000
 
@@ -242,6 +245,68 @@ function codexResponsesBody(bodyStr: string): string {
   }
 }
 
+function stripImageDetail(value: unknown): void {
+  if (Array.isArray(value)) {
+    value.forEach(stripImageDetail)
+    return
+  }
+  if (!value || typeof value !== "object") return
+  const record = value as Record<string, unknown>
+  if (record.type === "input_image") delete record.detail
+  Object.values(record).forEach(stripImageDetail)
+}
+
+/** Apply Codex's common Responses normalization, then opt Luna alone into the
+ * Responses Lite wire contract. Sol, Terra, and legacy models remain unchanged. */
+export function prepareCodexResponsesRequest(bodyStr: string, headers: Headers): string {
+  const normalized = codexResponsesBody(bodyStr)
+  let body: Record<string, any>
+  try {
+    body = JSON.parse(normalized) as Record<string, any>
+  } catch {
+    return normalized
+  }
+  if (body.model !== RESPONSES_LITE_MODEL) return normalized
+  if (!Array.isArray(body.input)) throw new Error("Responses Lite requires an input array")
+  if (body.tools !== undefined && !Array.isArray(body.tools)) {
+    throw new Error("Responses Lite requires a tools array")
+  }
+  if (body.instructions !== undefined && typeof body.instructions !== "string") {
+    throw new Error("Responses Lite requires string instructions")
+  }
+
+  stripImageDetail(body.input)
+  body.input = [
+    { type: "additional_tools", role: "developer", tools: body.tools ?? [] },
+    ...(body.instructions
+      ? [
+          {
+            type: "message",
+            role: "developer",
+            content: [{ type: "input_text", text: body.instructions }],
+          },
+        ]
+      : []),
+    ...body.input,
+  ]
+  delete body.tools
+  delete body.instructions
+  body.tool_choice = "auto"
+  body.parallel_tool_calls = false
+  body.prompt_cache_key = LUNA_CODEX_SESSION_ID
+  body.reasoning = {
+    ...(body.reasoning && typeof body.reasoning === "object" ? body.reasoning : {}),
+    context: "all_turns",
+  }
+
+  headers.set("session-id", LUNA_CODEX_SESSION_ID)
+  headers.set("x-session-affinity", LUNA_CODEX_SESSION_ID)
+  headers.set("version", CODEX_COMPATIBILITY_VERSION)
+  headers.set("x-openai-internal-codex-responses-lite", "true")
+  headers.delete("content-length")
+  return JSON.stringify(body)
+}
+
 /** Fetch that refreshes on demand, injects the bearer + ChatGPT-Account-Id, and
  *  routes chat/completions or responses requests to the Codex responses endpoint. */
 async function injectingFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
@@ -268,7 +333,7 @@ async function injectingFetch(input: RequestInfo | URL, init?: RequestInit): Pro
   // messages are not allowed"); the Responses API wants the system prompt in
   // the top-level `instructions` field. Move any system/developer items there.
   if (typeof init?.body === "string" && target.pathname.endsWith("/responses")) {
-    init = { ...init, body: codexResponsesBody(init.body) }
+    init = { ...init, body: prepareCodexResponsesRequest(init.body, headers) }
   }
 
   const res = await fetch(target, { ...init, headers })

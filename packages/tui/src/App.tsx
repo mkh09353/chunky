@@ -32,6 +32,7 @@ import { PromptInput } from "./components/PromptInput.js"
 import { LoginPicker, type ProviderRow } from "./components/LoginPicker.js"
 import { ResumePicker } from "./components/ResumePicker.js"
 import { ModelPicker, type ModelSelectionResult } from "./components/ModelPicker.js"
+import { ProviderPicker } from "./components/ProviderPicker.js"
 import { AdvisorPicker, type AdvisorSelectionResult } from "./components/AdvisorPicker.js"
 import { openBrowser } from "./openBrowser.js"
 import { grabClipboardImage, type ClipboardImage } from "./clipboardImage.js"
@@ -149,6 +150,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   const [loginPicker, setLoginPicker] = useState<{ providers: ProviderRow[]; selected: number } | null>(null)
   // When true, the /model fuzzy picker is open (owns the keyboard while shown).
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
+  const [providerPickerOpen, setProviderPickerOpen] = useState(false)
   // When true, the /advisor picker is open (owns the keyboard while shown).
   const [advisorPickerOpen, setAdvisorPickerOpen] = useState(false)
   // When set, the /resume thread picker is open (owns the keyboard while shown).
@@ -194,7 +196,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   const rawSupported = rawModeSupported
 
   const pickerOpen =
-    loginPicker != null || modelPickerOpen || advisorPickerOpen || resumePicker != null || pendingSend != null
+    loginPicker != null || modelPickerOpen || providerPickerOpen || advisorPickerOpen || resumePicker != null || pendingSend != null
 
   // Ctrl+T collapses/expands child-thread bodies (the tree view stays; only
   // spawned threads' contents fold to their header lines).
@@ -390,6 +392,11 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       }
       if (command === "/model" || command.startsWith("/model ")) {
         void doModelCatalog(command.slice("/model".length).trim())
+        return
+      }
+      if (command === "/provider" || command.startsWith("/provider ")) {
+        if (mode !== "live") printLine("The provider picker needs the live server.")
+        else setProviderPickerOpen(true)
         return
       }
       const images = attachmentsRef.current
@@ -658,6 +665,11 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       return
     }
     setModelPickerOpen(true)
+  }, [mode, printLine])
+
+  const doProvider = useCallback(() => {
+    if (mode !== "live") { printLine("The provider picker needs the live server."); return }
+    setProviderPickerOpen(true)
   }, [mode, printLine])
 
   const doModelCatalog = useCallback(
@@ -1037,7 +1049,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           break
         case "/help":
           printLine(
-            "Commands: /clear, /resume, /help, /login, /model, /advisor, /mode, /goal, /shipit, /cacheguard, /quit. `/model add|hide|restore <provider> <model-id>` manages the global catalog; `/model list <provider>` shows overrides. Type a message and press Enter to talk to the agent.",
+            "Commands: /clear, /resume, /help, /login, /model, /provider, /advisor, /mode, /goal, /shipit, /cacheguard, /quit. `/provider` configures available models; `/model add|hide|restore <provider> <model-id>` manages the global catalog; `/model list <provider>` shows overrides.",
           )
           break
         case "/login":
@@ -1045,6 +1057,9 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           break
         case "/model":
           doModel()
+          break
+        case "/provider":
+          doProvider()
           break
         case "/advisor":
           doAdvisor()
@@ -1063,7 +1078,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           break
       }
     },
-    [printLine, doLogin, doModel, doAdvisor, doGoal, doShipIt, doCacheGuard, doMode, doResume, exit, mode, baseUrl],
+    [printLine, doLogin, doModel, doProvider, doAdvisor, doGoal, doShipIt, doCacheGuard, doMode, doResume, exit, mode, baseUrl],
   )
 
   // Mock demo turn so the transcript streams even without a TTY.
@@ -1137,6 +1152,9 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         {resumePicker && <ResumePicker sessions={resumePicker.sessions} selected={resumePicker.selected} />}
         {modelPickerOpen && (
           <ModelPicker baseUrl={baseUrl} onDone={onModelDone} onCancel={() => setModelPickerOpen(false)} />
+        )}
+        {providerPickerOpen && (
+          <ProviderPicker baseUrl={baseUrl} onDone={(summary) => { setProviderPickerOpen(false); printLine(summary) }} onCancel={() => setProviderPickerOpen(false)} />
         )}
         {advisorPickerOpen && (
           <AdvisorPicker baseUrl={baseUrl} onDone={onAdvisorDone} onCancel={() => setAdvisorPickerOpen(false)} />

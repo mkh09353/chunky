@@ -34,7 +34,7 @@ const DEFAULT_MODEL = process.env.CODEX_MODEL || "gpt-5.5"
 // opencode's ALLOWED_MODELS set (codex.ts) — the plain `-codex` variants
 // (gpt-5.3-codex, gpt-5.2-codex, …) return "not supported when using Codex with
 // a ChatGPT account", so they're deliberately excluded. Enriched from models.dev.
-const CODEX_MODELS = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"]
+const CODEX_MODELS = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark"]
 // Per-process session id sent on the `session-id` header (matches codex CLI).
 const CODEX_SESSION_ID = crypto.randomUUID()
 

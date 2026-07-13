@@ -146,6 +146,13 @@ export function mergeModelCatalog(
 
 /** List the models a provider can serve (throws if the provider is unknown). */
 export async function listModelsFor(id: string): Promise<ModelInfo[]> {
+  const all = await listAllKnownModelsFor(id)
+  const hidden = new Set(modelCatalogFor(id).hidden ?? [])
+  return all.filter((model) => !hidden.has(model.id))
+}
+
+/** Complete catalog for configuration UIs, including currently hidden ids. */
+export async function listAllKnownModelsFor(id: string): Promise<ModelInfo[]> {
   const p = providers[id]
   if (!p) throw new Error(`unknown provider "${id}"`)
   const advertised = await p.listModels()
@@ -153,7 +160,7 @@ export async function listModelsFor(id: string): Promise<ModelInfo[]> {
   const advertisedIds = new Set(advertised.map((model) => model.id))
   const customIds = Object.keys(overlay.added ?? {}).filter((model) => !advertisedIds.has(model))
   const custom = customIds.length ? await enrichModels(customIds, []) : []
-  return mergeModelCatalog(advertised, custom, overlay)
+  return mergeModelCatalog(advertised, custom, { ...overlay, hidden: [] })
 }
 
 // ---- Active provider + per-provider selection (persisted) ----

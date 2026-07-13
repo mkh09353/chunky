@@ -57,7 +57,7 @@ import {
 } from "./repos.ts"
 import { loadRelayConfig } from "./relay/config.ts"
 import { startUplink } from "./relay/uplink.ts"
-import { manageModelCatalog, type ModelCatalogAction } from "./model-catalog.ts"
+import { getModelAvailability, manageModelCatalog, setModelAvailability, type ModelCatalogAction } from "./model-catalog.ts"
 
 type Subscriber = ReadableStreamDefaultController<Uint8Array>
 
@@ -250,6 +250,24 @@ const server = Bun.serve({
         return json({ models: await listModelsFor(id) })
       } catch (err) {
         return json({ error: (err as Error)?.message ?? String(err) }, 502)
+      }
+    }
+
+    // Complete model catalog + checked availability, including hidden models.
+    const availabilityMatch = pathname.match(/^\/api\/providers\/([^/]+)\/models\/availability$/)
+    if (availabilityMatch && req.method === "GET") {
+      try {
+        return json(await getModelAvailability(availabilityMatch[1]!))
+      } catch (err) {
+        return json({ error: (err as Error)?.message ?? String(err) }, 400)
+      }
+    }
+    if (availabilityMatch && req.method === "PUT") {
+      try {
+        const body = (await req.json()) as { available?: unknown }
+        return json(await setModelAvailability(availabilityMatch[1]!, body.available))
+      } catch (err) {
+        return json({ error: (err as Error)?.message ?? String(err) }, 400)
       }
     }
 

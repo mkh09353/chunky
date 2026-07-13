@@ -171,6 +171,22 @@ export function restoreCatalogModel(provider: string, model: string): ModelCatal
   return next
 }
 
+/** Replace availability for a complete snapshot of known models in one write.
+ * Added/custom metadata is deliberately preserved. Models discovered after this
+ * call are not hidden, so they retain the catalog's default-available behavior. */
+export function setAvailableCatalogModels(
+  provider: string,
+  available: string[],
+  allKnown: string[],
+): ModelCatalogOverlay {
+  const overlay = modelCatalogFor(provider)
+  const visible = new Set(available)
+  const hidden = [...new Set(allKnown)].filter((id) => !visible.has(id))
+  const next = { ...overlay, hidden }
+  saveModelCatalog(provider, next)
+  return next
+}
+
 /** A send that would re-send at least this many tokens on a cold cache is
  *  refused until the user confirms. Configurable via /cacheguard in the TUI. */
 export const DEFAULT_CACHE_GUARD_TOKENS = 100_000

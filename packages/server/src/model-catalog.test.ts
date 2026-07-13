@@ -1,5 +1,5 @@
 import { afterAll, describe, expect, test } from "bun:test"
-import { unlinkSync } from "node:fs"
+import { readFileSync, unlinkSync } from "node:fs"
 
 const SETTINGS = `/tmp/chunky-model-catalog-${process.pid}-${Date.now()}.json`
 process.env.CHUNKY_SETTINGS = SETTINGS
@@ -7,6 +7,7 @@ process.env.CHUNKY_SETTINGS = SETTINGS
 const settings = await import("./settings.ts")
 const { mergeModelCatalog } = await import("./providers/registry.ts")
 const { manageModels } = await import("./tools/manage-models.ts")
+const { setModelAvailability, getModelAvailability } = await import("./model-catalog.ts")
 const { executorToolsFor } = await import("./agent.ts")
 
 afterAll(() => {
@@ -47,5 +48,26 @@ describe("model catalog overlay", () => {
     const output = String(await manageModels.invoke({ action: "hide", provider: "codex", model: "gpt-5.6-luna" }))
     expect(JSON.parse(output)).toMatchObject({ action: "hide", provider: "codex", model: "gpt-5.6-luna" })
     expect(settings.modelCatalogFor("codex").hidden).toContain("gpt-5.6-luna")
+  })
+
+  test("bulk availability is normalized, preserves custom records, and persists once", async () => {
+    settings.addCatalogModel("codex", "custom-bulk-model")
+    const record = settings.modelCatalogFor("codex").added?.["custom-bulk-model"]
+    const before = await getModelAvailability("codex")
+    const ids = before.models.map((model: { id: string }) => model.id)
+    expect(ids).toContain("custom-bulk-model")
+    const keep = ids[0]!
+    await setModelAvailability("codex", [keep, keep])
+    const overlay = settings.modelCatalogFor("codex")
+    expect(overlay.hidden).toEqual(ids.filter((id: string) => id !== keep))
+    expect(overlay.added?.["custom-bulk-model"]).toEqual(record)
+    const disk = JSON.parse(readFileSync(SETTINGS, "utf8"))
+    expect(disk.modelCatalog.codex.hidden).toEqual(overlay.hidden)
+  })
+
+  test("bulk validation is atomic", async () => {
+    const before = settings.modelCatalogFor("codex")
+    await expect(setModelAvailability("codex", ["not a model"])).rejects.toThrow("whitespace")
+    expect(settings.modelCatalogFor("codex")).toEqual(before)
   })
 })

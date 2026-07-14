@@ -29,6 +29,7 @@ import {
   loadConfig,
   loginStatus,
   fetchOnboarding,
+  getSkills,
   manageSkillRepos,
   openEventStream,
   postGoal,
@@ -84,6 +85,14 @@ export default function App() {
   // Bumped by /model and /advisor to open the corresponding composer menu.
   const [modelOpenSignal, setModelOpenSignal] = useState(0)
   const [advisorOpenSignal, setAdvisorOpenSignal] = useState(0)
+  // Bumped by bare /skills to open the composer's skills browser.
+  const [skillsOpenSignal, setSkillsOpenSignal] = useState(0)
+  // Skill queued for the NEXT message: injected server-side for that turn only,
+  // then cleared. Shown as a clearable composer chip.
+  const [pendingSkill, setPendingSkill] = useState<string | null>(null)
+  // Mirror the queued skill so handleSubmit reads the latest without going stale.
+  const pendingSkillRef = useRef<string | null>(null)
+  pendingSkillRef.current = pendingSkill
   const [onboardingOpen, setOnboardingOpen] = useState(false)
 
   const sessionIdRef = useRef<string | null>(null)
@@ -148,6 +157,7 @@ export default function App() {
       setGoal(null)
       setCacheCold(null)
       setAttachments([])
+      setPendingSkill(null)
       void fetchGoal(baseUrl, id).then(setGoal).catch(() => {})
 
       try {
@@ -496,6 +506,12 @@ export default function App() {
   const doSkills = useCallback(
     async (rest: string) => {
       if (!config) return
+      // Bare /skills opens the human-facing browser (same affordance as the
+      // composer's Skills button); subcommands manage the git repos below.
+      if (!rest.trim()) {
+        setSkillsOpenSignal((n) => n + 1)
+        return
+      }
       const parts = rest.split(/\s+/).filter(Boolean)
       const action = (parts[0] ?? "list").toLowerCase()
       if (!["add", "remove", "rm", "update", "list", "ls"].includes(action)) {
@@ -525,6 +541,20 @@ export default function App() {
       }
       const data = await manageSkillRepos(config.baseUrl, payload)
       if (normalized === "list") {
+        // Per-skill on/off lines first (the human-facing catalog), then the
+        // managed-repo summary.
+        try {
+          const skills = await getSkills(config.baseUrl, sessionId)
+          if (skills.length > 0) {
+            notice(
+              skills
+                .map((s) => `${s.enabled ? "on " : "off"} ${s.name} [${s.sourceLabel}]`)
+                .join("  ·  "),
+            )
+          }
+        } catch {
+          /* the repo summary below is still useful */
+        }
         const repos = (data.repos as Array<{ id: string; url: string; present: boolean; branch?: string; lastError?: string }>) ?? []
         if (repos.length === 0) {
           notice("No managed skill repos. `/skills add <git-url>` to install a pack.")
@@ -549,7 +579,7 @@ export default function App() {
         notice(`Updated ${data.updated ?? 0} skill repo(s)${failed ? ` · ${failed} failed` : ""}.`)
       }
     },
-    [config, notice],
+    [config, notice, sessionId],
   )
 
   // Execute a KNOWN slash command (see lib/commands.ts) against the current
@@ -666,9 +696,11 @@ export default function App() {
       // don't optimistically insert it here — that keeps a single source of
       // truth and means resumed threads show past prompts too.
       const images = attachmentsRef.current
+      const skill = pendingSkillRef.current
       setAttachments([]) // consume the pasted images with this message
+      setPendingSkill(null) // the queued skill is applied to this turn only
       try {
-        const blocked = await sendMessage(config.baseUrl, sessionId, trimmed, { images })
+        const blocked = await sendMessage(config.baseUrl, sessionId, trimmed, { images, skill })
         if (blocked) {
           // Cache guard: the send did NOT run. Confirm before re-sending the
           // whole context, or hand the draft (and its images) back untouched.
@@ -683,9 +715,10 @@ export default function App() {
           if (!ok) {
             setDraft(text)
             setAttachments(images)
+            setPendingSkill(skill)
             return
           }
-          await sendMessage(config.baseUrl, sessionId, trimmed, { images, force: true })
+          await sendMessage(config.baseUrl, sessionId, trimmed, { images, skill, force: true })
         }
         setCacheCold(null)
         void refreshSessions(config.baseUrl)
@@ -806,8 +839,13 @@ export default function App() {
           attachmentCount={attachments.length}
           onAttachImage={(img) => setAttachments((a) => [...a, img])}
           onClearAttachments={() => setAttachments([])}
+          sessionId={sessionId}
+          pendingSkill={pendingSkill}
+          onClearSkill={() => setPendingSkill(null)}
+          onSelectSkill={(name) => setPendingSkill(name)}
           modelOpenSignal={modelOpenSignal}
           advisorOpenSignal={advisorOpenSignal}
+          skillsOpenSignal={skillsOpenSignal}
           draft={draft}
           onDraftChange={setDraft}
           onSubmit={(t) => void handleSubmit(t)}

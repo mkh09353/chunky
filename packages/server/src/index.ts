@@ -63,6 +63,8 @@ import {
   type SidekickConfig,
 } from "./settings.ts"
 import { availableWorkflowTargets } from "./workflow/router.ts"
+import { discoverSkills, loadSkill } from "./skills.ts"
+import { saveDisabledSkills } from "./settings.ts"
 import { drainQueue, installSessionBus } from "./session-bus.ts"
 import { cacheColdPayload, checkCacheCold, exceedsGuard } from "./cache-watch.ts"
 import { getFinder } from "./fff.ts"
@@ -417,6 +419,25 @@ const server = Bun.serve({
       } catch (err) {
         return json({ error: (err as Error).message }, 400)
       }
+    }
+
+    if (pathname === "/api/skills" && req.method === "GET") {
+      const session = url.searchParams.get("session")
+      const workspace = session && Store.exists(session) ? Store.workspaceOf(session) : url.searchParams.get("workspace")
+      const skills = workspace ? discoverSkills(workspace, { includeDisabled: true }) : discoverSkills(process.cwd(), { includeDisabled: true }).filter((s) => s.source !== "project")
+      return json({ skills: skills.map((s) => ({ name: s.name, description: s.description, source: s.source, sourceLabel: s.sourceLabel, path: s.path, enabled: s.enabled !== false })) })
+    }
+    if (pathname === "/api/skills" && req.method === "POST") {
+      const body = await req.json().catch(() => ({})) as { action?: "enable" | "disable"; name?: string; repoId?: string }
+      if (!body.action || !body.name) return json({ error: "action and name are required" }, 400)
+      if (body.repoId) {
+        const { manageSkillRepos } = await import("./skill-repos.ts")
+        return json(await manageSkillRepos(body.action, { id: body.repoId, skill: body.name }))
+      }
+      const disabled = new Set(loadSettings().disabledSkills ?? [])
+      body.action === "disable" ? disabled.add(body.name) : disabled.delete(body.name)
+      saveDisabledSkills([...disabled])
+      return json({ action: body.action, name: body.name, enabled: body.action === "enable" })
     }
 
     // GET /api/model -> the current active selection { provider, model, effort?, speed? }
@@ -799,12 +820,14 @@ const server = Bun.serve({
         let text = ""
         let force = false
         let steer = false
+        let skill: string | undefined
         let images: { base64: string; mediaType: string }[] | undefined
         try {
-          const body = (await req.json()) as { text?: unknown; images?: unknown; force?: unknown; steer?: unknown }
+          const body = (await req.json()) as { text?: unknown; images?: unknown; force?: unknown; steer?: unknown; skill?: unknown }
           text = typeof body?.text === "string" ? body.text : ""
           force = body?.force === true
           steer = body?.steer === true
+          skill = typeof body?.skill === "string" ? body.skill.trim() : undefined
           if (Array.isArray(body?.images)) {
             images = body.images.filter(
               (i): i is { base64: string; mediaType: string } =>
@@ -815,6 +838,12 @@ const server = Bun.serve({
           return json({ error: "invalid JSON body" }, 400)
         }
         if (!text && !(images && images.length)) return json({ error: "missing text or image" }, 400)
+        const visibleText = text
+        if (skill) {
+          const loaded = loadSkill(Store.workspaceOf(sessionId) ?? process.cwd(), skill, sessionId, true)
+          if ("error" in loaded) return json({ error: `skill selection failed: ${loaded.error}` }, 400)
+          text = `<skill-context name="${loaded.name}">\n${loaded.body}\n</skill-context>\n\n${text}`
+        }
 
         // Steer: the client held this message until a tool boundary and now wants
         // to cut into the in-flight turn. Abort the current run and WAIT for it to
@@ -842,12 +871,12 @@ const server = Bun.serve({
           }
         }
 
-        if (text) Store.setTitleIfDefault(sessionId, text) // first message becomes the resume label
+        if (visibleText) Store.setTitleIfDefault(sessionId, visibleText) // first message becomes the resume label
 
         // Echo the user turn into the event stream so it is persisted and
         // replayed on resume (clients render it instead of an optimistic local
         // echo). Emitted before the run so it lands ahead of the assistant reply.
-        if (text) emitTo(sessionId, { type: "message.user", text })
+        if (visibleText) emitTo(sessionId, { type: "message.user", text: visibleText })
 
         // Abort any prior in-flight turn, then run this one (tracked so /interrupt
         // can cancel it). If a goal is active, runAgent keeps continuing it after.

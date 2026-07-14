@@ -76,6 +76,8 @@ export interface ModeSpec {
 }
 
 export interface Settings {
+  /** User/project skill names disabled globally. */
+  disabledSkills?: string[]
   customProviders?: CustomProvider[]
   onboardedAt?: number
   /** Active provider id. */
@@ -497,6 +499,11 @@ export function listSkillRepos(): SkillRepoRecord[] {
 
 export function skillRepoById(id: string): SkillRepoRecord | undefined {
   return (loadSettings().skillRepos ?? []).find((r) => r.id === id)
+}
+
+export function saveDisabledSkills(names: string[]): void {
+  const s = loadSettings()
+  save({ ...s, disabledSkills: [...new Set(names)].sort() })
 }
 
 /** Register a skill repo (caller clones first). Throws if id already exists. */

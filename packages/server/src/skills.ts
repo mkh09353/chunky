@@ -19,6 +19,7 @@ import {
 import { homedir } from "node:os"
 import { basename, dirname, join, resolve, sep } from "node:path"
 import { managedSkillRoots } from "./skill-repos.ts"
+import { loadSettings, saveDisabledSkills } from "./settings.ts"
 import { MAX_BYTES, MAX_LINES, truncateOutput } from "./tools/fs-util.ts"
 
 const MAX_NAME_LENGTH = 64
@@ -52,6 +53,7 @@ export interface SkillMeta {
   source: SkillSource
   /** Human label for the root, e.g. "~/.claude/skills", ".agents/skills", or "repo:id". */
   sourceLabel: string
+  enabled?: boolean
 }
 
 export interface LoadedSkill {
@@ -285,11 +287,11 @@ function homeLabel(rel: string): string {
  * Discover all skills for a workspace. Project skills override user skills of
  * the same name. Within a scope, the first path found wins (stable scan order).
  */
-export function discoverSkills(workspace: string): SkillMeta[] {
+export function discoverSkills(workspace: string, options: { includeDisabled?: boolean } = {}): SkillMeta[] {
   const byName = new Map<string, SkillMeta>()
   const seenReal = new Set<string>()
 
-  const add = (meta: SkillMeta | null, overwrite: boolean) => {
+  const add = (meta: SkillMeta | null, overwrite: boolean, enabled = true) => {
     if (!meta) return
     const real = realPath(meta.path)
     if (seenReal.has(real)) return
@@ -299,7 +301,7 @@ export function discoverSkills(workspace: string): SkillMeta[] {
     if (existing) {
       seenReal.delete(realPath(existing.path))
     }
-    byName.set(meta.name, meta)
+    byName.set(meta.name, { ...meta, enabled })
     seenReal.add(real)
   }
 
@@ -308,7 +310,9 @@ export function discoverSkills(workspace: string): SkillMeta[] {
     const root = join(home, rel)
     const label = homeLabel(rel)
     for (const file of findSkillFiles(root)) {
-      add(loadMetaFromFile(file, "user", label), false)
+      const meta = loadMetaFromFile(file, "user", label)
+      if (meta && !options.includeDisabled && (loadSettings().disabledSkills ?? []).includes(meta.name)) continue
+      add(meta, false, !(loadSettings().disabledSkills ?? []).includes(meta?.name ?? ""))
     }
   }
 
@@ -316,8 +320,10 @@ export function discoverSkills(workspace: string): SkillMeta[] {
   for (const { root, label, disabledSkills } of managedSkillRoots()) {
     for (const file of findSkillFiles(root)) {
       const meta = loadMetaFromFile(file, "repo", label)
-      if (!meta || disabledSkills.has(meta.name)) continue
-      add(meta, true)
+      if (!meta) continue
+      const enabled = !disabledSkills.has(meta.name)
+      if (!enabled && !options.includeDisabled) continue
+      add(meta, true, enabled)
     }
   }
 
@@ -331,7 +337,10 @@ export function discoverSkills(workspace: string): SkillMeta[] {
       // Label relative to workspace when under it; else basename of root.
       const label = rel
       for (const file of findSkillFiles(root)) {
-        add(loadMetaFromFile(file, "project", label), true)
+        const meta = loadMetaFromFile(file, "project", label)
+        const disabled = (loadSettings().disabledSkills ?? []).includes(meta?.name ?? "")
+        if (disabled && !options.includeDisabled) continue
+        add(meta, true, !disabled)
       }
     }
   }
@@ -356,10 +365,10 @@ export function searchSkills(workspace: string, query?: string): SkillMeta[] {
 /**
  * Resolve a skill by name (or unique prefix) against the current workspace catalog.
  */
-export function resolveSkill(workspace: string, nameOrPrefix: string): SkillMeta | { error: string } {
+export function resolveSkill(workspace: string, nameOrPrefix: string, allowDisabled = false): SkillMeta | { error: string } {
   const q = nameOrPrefix.trim()
   if (!q) return { error: "skill name is required" }
-  const all = discoverSkills(workspace)
+  const all = discoverSkills(workspace, allowDisabled ? { includeDisabled: true } : {})
   const exact = all.find((s) => s.name === q)
   if (exact) return exact
   // Case-insensitive exact
@@ -371,6 +380,10 @@ export function resolveSkill(workspace: string, nameOrPrefix: string): SkillMeta
     return {
       error: `ambiguous skill "${q}" — matches: ${prefix.map((s) => s.name).join(", ")}. Use the full name.`,
     }
+  }
+  if (allowDisabled) {
+    const disabled = discoverSkills(workspace, { includeDisabled: true }).find((s) => s.name === q && s.enabled === false)
+    if (disabled) return disabled
   }
   const available = all.length ? all.map((s) => s.name).join(", ") : "none"
   return { error: `skill "${q}" not found. Available: ${available}. Call search_skills to browse.` }
@@ -387,8 +400,9 @@ export function loadSkill(
   workspace: string,
   name: string,
   _scopeKey: string,
+  allowDisabled = false,
 ): LoadedSkill | { error: string } {
-  const resolved = resolveSkill(workspace, name)
+  const resolved = resolveSkill(workspace, name, allowDisabled)
   if ("error" in resolved) return resolved
 
   let raw: string

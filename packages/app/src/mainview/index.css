@@ -905,6 +905,90 @@ body,
   word-break: break-word;
 }
 
+/* ---- Skills browser -------------------------------------------------------
+
+   Shares the model-picker popover chrome (chunky-model-menu/list/row) and adds
+   collapsible group headers, an on/off toggle badge, and a dimmed look for
+   disabled skills. Opened from the composer's "Skills" trigger or bare /skills. */
+
+/* Collapsible group header (User / Project / repo:<id>). */
+.chunky-skill-group {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-1);
+  width: 100%;
+  text-align: left;
+  font: inherit;
+  font-size: var(--font-size-2xs);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-secondary);
+  background: transparent;
+  border: none;
+  border-radius: var(--radius-element);
+  padding: var(--spacing-1-5) var(--spacing-2);
+  cursor: pointer;
+}
+
+.chunky-skill-group:hover,
+.chunky-skill-group[data-active] {
+  background: var(--color-overlay-hover);
+  color: var(--color-text-primary);
+}
+
+.chunky-skill-group svg {
+  width: 0.8rem;
+  height: 0.8rem;
+  flex-shrink: 0;
+}
+
+/* On/off toggle badge on the left of each skill row (click or Space). */
+.chunky-skill-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+  width: 2rem;
+  padding: var(--spacing-0-5) 0;
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  font-size: var(--font-size-2xs);
+  font-weight: var(--font-weight-semibold);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--color-text-secondary);
+  background: var(--color-background-surface);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.chunky-skill-toggle:hover {
+  border-color: var(--chunky-purple-soft);
+  color: var(--color-text-primary);
+}
+
+.chunky-skill-toggle-on {
+  background: var(--color-accent);
+  border-color: transparent;
+  color: var(--color-on-accent);
+}
+
+/* Secondary description trailing the skill name (truncates with the name). */
+.chunky-skill-desc {
+  color: var(--color-text-secondary);
+}
+
+/* Disabled skills read dimmer, but the toggle stays legible. */
+.chunky-skill-row[data-disabled] .chunky-model-row-name {
+  opacity: 0.55;
+}
+
+/* Queued-skill chip in the composer footer (reuses the attachment chip look). */
+.chunky-skill-chip {
+  color: var(--chunky-purple-soft);
+}
+
 /* ---- Chrome --------------------------------------------------------------- */
 
 .chunky-status-pill {

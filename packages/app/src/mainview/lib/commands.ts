@@ -39,8 +39,8 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   },
   {
     name: "/skills",
-    description: "Manage skill repos: /skills list · add <url> · remove <id> · update [id]",
-    insert: "/skills ",
+    description: "Browse skills (bare) · list · add <url> · remove <id> · update [id]",
+    insert: "/skills",
   },
   {
     name: "/advisor",

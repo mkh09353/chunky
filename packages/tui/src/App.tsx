@@ -32,6 +32,7 @@ import { PromptInput } from "./components/PromptInput.js"
 import { LoginPicker, type ProviderRow } from "./components/LoginPicker.js"
 import { ResumePicker } from "./components/ResumePicker.js"
 import { ModelPicker, type ModelSelectionResult } from "./components/ModelPicker.js"
+import { SkillsPicker } from "./components/SkillsPicker.js"
 import { ProviderPicker } from "./components/ProviderPicker.js"
 import { OnboardingWizard } from "./components/OnboardingWizard.js"
 import { AdvisorPicker, type AdvisorSelectionResult } from "./components/AdvisorPicker.js"
@@ -165,6 +166,8 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   const [loginPicker, setLoginPicker] = useState<{ providers: ProviderRow[]; selected: number } | null>(null)
   // When true, the /model fuzzy picker is open (owns the keyboard while shown).
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
+  const [skillsPickerOpen, setSkillsPickerOpen] = useState(false)
+  const [pendingSkill, setPendingSkill] = useState<string | null>(null)
   const [providerPickerOpen, setProviderPickerOpen] = useState(false)
   const [onboardingOpen, setOnboardingOpen] = useState(false)
   // When true, the /advisor picker is open (owns the keyboard while shown).
@@ -255,6 +258,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   const pickerOpen =
     loginPicker != null ||
     modelPickerOpen ||
+    skillsPickerOpen ||
     providerPickerOpen ||
     advisorPickerOpen ||
     sidekickPicker != null ||
@@ -268,6 +272,10 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   useInput(
     (input, key) => {
       if (pickerOpen) return // a picker owns the keys while open
+      if (key.escape && pendingSkill) {
+        setPendingSkill(null)
+        return
+      }
       if (key.ctrl && (input === "t" || input === "T")) setThreadsCollapsed((v) => !v)
       if (key.escape && mode === "live" && state.status === "running") {
         const sid = sessionIdRef.current
@@ -430,7 +438,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   // parked in pendingSend (nothing ran server-side); otherwise echo the user
   // line locally and start the turn timer.
   const postMessage = useCallback(
-    async (text: string, shown: string, images: ClipboardImage[], force: boolean, steer = false) => {
+    async (text: string, shown: string, images: ClipboardImage[], force: boolean, steer = false, skill?: string | null) => {
       const id = sessionIdRef.current
       if (!id) {
         apply({ type: "error", message: "no live session yet" })
@@ -449,6 +457,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
             ...(images.length ? { images } : {}),
             ...(force ? { force: true } : {}),
             ...(steer ? { steer: true } : {}),
+            ...(skill ? { skill } : {}),
           }),
         })
         if (res.status === 409) {
@@ -534,9 +543,11 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       }
       // The user line is echoed only once the server ACCEPTS: a cache-guard 409
       // parks the message instead, and nothing should look sent.
-      await postMessage(text, shown, images, false)
+      const skill = pendingSkill
+      setPendingSkill(null)
+      await postMessage(text, shown, images, false, false, skill)
     },
-    [mode, apply, demo, postMessage],
+    [mode, apply, demo, postMessage, pendingSkill],
   )
 
   // Deliver a buffered message via the live send path. `steer: true` tells the
@@ -960,6 +971,14 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   // /skills — manage git skill repositories (add/remove/update/list).
   const doSkills = useCallback(
     async (rest: string) => {
+      if (!rest.trim()) {
+        if (mode !== "live") {
+          printLine("The skills picker needs the live server.")
+        } else {
+          setSkillsPickerOpen(true)
+        }
+        return
+      }
       if (mode !== "live") {
         printLine("Skill repo management needs the live server.")
         return
@@ -1003,6 +1022,13 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         const data = (await res.json()) as any
         if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`)
         if (normalized === "list") {
+          try {
+            const catalog = await fetch(`${baseUrl}/api/skills?session=${encodeURIComponent(sessionIdRef.current ?? "")}`)
+            const listed = (await catalog.json()) as { skills?: Array<{ name: string; enabled: boolean; sourceLabel: string }> }
+            if (catalog.ok && listed.skills?.length) {
+              printLine(listed.skills.map((s) => `· ${s.enabled ? "on " : "off"} ${s.name} [${s.sourceLabel}]`).join("\n"))
+            }
+          } catch { /* repo listing below remains useful */ }
           const repos = data.repos ?? []
           if (repos.length === 0) {
             printLine("No managed skill repos. /skills add <git-url> to install a pack.")
@@ -1548,6 +1574,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         }} />}
         {loginPicker && <LoginPicker providers={loginPicker.providers} selected={loginPicker.selected} />}
         {resumePicker && <ResumePicker sessions={resumePicker.sessions} selected={resumePicker.selected} />}
+        {skillsPickerOpen && <SkillsPicker baseUrl={baseUrl} sessionId={sessionIdRef.current} onSelect={(name) => { setPendingSkill(name); setSkillsPickerOpen(false) }} onCancel={() => setSkillsPickerOpen(false)} />}
         {modelPickerOpen && (
           <ModelPicker baseUrl={baseUrl} onDone={onModelDone} onCancel={() => setModelPickerOpen(false)} />
         )}
@@ -1613,6 +1640,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
             {outboxPreview(m.shown)}
           </text>
         ))}
+        {pendingSkill && <text fg={ACCENT}>{`  skill: ${pendingSkill} — type your prompt, Esc to clear`}</text>}
         {queue.map((m, i) => (
           <text key={`queue-${i}`} attributes={TextAttributes.DIM}>
             {"  ⏎ queued: "}

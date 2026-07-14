@@ -9,6 +9,7 @@ import { createSlashTrigger } from "./slashTrigger"
 import { AdvisorPickerMenu } from "./AdvisorPickerMenu"
 import { EmptyChat } from "./EmptyChat"
 import { ModelPickerMenu } from "./ModelPickerMenu"
+import { SkillsBrowserMenu } from "./SkillsBrowserMenu"
 import { TranscriptView } from "./TranscriptView"
 
 // Mirror the TUI's clipboard-image cap (~7MB of base64) — bigger pastes are
@@ -55,8 +56,13 @@ export function ChatPane({
   attachmentCount,
   onAttachImage,
   onClearAttachments,
+  sessionId,
+  pendingSkill,
+  onClearSkill,
+  onSelectSkill,
   modelOpenSignal,
   advisorOpenSignal,
+  skillsOpenSignal,
   draft,
   onDraftChange,
   onSubmit,
@@ -78,8 +84,14 @@ export function ChatPane({
   attachmentCount: number
   onAttachImage: (img: InputImage) => void
   onClearAttachments: () => void
+  sessionId: string | null
+  /** Skill queued for the next message (shown as a clearable composer chip). */
+  pendingSkill: string | null
+  onClearSkill: () => void
+  onSelectSkill: (name: string) => void
   modelOpenSignal?: number
   advisorOpenSignal?: number
+  skillsOpenSignal?: number
   draft: string
   onDraftChange: (v: string) => void
   onSubmit: (text: string) => void
@@ -128,8 +140,21 @@ export function ChatPane({
     [onAttachImage],
   )
 
+  // Esc on an empty composer clears a queued skill (TUI parity). The skills
+  // menu handles its own Esc while focused, so this only fires when the popover
+  // is closed and focus sits in the composer.
+  const handleKeyDown = useCallback(
+    (e: React.KeyboardEvent) => {
+      if (e.key === "Escape" && pendingSkill && !draft.trim()) {
+        e.preventDefault()
+        onClearSkill()
+      }
+    },
+    [pendingSkill, draft, onClearSkill],
+  )
+
   return (
-    <div className="chunky-chat-wrap" onPaste={handlePaste}>
+    <div className="chunky-chat-wrap" onPaste={handlePaste} onKeyDown={handleKeyDown}>
       <ChatLayout
         density="balanced"
         scrollButton={empty ? null : undefined}
@@ -183,6 +208,20 @@ export function ChatPane({
                       </button>
                     </span>
                   ) : null}
+                  {pendingSkill ? (
+                    <span className="chunky-attach-chip chunky-skill-chip" title={`Skill queued for your next message: ${pendingSkill}`}>
+                      ✦ skill: {pendingSkill}
+                      <button
+                        type="button"
+                        className="chunky-attach-clear"
+                        aria-label="Clear queued skill"
+                        title="Clear queued skill"
+                        onClick={onClearSkill}
+                      >
+                        ×
+                      </button>
+                    </span>
+                  ) : null}
                 </>
               }
               // Codex-style advisor + model pickers in the bottom-right, next to
@@ -190,6 +229,12 @@ export function ChatPane({
               sendActions={
                 baseUrl ? (
                   <>
+                    <SkillsBrowserMenu
+                      baseUrl={baseUrl}
+                      sessionId={sessionId}
+                      onSelect={onSelectSkill}
+                      openSignal={skillsOpenSignal}
+                    />
                     <AdvisorPickerMenu
                       baseUrl={baseUrl}
                       advisor={advisor}

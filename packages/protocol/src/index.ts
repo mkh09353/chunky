@@ -219,6 +219,15 @@ export interface ManageSkillReposRequest {
   skill?: string
 }
 export interface SkillReposResponse { action: SkillRepoAction; repos?: SkillRepoStatus[]; repo?: SkillRepoStatus; id?: string; updated?: number; failed?: number }
+export interface SkillCatalogEntry {
+  name: string
+  description: string
+  source: "user" | "project" | "repo"
+  sourceLabel: string
+  path: string
+  enabled: boolean
+}
+export interface SkillsCatalogResponse { skills: SkillCatalogEntry[] }
 
 // ---- Modes (named executor + advisor pairings) ----
 

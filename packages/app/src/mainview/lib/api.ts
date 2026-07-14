@@ -20,6 +20,8 @@ import {
   type ManageSkillReposRequest,
   type SkillRepoStatus,
   type SkillReposResponse,
+  type SkillCatalogEntry,
+  type SkillsCatalogResponse,
 } from "@chunky/protocol"
 
 import { getRpc } from "./rpc"
@@ -173,7 +175,7 @@ export async function sendMessage(
   baseUrl: string,
   sessionId: string,
   text: string,
-  opts: { force?: boolean; images?: InputImage[] } = {},
+  opts: { force?: boolean; images?: InputImage[]; skill?: string | null } = {},
 ): Promise<SendBlockedResponse | null> {
   const res = await fetch(baseUrl + ROUTES.sendMessage(sessionId), {
     method: "POST",
@@ -182,6 +184,9 @@ export async function sendMessage(
       text,
       ...(opts.images?.length ? { images: opts.images } : {}),
       ...(opts.force ? { force: true } : {}),
+      // The visible transcript text stays exactly what the user typed; the
+      // server injects this skill's body for THIS turn only.
+      ...(opts.skill ? { skill: opts.skill } : {}),
     }),
   })
   if (res.status === 409) {
@@ -513,6 +518,41 @@ export async function deleteMode(baseUrl: string, name: string): Promise<ModesRe
   const body = (await res.json().catch(() => ({}))) as ModesResponse & { error?: string }
   if (!res.ok || body.error) throw new Error(body.error || `delete mode failed (${res.status})`)
   return body
+}
+
+// ---- Skills catalog (human-facing browser) ----------------------------------
+
+export type { SkillCatalogEntry } from "@chunky/protocol"
+
+/** Every discovered skill (user + project + managed repos), INCLUDING disabled
+ *  ones, scoped to a session so project skills resolve against its repo. */
+export async function getSkills(
+  baseUrl: string,
+  sessionId: string | null,
+): Promise<SkillCatalogEntry[]> {
+  const url = new URL(baseUrl + "/api/skills")
+  if (sessionId) url.searchParams.set("session", sessionId)
+  const res = await fetch(url)
+  if (!res.ok) throw new Error(`list skills failed (${res.status})`)
+  const data = (await res.json()) as SkillsCatalogResponse
+  return data.skills ?? []
+}
+
+/** Enable or disable a skill. Pass `repoId` for repo-sourced skills (the
+ *  sourceLabel is "repo:<id>" — strip the prefix); omit it for user/project. */
+export async function toggleSkill(
+  baseUrl: string,
+  payload: { action: "enable" | "disable"; name: string; repoId?: string },
+): Promise<void> {
+  const res = await fetch(baseUrl + "/api/skills", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload),
+  })
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { error?: string }
+    throw new Error(body.error || `toggle skill failed (${res.status})`)
+  }
 }
 
 // ---- Managed skill repositories ---------------------------------------------

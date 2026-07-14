@@ -3,8 +3,7 @@ import { existsSync, mkdirSync, readFileSync, rmSync, renameSync, writeFileSync 
 import { homedir } from "node:os"
 import { join } from "node:path"
 
-// TODO: change this when Chunky moves repositories.
-export const GITHUB_REPOSITORY = "maxheadley/chunky"
+export const GITHUB_REPOSITORY = "mkh09353/chunky"
 export const CHUNKY_DIR = process.env.CHUNKY_DIR || join(homedir(), ".chunky")
 export const APP_DIR = join(CHUNKY_DIR, "app")
 const STATE_DIR = join(CHUNKY_DIR, "state")

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
-REPO="maxheadley/chunky" # TODO: centralize when repository moves
+REPO="mkh09353/chunky"
 APP="$HOME/.chunky/app"; STATE="$HOME/.chunky/state"; BIN="${CHUNKY_BIN_DIR:-$HOME/.local/bin}"
 command -v bun >/dev/null || { echo "Chunky requires Bun. Install it: https://bun.sh/docs/installation" >&2; exit 1; }
 command -v curl >/dev/null || { echo "curl is required" >&2; exit 1; }

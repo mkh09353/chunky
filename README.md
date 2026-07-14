@@ -51,7 +51,7 @@ Verified: typing a question in `--live` streams the real GLM-5.2 answer back int
 
 ## Install
 
-Install the latest release (Bun is required):
+Install the latest release (no prerequisites — if [Bun](https://bun.sh) isn't installed, the installer bootstraps a private copy under `~/.chunky/bun`):
 
 ```bash
 curl -fsSL https://chunky.to/install | bash

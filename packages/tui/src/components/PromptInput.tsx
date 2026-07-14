@@ -421,8 +421,14 @@ function CursorText({
     )
   }
   const before = value.slice(0, cursor)
-  const at = value.slice(cursor, cursor + 1) || " "
-  const after = value.slice(cursor + 1)
+  const rawAt = value.slice(cursor, cursor + 1)
+  // Never paint INVERSE onto a newline: the styled "\n" makes the renderer
+  // flush an inverse run across the wrapped row — the stray white block. When
+  // the cursor sits on a newline, show the block cursor as a space *before*
+  // the break and keep the newline itself unstyled.
+  const onNewline = rawAt === "\n"
+  const at = onNewline || rawAt === "" ? " " : rawAt
+  const after = (onNewline ? "\n" : "") + value.slice(cursor + 1)
   return (
     <text>
       {before}

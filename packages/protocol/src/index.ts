@@ -228,9 +228,10 @@ export interface ModeAdvisor {
   model: string
   effort?: string
 }
-/** A named pairing of executor model + advisor model, applied as one unit via
- *  /mode. Captures which combinations actually work well (e.g. Grok 4.5 with a
- *  Fable advisor) so switching is one command, not two pickers. */
+/** A named trio of executor + sidekick + advisor models, applied as one unit via
+ *  /mode. Captures which combinations actually work well (e.g. a Fable executor
+ *  with a Luna sidekick and a Sol advisor) so switching is one command, not
+ *  three pickers. */
 export interface ModeSpec {
   provider: string
   model: string
@@ -238,6 +239,9 @@ export interface ModeSpec {
   speed?: string
   /** The paired advisor; null = advisor explicitly off in this mode. */
   advisor?: ModeAdvisor | null
+  /** The paired sidekick seat; null = seat unset in this mode (inherit);
+   *  absent (undefined) = mode predates sidekicks, leave the seat alone. */
+  sidekick?: ModeAdvisor | null
 }
 export interface ModeInfo extends ModeSpec {
   name: string

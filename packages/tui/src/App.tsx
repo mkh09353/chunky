@@ -35,6 +35,7 @@ import { ModelPicker, type ModelSelectionResult } from "./components/ModelPicker
 import { ProviderPicker } from "./components/ProviderPicker.js"
 import { OnboardingWizard } from "./components/OnboardingWizard.js"
 import { AdvisorPicker, type AdvisorSelectionResult } from "./components/AdvisorPicker.js"
+import { SidekickSeatMenu } from "./components/SidekickSeatMenu.js"
 import { openBrowser } from "./openBrowser.js"
 import { grabClipboardImage, type ClipboardImage } from "./clipboardImage.js"
 import { writeClipboard } from "./clipboard.js"
@@ -171,6 +172,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   // When set, the /sidekick picker is open (owns the keyboard while shown).
   // `seat` targets a NAMED seat (e.g. "frontend"); undefined = the default seat.
   const [sidekickPicker, setSidekickPicker] = useState<{ seat?: string } | null>(null)
+  const [sidekickSeatMenuOpen, setSidekickSeatMenuOpen] = useState(false)
   // When set, the /resume thread picker is open (owns the keyboard while shown).
   const [resumePicker, setResumePicker] = useState<{ sessions: SessionSummary[]; selected: number } | null>(null)
   // The active model selection, reflected on the status line.
@@ -256,6 +258,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     providerPickerOpen ||
     advisorPickerOpen ||
     sidekickPicker != null ||
+    sidekickSeatMenuOpen ||
     resumePicker != null ||
     pendingSend != null
 
@@ -1084,7 +1087,8 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         printLine(`Seat names are short lowercase slugs (got "${name}"). Try /sidekick frontend.`)
         return
       }
-      setSidekickPicker(name && name !== "default" ? { seat: name } : {})
+      if (name && name !== "default") setSidekickPicker({ seat: name })
+      else setSidekickSeatMenuOpen(true)
     },
     [mode, printLine],
   )
@@ -1560,6 +1564,16 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
             baseUrl={baseUrl}
             onDone={onSidekickDone}
             onCancel={() => setSidekickPicker(null)}
+          />
+        )}
+        {sidekickSeatMenuOpen && (
+          <SidekickSeatMenu
+            baseUrl={baseUrl}
+            onDone={(seat) => {
+              setSidekickSeatMenuOpen(false)
+              setSidekickPicker(seat ? { seat } : {})
+            }}
+            onCancel={() => setSidekickSeatMenuOpen(false)}
           />
         )}
         {pendingSend ? (

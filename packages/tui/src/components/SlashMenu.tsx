@@ -18,7 +18,7 @@ export const COMMANDS: Command[] = [
   { name: "/provider", description: "Configure available models for a provider" },
   { name: "/workers", description: "Inspect or tune automatic workflow model routing" },
   { name: "/advisor", description: "Set the advisor model (a stronger model, on tap)" },
-  { name: "/sidekick", description: "Set the sidekick model; /sidekick <name> adds a named seat (frontend/backend)" },
+  { name: "/sidekick", description: "Configure sidekick seats (default + named, e.g. frontend/backend)" },
   { name: "/mode", description: "Named model+sidekick+advisor trios (/mode <name>, /mode save <name>)" },
   { name: "/goal", description: "Work autonomously toward a goal (/goal [--workflows] <objective>)" },
   { name: "/shipit", description: "Hand this plan off to a fresh goal-orchestrator session (/shipit [notes])" },

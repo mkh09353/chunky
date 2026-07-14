@@ -113,6 +113,13 @@ interface PendingSend {
 }
 
 export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Props) {
+  const [updateNotice, setUpdateNotice] = useState<string | null>(null)
+  useEffect(() => {
+    if (mode !== "live") return
+    void fetch(baseUrl + ROUTES.updateStatus).then((r) => r.json()).then((u: { latest?: string; available?: boolean }) => {
+      if (u.available && u.latest) setUpdateNotice(`⬆ chunky v${u.latest} available — run: chunky update`)
+    }).catch(() => {})
+  }, [mode, baseUrl])
   const renderer = useRenderer()
   // Tear down the OpenTUI renderer (restores the terminal) and leave.
   const exit = useCallback(() => {
@@ -1566,6 +1573,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         <Transcript state={state} collapsed={threadsCollapsed} />
       </scrollbox>
       {running && startedAt != null && <StatusLine startedAt={startedAt} />}
+      {updateNotice && <text attributes={TextAttributes.DIM}>{updateNotice}</text>}
       <box flexDirection="column" width="100%" marginTop={1} flexShrink={0}>
         {onboardingOpen && <OnboardingWizard baseUrl={baseUrl} onDone={() => setOnboardingOpen(false)} onLogin={async (p) => {
           // `active` is LoginPicker display state; initiateLogin never reads it.

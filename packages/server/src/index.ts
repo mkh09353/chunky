@@ -33,6 +33,7 @@ import {
 } from "./providers/registry.ts"
 import { detectClaudeCredentials } from "./providers/anthropic-sdk.ts"
 import { AuthStore } from "./providers/auth-store.ts"
+import { checkForUpdate, persistCheck, readPersistedCheck } from "./update/updater.ts"
 import { applyOnboardingMode, suggestedModes, saveCustomProvider } from "./onboarding.ts"
 import {
   currentModeSpec,
@@ -203,6 +204,12 @@ function json(body: unknown, status = 200): Response {
 
 const port = Number(process.env.CHUNKY_PORT) || DEFAULT_PORT
 
+// This is deliberately fire-and-forget: a GitHub outage must never affect boot.
+const previousUpdateCheck = readPersistedCheck()
+if (!previousUpdateCheck?.checkedAt || Date.now() - previousUpdateCheck.checkedAt >= 24 * 60 * 60 * 1000) {
+  void checkForUpdate().then(persistCheck).catch(() => {})
+}
+
 const server = Bun.serve({
   port,
   idleTimeout: 0, // never time out SSE connections
@@ -219,6 +226,8 @@ const server = Bun.serve({
 
     const url = new URL(req.url)
     const { pathname } = url
+
+    if (req.method === "GET" && pathname === ROUTES.updateStatus) return json(readPersistedCheck() ?? { current: "unknown", latest: null, available: false })
 
     if (req.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: CORS })

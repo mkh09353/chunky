@@ -1,0 +1,19 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions: { contents: write }
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build archive
+        run: |
+          mkdir -p dist
+          tar --exclude=.git --exclude=node_modules --exclude='*.db*' --exclude=.env --exclude=auth.json --exclude=settings.json --exclude=scratchpad --exclude=.claude --exclude=dist -czf dist/chunky-${GITHUB_REF_NAME}.tar.gz .
+          sha256sum dist/chunky-${GITHUB_REF_NAME}.tar.gz | awk '{print $1}' > /tmp/sha
+          printf '{"version":"%s","sha256":"%s"}\n' "${GITHUB_REF_NAME#v}" "$(cat /tmp/sha)" > dist/latest.json
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

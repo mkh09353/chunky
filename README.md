@@ -48,3 +48,19 @@ Verified: typing a question in `--live` streams the real GLM-5.2 answer back int
 - ✅ **Remote access via relay** (`bun run pair`): pair a phone with a QR code, and the server dials out to a hosted relay (`relay.chunky.to`, private sibling repo `../chunky-relay`) over an outbound WebSocket — no port forwarding, works from any network. All traffic is **end-to-end encrypted** (X25519 pairing via the QR, XSalsa20-Poly1305 per frame; the relay only ever routes ciphertext and account presence). The phone side speaks the existing `ROUTES`+SSE contract through a tunnel (`@chunky/protocol/relay-client` is the reference client); relay accounts support Sign in with Apple, GitHub OAuth, and a dev-mode login. Non-loopback HTTP now requires a bearer token (`serverToken` in settings.json) — direct LAN/Tailscale clients use that, the TUI/app on loopback need nothing. Design: `docs/relay-design.md`. Verified by a cross-repo E2E suite (pairing → encrypted fetch → streamed SSE → store-and-forward → relay-blindness byte check).
 - ⚠️ **Known bug — Claude-family models via Zen error on tool calls.** `claude-*` on the Zen gateway throws `Invalid response from "wrapModelCall"` on any tool call (Zen's SSE sends empty `id`/`model` on chunks after the first, breaking LangChain's chunk aggregation; reproduces via raw curl, so it's upstream/Zen-side). Since the agent always has tools, use `glm-5.2` (or Codex) for tool work until this is worked around. Non-tool chat with Claude-on-Zen is unaffected.
 - ⬜ Concurrent (not just sequential) thread spawns; interrupt/steer mid-run; tool-approval (HITL); packaging to a binary; work around the Zen/Claude tool-call bug (patch the SSE stream, or use the native Anthropic provider).
+
+## Install
+
+Install the latest release (Bun is required):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/maxheadley/chunky/main/scripts/get.sh | bash
+```
+
+## Updating
+
+Run `chunky update` to install the latest release, or `chunky update --version vX.Y.Z` to pin one. `chunky update --check` reports availability without changing files. Chunky checks for updates in the background at most once every 24 hours; network failures are ignored. The previous app is retained for one rollback: `chunky update --rollback`. Runtime state remains in `~/.chunky/state` and is never replaced by updates.
+
+## License
+
+Chunky is free software, licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only). You may use, modify, and redistribute it under those terms; if you run a modified version as a network service, you must make its source available to users. Copyright (C) 2026 Max Headley.

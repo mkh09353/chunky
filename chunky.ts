@@ -13,6 +13,27 @@ import { existsSync, mkdirSync, openSync, readFileSync } from "node:fs"
 import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { fileURLToPath } from "node:url"
+import { checkForUpdate, rollback, update } from "./packages/server/src/update/updater.ts"
+
+if (process.argv[2] === "--version" || process.argv[2] === "-v") {
+  const pkg = JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), "package.json"), "utf8"))
+  console.log(`chunky v${pkg.version}`)
+  process.exit(0)
+}
+if (process.argv[2] === "update") {
+  try {
+    if (process.argv.includes("--rollback")) { rollback(); console.log("Rolled back Chunky. Restart chunky to finish updating.") }
+    else if (process.argv.includes("--check")) {
+      const result = await checkForUpdate()
+      console.log(result.latest ? `Current: v${result.current}; latest: v${result.latest}${result.available ? " (update available)" : " (up to date)"}` : `Current: v${result.current}; latest unavailable`)
+    } else {
+      const flag = process.argv.indexOf("--version")
+      const release = await update(flag >= 0 ? process.argv[flag + 1] : undefined)
+      console.log(`Updated to v${release.version}. Restart chunky to finish updating.`)
+    }
+  } catch (err) { console.error(`Update failed: ${(err as Error).message}`); process.exitCode = 1 }
+  process.exit()
+}
 
 const APP = dirname(fileURLToPath(import.meta.url))
 const STATE = process.env.CHUNKY_HOME || join(homedir(), ".chunky", "state")

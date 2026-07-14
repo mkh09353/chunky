@@ -280,6 +280,7 @@ export type LoginInitiation =
 
 // ---- Endpoints (relative to http://localhost:<port>) ----
 export const ROUTES = {
+  updateStatus: `/api/update`,
   onboarding: `/api/onboarding`,
   onboardingComplete: `/api/onboarding/complete`,
   onboardingApply: `/api/onboarding/apply`,

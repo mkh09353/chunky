@@ -15,7 +15,7 @@ import { z } from "zod"
 import type { MessageEndReason } from "@chunky/protocol"
 import { taggedEmitter, type Emit } from "./event-emitter.ts"
 import { buildSystemPrompt } from "./prompt.ts"
-import type { AgentSelection } from "./providers/registry.ts"
+import { sidekickFor, type AgentSelection } from "./providers/registry.ts"
 import { anthropicOAuthEnvironment } from "./providers/anthropic-sdk.ts"
 import { usageFromAnthropicResult } from "./usage.ts"
 import { noteRequest } from "./cache-watch.ts"
@@ -36,6 +36,7 @@ import {
 } from "./tools/goal.ts"
 import { read, readInputShape } from "./tools/read.ts"
 import { shipGoal, shipGoalInputShape } from "./tools/ship.ts"
+import { sidekick, sidekickInputShape } from "./tools/sidekick.ts"
 import { spawnThread, spawnThreadInputShape } from "./tools/spawn-thread.ts"
 import { workflow, workflowInputShape } from "./tools/workflow.ts"
 import { manageModels, manageModelsInputShape } from "./tools/manage-models.ts"
@@ -60,6 +61,7 @@ const CHUNKY_TOOLS = [
   ffgrep,
   write,
   editTool,
+  sidekick,
   spawnThread,
   workflow,
   manageModels,
@@ -203,6 +205,16 @@ export function createChunkySdkMcpServer(
         (args) => editTool.invoke(args, runConfig),
         emit,
       ),
+      // sidekick resolves its ThreadManager from the caller thread exactly like
+      // spawn_thread — the default delegation path for Anthropic-runtime leads
+      // (Claude/Fable), whose handoffs run the persistent worker side thread.
+      wrapChunkyTool(
+        sidekick.name,
+        sidekick.description,
+        sidekickInputShape,
+        (args) => sidekick.invoke(args, runConfig),
+        emit,
+      ),
       wrapChunkyTool(
         spawnThread.name,
         spawnThread.description,
@@ -328,7 +340,8 @@ export async function buildAnthropicOptions(
     ...(request.abort ? { abortController: request.abort } : {}),
     model: selection.model || undefined,
     effort: selection.effort,
-    systemPrompt: request.systemPrompt ?? buildSystemPrompt("edit", false, workspace),
+    systemPrompt:
+      request.systemPrompt ?? buildSystemPrompt("edit", false, workspace, { hasSidekick: sidekickFor(selection) != null }),
     tools: [],
     settingSources: [],
     mcpServers: { [SERVER_NAME]: createChunkySdkMcpServer(threadId, emit, eventThreadId, workspace) },

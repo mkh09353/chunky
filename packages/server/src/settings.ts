@@ -33,8 +33,19 @@ export interface AdvisorConfig {
   effort?: Effort
 }
 
-/** A named executor+advisor pairing (see /mode). The advisor is part of the
- *  mode on purpose: which advisor works depends on the executor (e.g. a Fable
+/** The persistent sidekick: the cheaper worker model the lead hands briefs to
+ *  (one standing side thread per session — see ThreadManager.delegateToSidekick).
+ *  Absent provider/model => the sidekick inherits the active selection, so the
+ *  tool still works (context isolation alone is worth it) until a seat is set. */
+export interface SidekickConfig {
+  enabled: boolean
+  provider?: string
+  model?: string
+  effort?: Effort
+}
+
+/** A named executor+sidekick+advisor trio (see /mode). The seats are part of the
+ *  mode on purpose: which pairing works depends on the executor (e.g. a Fable
  *  executor should NOT pair with a Fable advisor — advisorFor suppresses
  *  same-model pairs — so the Fable mode names a different advisor). */
 export interface ModeSpec {
@@ -44,6 +55,8 @@ export interface ModeSpec {
   speed?: Speed
   /** The paired advisor; null = advisor off in this mode. */
   advisor?: { provider: string; model: string; effort?: Effort } | null
+  /** The paired sidekick; null = sidekick seat unset in this mode (inherit). */
+  sidekick?: { provider: string; model: string; effort?: Effort } | null
 }
 
 export interface Settings {
@@ -53,6 +66,8 @@ export interface Settings {
   selections?: Record<string, ModelSelection>
   /** The advisor's model + on/off state. */
   advisor?: AdvisorConfig
+  /** The sidekick's model + on/off state. */
+  sidekick?: SidekickConfig
   /** Cold-cache send guard threshold in tokens (see getCacheGuardTokens).
    *  Absent = default; null = guard off. */
   cacheGuardTokens?: number | null
@@ -322,13 +337,15 @@ export function deleteMode(name: string): boolean {
   return true
 }
 
-/** The CURRENT pairing as a ModeSpec — what "/mode save <name>" would snapshot:
- *  the active provider's selection plus the advisor (null when off/unconfigured). */
+/** The CURRENT trio as a ModeSpec — what "/mode save <name>" would snapshot:
+ *  the active provider's selection plus the advisor and sidekick (each null when
+ *  off/unconfigured). */
 export function currentModeSpec(): ModeSpec {
   const s = loadSettings()
   const provider = s.provider ?? ""
   const sel = s.selections?.[provider] ?? {}
   const adv = getAdvisor()
+  const side = getSidekick()
   return {
     provider,
     model: sel.model ?? "",
@@ -337,6 +354,10 @@ export function currentModeSpec(): ModeSpec {
     advisor:
       adv.enabled && adv.provider && adv.model
         ? { provider: adv.provider, model: adv.model, ...(adv.effort ? { effort: adv.effort } : {}) }
+        : null,
+    sidekick:
+      side.enabled && side.provider && side.model
+        ? { provider: side.provider, model: side.model, ...(side.effort ? { effort: side.effort } : {}) }
         : null,
   }
 }
@@ -359,6 +380,36 @@ export function setAdvisor(patch: Partial<AdvisorConfig>): AdvisorConfig {
     ...(patch.effort !== undefined ? { effort: patch.effort } : {}),
   }
   save({ ...s, advisor: next })
+  return next
+}
+
+/** The sidekick config (default `{ enabled: true }` when never set — enabled and
+ *  usable immediately: an unconfigured seat inherits the active selection). */
+export function getSidekick(): SidekickConfig {
+  return loadSettings().sidekick ?? { enabled: true }
+}
+
+/** Reset the sidekick seat to the default: enabled, no provider/model — i.e.
+ *  inherit the active selection (see sidekickFor). */
+export function resetSidekickSeat(): SidekickConfig {
+  const s = loadSettings()
+  const next: SidekickConfig = { enabled: true }
+  save({ ...s, sidekick: next })
+  return next
+}
+
+/** Merge-update the sidekick config (only defined fields overwrite) and persist. */
+export function setSidekick(patch: Partial<SidekickConfig>): SidekickConfig {
+  const s = loadSettings()
+  const prev = s.sidekick ?? { enabled: true }
+  const next: SidekickConfig = {
+    ...prev,
+    ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
+    ...(patch.provider !== undefined ? { provider: patch.provider } : {}),
+    ...(patch.model !== undefined ? { model: patch.model } : {}),
+    ...(patch.effort !== undefined ? { effort: patch.effort } : {}),
+  }
+  save({ ...s, sidekick: next })
   return next
 }
 

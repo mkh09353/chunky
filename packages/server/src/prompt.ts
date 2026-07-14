@@ -11,11 +11,18 @@ export type EditToolName = "edit" | "apply_patch"
  *  persistent side thread. Terse on purpose. */
 export const ADVISOR_SYSTEM_PROMPT = `You are an expert software-engineering advisor to a coding agent working in this repository. You have read-only tools (read, bash, fffind, ffgrep) — use them to inspect exactly what you're pointed at before answering; read the actual code, don't guess. You must NOT modify anything: no edits, no writes, no mutating shell commands — use bash only for read-only inspection (ls, cat, git). Prefer fffind for paths and ffgrep for content over shell grep/find. The executor applies changes, not you. Reply with concise, specific, actionable guidance: the decision, the why, the concrete next step, and any risks or better alternatives. Be direct.`
 
+/** The sidekick's own system prompt: the persistent worker side thread the lead
+ *  hands implementation briefs to. Full work tools, no delegation tools. It keeps
+ *  its context across handoffs, so follow-up briefs can be short. Terse on purpose. */
+export const SIDEKICK_SYSTEM_PROMPT = `You are the hands-on engineer for a lead coding agent working in this repository. The lead hands you briefs (goal, constraints, definition of done); you do the implementation work — read the code, edit files, run builds and tests — and report back. Honor every stated constraint literally; they are requirements, not suggestions. If a brief conflicts with what you find in the code, say so in your report instead of guessing. This is a persistent conversation: later briefs may reference your earlier work ("fix the bug in the diff you just wrote"), so keep track of what you did. Verify before reporting done — run the tests/build the brief names, or say plainly that you didn't. Reply with a tight report: what you changed (files), how you verified it, and anything the lead should review or decide. Do not expand scope beyond the brief.`
+
 export interface SystemPromptOpts {
   /** When true, only list core (always-bound) tools; deferred tools are found via native tool search. */
   nativeToolSearch?: boolean
   /** Grok fallback: deferred tools are discovered and invoked through two compact local meta-tools. */
   portableToolSearch?: boolean
+  /** When false the sidekick seat is disabled — drop its tool line + guidance. */
+  hasSidekick?: boolean
 }
 
 export function buildSystemPrompt(
@@ -29,6 +36,7 @@ export function buildSystemPrompt(
   const nativeToolSearch = opts.nativeToolSearch === true
   const portableToolSearch = opts.portableToolSearch === true
   const deferredToolSearch = nativeToolSearch || portableToolSearch
+  const hasSidekick = opts.hasSidekick !== false
 
   const editListLine = isEdit
     ? "- edit: edit a file with exact text replacement (one or more disjoint edits per call)"
@@ -57,6 +65,10 @@ export function buildSystemPrompt(
   // Full catalog (fallback / non-native): enumerate every bound tool so the model
   // knows what it can call. Native tool search: list ONLY core tools — deferred
   // tools must not be falsely enumerated; the provider surfaces them on demand.
+  const sidekickListLine = hasSidekick
+    ? "\n- sidekick: hand a work brief to your persistent worker agent — the default way to delegate implementation (it keeps its context across handoffs this session)"
+    : ""
+
   const toolsBlock = deferredToolSearch
     ? `Available tools (always bound):
 - read: read file contents (raw text, no line numbers)
@@ -64,7 +76,7 @@ export function buildSystemPrompt(
 - fffind: fuzzy path/filename search (default file finder; frecency-ranked)
 - ffgrep: content search (prefer over bash rg/grep)
 ${editListLine}
-- write: create or overwrite a file
+- write: create or overwrite a file${sidekickListLine}
 - search_skills / load_skill: discover and on-demand load Agent Skills (SKILL.md packages under ~/.chunky|agents|claude|codex/skills, managed skill-repos, and project .agents|.claude|.chunky|.codex/skills). Bodies are never in the prompt — search first, load only when a description matches
 ${portableToolSearch ? "- search_tools / call_deferred_tool: discover deferred tools by capability, then invoke one using its returned name and input schema\n" : ""}
 
@@ -75,18 +87,28 @@ Additional tools (threads, workflows, goals, sessions, model catalog, skill repo
 - fffind: fuzzy path/filename search (default file finder; frecency-ranked)
 - ffgrep: content search (prefer over bash rg/grep)
 ${editListLine}
-- write: create or overwrite a file
-- spawn_thread: delegate a focused subtask to an independent child agent; omit model fields to inherit, or choose another configured provider/model when it better fits the subtask
-- workflow: run a JS script that fans out many sub-agents in parallel and returns one synthesized result${advisorListLine}
+- write: create or overwrite a file${sidekickListLine}
+- spawn_thread: delegate a focused ONE-SHOT subtask to a fresh child agent (no memory between calls); omit model fields to inherit, or choose another configured provider/model when it better fits the subtask
+- workflow: fan out MANY sub-agents via a JS script — reserved for genuinely large work or an explicit user request${advisorListLine}
 - get_goal / create_goal / goal_complete / goal_blocked: goal-mode tools — relevant when a goal is set via /goal, or when the user explicitly asks for autonomous work-until-done (create_goal)
 - ship_goal: hand the plan agreed in THIS conversation off to a fresh, context-clean session that pursues it as an autonomous workflow-orchestrated goal — use when the user says to ship or hand off the plan (/shipit); write a distilled handoff brief as the objective
 - list_sessions / send_to_session: see and message the OTHER live sessions on this server (parallel repos/tasks) — hand off follow-ups or ask questions; a busy target processes your message after its current turn
 - search_skills / load_skill: discover and on-demand load Agent Skills (SKILL.md packages under ~/.chunky|agents|claude|codex/skills, managed skill-repos, and project .agents|.claude|.chunky|.codex/skills). Bodies are never in the prompt — search first, load only when a description matches
 - manage_skill_repos: add/remove/update/list git remotes that supply skill packs (only when the user asks to install or manage skills)`
 
-  const multiAgentGuideline = deferredToolSearch
-    ? "- For work that spans many files or wants many parallel sub-agents (audits, reviewing a whole directory, large refactors, cross-checked research), prefer a workflow over many spawn_thread calls once you have discovered those tools via tool search — the fan-out stays out of your context."
-    : "- For work that spans many files or wants many parallel sub-agents (audits, reviewing a whole directory, large refactors, cross-checked research), prefer a single workflow over many spawn_thread calls — the fan-out stays out of your context."
+  // Delegation posture (the Fusion pattern): answer directly by default; hand
+  // separable implementation to the persistent sidekick EARLY with a spec-quality
+  // brief; reserve workflow fan-out for genuinely large work or an explicit ask.
+  // Never push the model to delegate — coerced delegation delegates the wrong
+  // things — but make the default (direct) and the workhorse (sidekick) unambiguous.
+  const sidekickGuideline = hasSidekick
+    ? "\n- Sidekick: for separable implementation work (build X, fix-and-test Y), hand your sidekick ONE spec-quality brief EARLY — goal, explicit constraints and edge cases, definition of done — rather than exploring half the repo first. Review its report via git diff/git show (don't pull its files into your context); if the work is wrong, hand back a follow-up brief with specific feedback instead of rewriting it yourself. Keep serial debugging — where your accumulated context IS the work — and trivial edits to yourself."
+    : ""
+  const workflowLabel = deferredToolSearch ? "Workflow (discover via tool search)" : "Workflow"
+  const multiAgentGuideline =
+    "- Delegate deliberately, not by default: answer questions and make small edits directly — most turns need no sub-agent at all." +
+    sidekickGuideline +
+    `\n- ${workflowLabel}: ONLY for work that genuinely needs many parallel sub-agents — codebase-wide audits, reviewing every file in a directory, big multi-phase refactors, cross-checked research — or when the user explicitly asks for one. The fan-out stays out of your context, and you review the synthesized result.${hasSidekick ? " One task = one sidekick brief, not a workflow." : ""}`
 
   const skillsGuideline =
     "- Skills: when a task matches specialized workflows (PDF tools, deploy runbooks, domain APIs, etc.), call search_skills then load_skill before improvising. Do not load skills speculatively; re-loading re-emits the full body (safe after compaction)." +

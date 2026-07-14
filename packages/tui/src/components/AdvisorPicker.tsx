@@ -32,6 +32,9 @@ interface Props {
   baseUrl: string
   onDone: (result: AdvisorSelectionResult, summary: string) => void
   onCancel: () => void
+  /** Which side-thread seat this picker configures. Defaults to the advisor;
+   *  "sidekick" retargets the same UI at /api/sidekick (the persistent worker). */
+  seat?: "advisor" | "sidekick"
 }
 
 const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"]
@@ -66,8 +69,10 @@ function fuzzyScore(query: string, target: string): number {
  * effort}. The server auto-suppresses an advisor that equals the executor model —
  * we surface that as an "(inactive)" note.
  */
-export function AdvisorPicker({ baseUrl, onDone, onCancel }: Props) {
+export function AdvisorPicker({ baseUrl, onDone, onCancel, seat = "advisor" }: Props) {
   const rawSupported = rawModeSupported
+  // Seat-specific copy: same picker, different side thread + endpoint.
+  const seatCap = seat === "advisor" ? "Advisor" : "Sidekick"
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -139,18 +144,21 @@ export function AdvisorPicker({ baseUrl, onDone, onCancel }: Props) {
   async function post(payload: AdvisorSelectionResult, describe: string) {
     setBusy(true)
     try {
-      const res = await fetch(baseUrl + "/api/advisor", {
+      const res = await fetch(baseUrl + `/api/${seat}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify(payload),
       })
       const body = (await res.json()) as { error?: string; active?: boolean }
       if (body.error) {
-        onDone(payload, `Could not update advisor: ${body.error}`)
+        onDone(payload, `Could not update ${seat}: ${body.error}`)
         return
       }
       let note = ""
       if (payload.enabled && body.active === false) {
+        // Advisor-only: the server auto-suppresses a same-model advisor. The
+        // sidekick has no such rule (context isolation still pays), and its
+        // response carries no `active` field, so this never fires for it.
         note =
           "\n(note: that's the same model as your executor, so the advisor stays inactive — pick a different model.)"
       } else if (payload.enabled) {
@@ -159,7 +167,7 @@ export function AdvisorPicker({ baseUrl, onDone, onCancel }: Props) {
       }
       onDone(payload, `${describe}${note}`)
     } catch (err) {
-      onDone(payload, `Advisor request failed: ${String(err)}`)
+      onDone(payload, `${seatCap} request failed: ${String(err)}`)
     }
   }
 
@@ -172,7 +180,7 @@ export function AdvisorPicker({ baseUrl, onDone, onCancel }: Props) {
     }
     const bits = [`${row.provider}/${row.model.id}`]
     if (eff) bits.push(`effort ${eff}`)
-    void post(payload, `Advisor → ${bits.join(" · ")}`)
+    void post(payload, `${seatCap} → ${bits.join(" · ")}`)
   }
 
   useInput(
@@ -199,7 +207,7 @@ export function AdvisorPicker({ baseUrl, onDone, onCancel }: Props) {
         const item = items[listSel]
         if (!item) return
         if (item.off) {
-          void post({ enabled: false }, "Advisor → off")
+          void post({ enabled: false }, `${seatCap} → off`)
           return
         }
         if (item.row.model.reasoning) {
@@ -244,7 +252,7 @@ export function AdvisorPicker({ baseUrl, onDone, onCancel }: Props) {
   if (step === "effort") {
     return (
       <box flexDirection="column" border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
-        <text attributes={DIM}>Reasoning effort for advisor {chosen?.model.id} — ↑/↓ move · enter select · esc back</text>
+        <text attributes={DIM}>Reasoning effort for {seat} {chosen?.model.id} — ↑/↓ move · enter select · esc back</text>
         {EFFORTS.map((opt, i) => {
           const on = i === optSel
           return (
@@ -265,7 +273,7 @@ export function AdvisorPicker({ baseUrl, onDone, onCancel }: Props) {
   const visible = items.slice(start, start + WINDOW)
   return (
     <box flexDirection="column" border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
-      <text attributes={DIM}>Set the advisor model — type to filter · ↑/↓ move · enter select · esc cancel</text>
+      <text attributes={DIM}>Set the {seat} model — type to filter · ↑/↓ move · enter select · esc cancel</text>
       <box flexDirection="row">
         <text fg={ACCENT}>{figures.pointer} </text>
         <text>{filter || ""}</text>
@@ -279,7 +287,7 @@ export function AdvisorPicker({ baseUrl, onDone, onCancel }: Props) {
             <box key="__off__" flexDirection="row">
               <text fg={on ? ACCENT : undefined}>{on ? "❯ " : "  "}</text>
               <text fg={on ? ACCENT : undefined} attributes={(on ? BOLD : 0) | (on ? 0 : DIM)}>
-                Turn advisor OFF
+                Turn {seat} OFF
               </text>
             </box>
           )

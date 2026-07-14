@@ -112,6 +112,9 @@ async function main() {
     async consultAdvisor() {
       return ""
     },
+    async delegateToSidekick() {
+      return ""
+    },
     async runWorkflow() {
       return ""
     },

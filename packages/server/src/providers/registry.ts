@@ -15,6 +15,7 @@ import { enrichModels, type ModelInfo } from "./models-catalog.ts"
 import { chatOptionsFor } from "./model-options.ts"
 import {
   getAdvisor,
+  getSidekick,
   persistedProvider,
   selectionFor,
   setPersistedProvider,
@@ -271,6 +272,23 @@ export function advisorFor(executor: AgentSelection): AgentSelection | null {
   if (!advisor) return null
   if (advisor.provider === executor.provider && advisor.model === executor.model) return null
   return advisor
+}
+
+// ---- Sidekick selection (the persistent worker side-thread model) ----
+
+/** Resolve the sidekick seat for one lead `executor`, or null when disabled.
+ *  Unlike the advisor there is NO same-model auto-suppress and NO unconfigured
+ *  suppress: a sidekick on the lead's own model still buys context isolation
+ *  (the hands-on loop stays out of the lead's context), so an unconfigured seat
+ *  falls back to the executor's selection. Configure the seat (e.g. a cheaper
+ *  model at higher effort) to also buy the cost win. */
+export function sidekickFor(executor: AgentSelection): AgentSelection | null {
+  const cfg = getSidekick()
+  if (!cfg.enabled) return null
+  if (!cfg.provider || !cfg.model || !providers[cfg.provider]) {
+    return Object.freeze({ provider: executor.provider, model: executor.model, effort: executor.effort, speed: executor.speed })
+  }
+  return Object.freeze({ provider: cfg.provider, model: cfg.model, effort: cfg.effort, speed: undefined })
 }
 
 // OAuth providers self-register on import. Kept at the bottom so the registry's

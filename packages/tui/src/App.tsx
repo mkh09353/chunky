@@ -166,6 +166,8 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   const [providerPickerOpen, setProviderPickerOpen] = useState(false)
   // When true, the /advisor picker is open (owns the keyboard while shown).
   const [advisorPickerOpen, setAdvisorPickerOpen] = useState(false)
+  // When true, the /sidekick picker is open (owns the keyboard while shown).
+  const [sidekickPickerOpen, setSidekickPickerOpen] = useState(false)
   // When set, the /resume thread picker is open (owns the keyboard while shown).
   const [resumePicker, setResumePicker] = useState<{ sessions: SessionSummary[]; selected: number } | null>(null)
   // The active model selection, reflected on the status line.
@@ -177,6 +179,14 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     model?: string
     effort?: string
     active: boolean
+  } | null>(null)
+  // The active sidekick config, reflected on the status line. No `active` flag:
+  // an enabled seat with no model inherits the executor's selection.
+  const [sidekick, setSidekick] = useState<{
+    enabled: boolean
+    provider?: string
+    model?: string
+    effort?: string
   } | null>(null)
   // The session's current goal (drives the status line + goal transcript markers).
   const [goal, setGoal] = useState<GoalSnapshot | null>(null)
@@ -236,7 +246,13 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   const rawSupported = rawModeSupported
 
   const pickerOpen =
-    loginPicker != null || modelPickerOpen || providerPickerOpen || advisorPickerOpen || resumePicker != null || pendingSend != null
+    loginPicker != null ||
+    modelPickerOpen ||
+    providerPickerOpen ||
+    advisorPickerOpen ||
+    sidekickPickerOpen ||
+    resumePicker != null ||
+    pendingSend != null
 
   // Ctrl+T collapses/expands child-thread bodies (the tree view stays; only
   // spawned threads' contents fold to their header lines).
@@ -376,9 +392,29 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     }
   }, [mode, baseUrl])
 
+  // ---- live: load the sidekick config so the status line shows it (and after /sidekick) ----
+  const refreshSidekick = useCallback(async () => {
+    if (mode !== "live") return
+    try {
+      const res = await fetch(baseUrl + "/api/sidekick")
+      const body = (await res.json()) as {
+        config?: { enabled?: boolean; provider?: string; model?: string; effort?: string }
+      }
+      setSidekick({
+        enabled: body.config?.enabled ?? false,
+        provider: body.config?.provider,
+        model: body.config?.model,
+        effort: body.config?.effort,
+      })
+    } catch {
+      // leave as null; status line omits the sidekick label
+    }
+  }, [mode, baseUrl])
+
   useEffect(() => {
     void refreshAdvisor()
-  }, [refreshAdvisor])
+    void refreshSidekick()
+  }, [refreshAdvisor, refreshSidekick])
 
   // POST one user message to the live server. On a cache-guard 409 the send is
   // parked in pendingSend (nothing ran server-side); otherwise echo the user
@@ -1019,6 +1055,26 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     [printLine, refreshAdvisor],
   )
 
+  // /sidekick — open the picker that sets the persistent worker's model.
+  const doSidekick = useCallback(() => {
+    if (mode !== "live") {
+      printLine("The sidekick picker needs the live server (run the server, then the TUI with --live).")
+      return
+    }
+    setSidekickPickerOpen(true)
+  }, [mode, printLine])
+
+  // Called when the sidekick picker finishes: close it, refresh the status line,
+  // echo a summary.
+  const onSidekickDone = useCallback(
+    (_result: AdvisorSelectionResult, summary: string) => {
+      setSidekickPickerOpen(false)
+      void refreshSidekick()
+      printLine(summary)
+    },
+    [printLine, refreshSidekick],
+  )
+
   // /goal — set an objective and let the agent work autonomously toward it, or
   // manage the current one. `rest` is everything after "/goal":
   //   ""                     -> show current goal status
@@ -1197,10 +1253,10 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     [mode, baseUrl, printLine],
   )
 
-  // /mode — named executor+advisor pairings. `rest` is everything after "/mode":
-  //   ""             -> list saved modes + the current pairing
-  //   <name>         -> apply that mode (model + advisor switch as one unit)
-  //   save <name>    -> snapshot the current pairing under <name>
+  // /mode — named executor+sidekick+advisor trios. `rest` is everything after "/mode":
+  //   ""             -> list saved modes + the current trio
+  //   <name>         -> apply that mode (model + sidekick + advisor switch as one unit)
+  //   save <name>    -> snapshot the current trio under <name>
   //   rm <name>      -> delete <name>
   const doMode = useCallback(
     async (rest: string) => {
@@ -1210,9 +1266,9 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       }
       const effortParen = (e?: string | null) => (e ? ` (${e})` : "")
       const fmtSpec = (spec: ModeSpec) =>
-        `${prettyModel(spec.model)}${effortParen(spec.effort)} + advisor ${
-          spec.advisor ? `${prettyModel(spec.advisor.model)}${effortParen(spec.advisor.effort)}` : "off"
-        }`
+        `${prettyModel(spec.model)}${effortParen(spec.effort)} + sidekick ${
+          spec.sidekick ? `${prettyModel(spec.sidekick.model)}${effortParen(spec.sidekick.effort)}` : "inherit"
+        } + advisor ${spec.advisor ? `${prettyModel(spec.advisor.model)}${effortParen(spec.advisor.effort)}` : "off"}`
       const trimmed = rest.trim()
       try {
         if (!trimmed) {
@@ -1278,12 +1334,13 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           speed: body.speed ?? null,
         })
         void refreshAdvisor()
+        void refreshSidekick()
         printLine(`Mode "${body.applied}" applied: ${prettyModel(body.model)}${effortParen(body.effort)} · ${body.provider}.`)
       } catch (err) {
         printLine(`Mode request failed: ${String(err)}`)
       }
     },
-    [mode, baseUrl, printLine, refreshAdvisor],
+    [mode, baseUrl, printLine, refreshAdvisor, refreshSidekick],
   )
 
   const onCommand = useCallback(
@@ -1320,7 +1377,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           break
         case "/help":
           printLine(
-            "Commands: /clear, /resume, /help, /login, /model, /skills, /provider, /workers, /advisor, /mode, /goal, /shipit, /cacheguard, /quit. `/workers` shows automatic workflow routes; `/workers tag|auto|reset` changes exceptions.",
+            "Commands: /clear, /resume, /help, /login, /model, /skills, /provider, /workers, /advisor, /sidekick, /mode, /goal, /shipit, /cacheguard, /quit. `/workers` shows automatic workflow routes; `/workers tag|auto|reset` changes exceptions.",
           )
           break
         case "/login":
@@ -1341,6 +1398,9 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         case "/advisor":
           doAdvisor()
           break
+        case "/sidekick":
+          doSidekick()
+          break
         case "/goal":
           void doGoal("")
           break
@@ -1355,7 +1415,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           break
       }
     },
-    [printLine, doLogin, doModel, doSkills, doProvider, doWorkers, doAdvisor, doGoal, doShipIt, doCacheGuard, doMode, doResume, exit, mode, baseUrl],
+    [printLine, doLogin, doModel, doSkills, doProvider, doWorkers, doAdvisor, doSidekick, doGoal, doShipIt, doCacheGuard, doMode, doResume, exit, mode, baseUrl],
   )
 
   // Mock demo turn so the transcript streams even without a TTY.
@@ -1390,13 +1450,22 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     advisor && advisor.enabled && advisor.model
       ? ` · advisor: ${providerModelLabel(advisor.provider, prettyModel(advisor.model))}${effortParen(advisor.effort)}${advisor.active ? "" : " (inactive)"}`
       : " · advisor: off"
+  // Sidekick segment: named seat, "inherit" (enabled, no model → executor's
+  // selection), or off.
+  const sidekickPart = sidekick
+    ? sidekick.enabled && sidekick.model
+      ? ` · sidekick: ${providerModelLabel(sidekick.provider, prettyModel(sidekick.model))}${effortParen(sidekick.effort)}`
+      : sidekick.enabled
+        ? " · sidekick: inherit"
+        : " · sidekick: off"
+    : ""
   // Goal segment: shown only when a goal exists; active goals carry the turn count.
   const goalPart = goal
     ? ` · goal: ${goal.status}${goal.status === "active" ? ` ${goal.turns}/${goal.maxTurns}` : ""}`
     : ""
   const bottomStatus =
     mode === "live"
-      ? `${providerModelLabel(currentSel?.provider, prettyModel(currentSel?.model))}${effortParen(currentSel?.effort)}${advisorPart}${goalPart}`
+      ? `${providerModelLabel(currentSel?.provider, prettyModel(currentSel?.model))}${effortParen(currentSel?.effort)}${sidekickPart}${advisorPart}${goalPart}`
       : "mock"
 
   return (
@@ -1436,6 +1505,9 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         )}
         {advisorPickerOpen && (
           <AdvisorPicker baseUrl={baseUrl} onDone={onAdvisorDone} onCancel={() => setAdvisorPickerOpen(false)} />
+        )}
+        {sidekickPickerOpen && (
+          <AdvisorPicker seat="sidekick" baseUrl={baseUrl} onDone={onSidekickDone} onCancel={() => setSidekickPickerOpen(false)} />
         )}
         {pendingSend ? (
           // The cache guard held this send: nothing ran server-side yet.

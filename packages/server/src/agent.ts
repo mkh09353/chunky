@@ -18,11 +18,12 @@ import {
   advisorFor,
   resolveModel,
   selectionSignature,
+  sidekickFor,
   type AgentSelection,
 } from "./providers/registry.ts"
 import { threadContextFor } from "./thread-context.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
-import { ADVISOR_SYSTEM_PROMPT, buildSystemPrompt, type EditToolName } from "./prompt.ts"
+import { ADVISOR_SYSTEM_PROMPT, SIDEKICK_SYSTEM_PROMPT, buildSystemPrompt, type EditToolName } from "./prompt.ts"
 import {
   buildToolSearchMiddleware,
   portableToolSetFor,
@@ -37,6 +38,7 @@ import { goalTools } from "./tools/goal.ts"
 import { read } from "./tools/read.ts"
 import { sessionTools } from "./tools/sessions.ts"
 import { shipGoal } from "./tools/ship.ts"
+import { sidekick } from "./tools/sidekick.ts"
 import { spawnThread } from "./tools/spawn-thread.ts"
 import { workflow } from "./tools/workflow.ts"
 import { manageModels } from "./tools/manage-models.ts"
@@ -147,19 +149,22 @@ export function editToolNameForModel(modelId: string | undefined, providerId: st
 }
 
 /**
- * The executor's toolset for a selection: the always-on read/bash/write/spawn +
- * the per-model edit tool, PLUS the `advisor` tool when an advisor is configured
- * AND differs from the executor (always-on + auto-suppress; see advisorFor).
- * Factored out so a test can assert advisor presence without building a model.
+ * The executor's toolset for a selection: the always-on read/bash/write +
+ * the per-model edit tool + the `sidekick` (the default delegation path, unless
+ * disabled), PLUS the `advisor` tool when an advisor is configured AND differs
+ * from the executor (always-on + auto-suppress; see advisorFor).
+ * Factored out so a test can assert seat presence without building a model.
  */
 export function executorToolsFor(selection: AgentSelection) {
   const advisorSel = advisorFor(selection)
+  const sidekickSel = sidekickFor(selection)
   const tools = [
     read,
     bash,
     fffind,
     ffgrep,
     write,
+    ...(sidekickSel ? [sidekick] : []),
     spawnThread,
     ...goalTools,
     shipGoal,
@@ -171,7 +176,7 @@ export function executorToolsFor(selection: AgentSelection) {
     ...editToolsForModel(selection.model, selection.provider),
     ...(advisorSel ? [advisor] : []),
   ]
-  return { tools, hasAdvisor: advisorSel != null }
+  return { tools, hasAdvisor: advisorSel != null, hasSidekick: sidekickSel != null }
 }
 
 /** Max LangGraph steps per turn (a step ≈ one model call or tool node). LangGraph
@@ -187,7 +192,7 @@ export const RECURSION_LIMIT = Number(process.env.CHUNKY_RECURSION_LIMIT) || 500
  * call resolveModel / createAgent.
  */
 export function agentPlanFor(selection: AgentSelection) {
-  const { tools, hasAdvisor } = executorToolsFor(selection)
+  const { tools, hasAdvisor, hasSidekick } = executorToolsFor(selection)
   const nativeToolSearch = supportsNativeToolSearch(selection.provider, selection.model)
   const toolSearchConfig = toolSearchMiddlewareConfigFor(
     selection.provider,
@@ -197,6 +202,7 @@ export function agentPlanFor(selection: AgentSelection) {
   return {
     tools,
     hasAdvisor,
+    hasSidekick,
     nativeToolSearch,
     /** Non-null only when gate is open and there is at least one deferred tool. */
     toolSearchConfig,
@@ -233,6 +239,7 @@ export function buildAgent(
     systemPrompt: buildSystemPrompt(plan.editToolName, plan.hasAdvisor, workspace, {
       nativeToolSearch: plan.nativeToolSearch,
       portableToolSearch: providerId === "grok",
+      hasSidekick: plan.hasSidekick,
     }),
     checkpointer: makeCheckpointer(),
     // Auto-compaction — the context-management half of Pi's efficiency win (a
@@ -319,6 +326,44 @@ export function getAdvisorAgent(selection: AgentSelection = activeSelection()): 
   let a = agentCache.get(sig)
   if (!a) {
     a = buildAdvisorAgent(selection) as ReturnType<typeof buildAgent>
+    agentCache.set(sig, a)
+  }
+  return a
+}
+
+/**
+ * Build the WORKER sidekick agent for one selection. It gets the full hands-on
+ * toolset — read/bash/fffind/ffgrep/write + the per-model edit tool — but NO
+ * delegation tools (no spawn_thread/workflow/advisor/sidekick: it executes
+ * briefs, it doesn't manage). ThreadManager.delegateToSidekick drives it as a
+ * persistent side thread on a stable thread_id, so the checkpointer gives it
+ * continuity across handoffs — that's what makes follow-up briefs cheap.
+ */
+export function buildSidekickAgent(selection: AgentSelection) {
+  const model = resolveModel(selection)
+  return createAgent({
+    model,
+    tools: [read, bash, fffind, ffgrep, write, ...editToolsForModel(selection.model, selection.provider)],
+    systemPrompt: SIDEKICK_SYSTEM_PROMPT,
+    checkpointer: makeCheckpointer(),
+    middleware: [
+      summarizationMiddleware({
+        model,
+        trigger: { tokens: 60_000 },
+        keep: { messages: 15 },
+      }),
+    ],
+  })
+}
+
+/** The sidekick agent for one selection, cached in the SAME agentCache (keyed
+ *  "sidekick::<sig>") so invalidateAgent() clears it too. ThreadManager's default
+ *  sidekickAgentFor injectable. */
+export function getSidekickAgent(selection: AgentSelection = activeSelection()): ReturnType<typeof buildAgent> {
+  const sig = "sidekick::" + selectionSignature(selection)
+  let a = agentCache.get(sig)
+  if (!a) {
+    a = buildSidekickAgent(selection) as ReturnType<typeof buildAgent>
     agentCache.set(sig, a)
   }
   return a

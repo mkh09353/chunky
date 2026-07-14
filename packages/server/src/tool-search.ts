@@ -17,6 +17,10 @@ export const CORE_TOOL_NAMES = Object.freeze([
   "write",
   "edit",
   "apply_patch",
+  // The sidekick is the DEFAULT delegation path (the main flow), so it must be
+  // eagerly bound — a deferred workhorse would push models back toward whatever
+  // delegation tool happens to be visible.
+  "sidekick",
   "search_skills",
   "load_skill",
 ] as const)

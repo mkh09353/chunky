@@ -11,14 +11,15 @@ import { AsyncLocalStorageProviderSingleton } from "@langchain/core/singletons"
 import type { AgentEvent } from "@chunky/protocol"
 import type { Emit } from "./event-emitter.ts"
 import { translateStream } from "./run.ts"
-import { getAdvisorAgent, getAgent, RECURSION_LIMIT } from "./agent.ts"
-import { ADVISOR_SYSTEM_PROMPT } from "./prompt.ts"
+import { getAdvisorAgent, getAgent, getSidekickAgent, RECURSION_LIMIT } from "./agent.ts"
+import { ADVISOR_SYSTEM_PROMPT, SIDEKICK_SYSTEM_PROMPT } from "./prompt.ts"
 import {
   activeSelection,
   childSelection,
   getProvider,
   providerRuntime,
   resolveAdvisorSelection,
+  sidekickFor,
   type AgentSelection,
   type AgentSelectionOverride,
 } from "./providers/registry.ts"
@@ -56,6 +57,17 @@ export function advisorConsultCount(sessionId: string): number {
   return advisorConsultsBySession.get(sessionId) ?? 0
 }
 
+/** Per-session sidekick-handoff tally, keyed by root session id. Same shape and
+ *  rationale as advisorConsultsBySession: the signal for whether the lead is
+ *  delegating the hands-on loop (the Fusion management-style metric) or doing
+ *  everything itself. */
+const sidekickHandoffsBySession = new Map<string, number>()
+
+/** How many briefs the sidekick has been handed in this session so far. */
+export function sidekickHandoffCount(sessionId: string): number {
+  return sidekickHandoffsBySession.get(sessionId) ?? 0
+}
+
 export class ThreadManager implements ThreadSpawner {
   private readonly rootId: string
   private readonly emit: Emit
@@ -65,10 +77,12 @@ export class ThreadManager implements ThreadSpawner {
   }
   private readonly agentFor: AgentForSelection
   private readonly advisorAgentFor: AgentForSelection
+  private readonly sidekickAgentFor: AgentForSelection
   /** Injected agent factories own their own readiness contract. Only the real
    *  provider-backed factories should consult Chunky's persisted OAuth state. */
   private readonly preflightAgentProvider: boolean
   private readonly preflightAdvisorProvider: boolean
+  private readonly preflightSidekickProvider: boolean
   private readonly selections = new Map<string, AgentSelection>()
   /** The session's workspace: every child thread and advisor consult runs here —
    *  a child can never escape into another repo's folder. */
@@ -87,13 +101,16 @@ export class ThreadManager implements ThreadSpawner {
     advisorAgentFor: AgentForSelection = getAdvisorAgent,
     workspace: string = LAUNCH_WORKSPACE,
     abort?: AbortController,
+    sidekickAgentFor: AgentForSelection = getSidekickAgent,
   ) {
     this.emit = emit
     this.rootId = rootId
     this.agentFor = agentFor
     this.advisorAgentFor = advisorAgentFor
+    this.sidekickAgentFor = sidekickAgentFor
     this.preflightAgentProvider = agentFor === getAgent
     this.preflightAdvisorProvider = advisorAgentFor === getAdvisorAgent
+    this.preflightSidekickProvider = sidekickAgentFor === getSidekickAgent
     this.workspace = workspace
     this.abort = abort
     this.selections.set(rootId, rootSelection)
@@ -332,6 +349,98 @@ export class ThreadManager implements ThreadSpawner {
       finalText = `error: ${message}`
     } finally {
       this.emit({ type: "thread.status", threadId: advisorThreadId, status: "idle", title: "Advisor" })
+    }
+
+    return finalText
+  }
+
+  /**
+   * Hand a brief to the sidekick and return its report. Like consultAdvisor,
+   * this runs on a STABLE thread id (`${rootId}:sidekick`, never randomUUID):
+   * the checkpointer keys on thread_id, so each handoff resumes the SAME worker
+   * conversation — the sidekick keeps the repo context it built during earlier
+   * briefs, which is what makes follow-up handoffs ("fix the bug in the diff
+   * you just wrote") cheap. The sidekick thread is deliberately NOT registered
+   * in the thread registry and NOT in `selections` (it has no delegation tools,
+   * so nothing inside it resolves a manager), and persists for the session.
+   */
+  async delegateToSidekick(opts: { callerThreadId: string; brief: string }): Promise<string> {
+    const rootSelection = this.selections.get(this.rootId) ?? activeSelection()
+    const sidekickSel = sidekickFor(rootSelection)
+    if (!sidekickSel) {
+      return "error: the sidekick is disabled — ask the user to enable it (/sidekick)."
+    }
+
+    // Tally the handoff before running it — measures how often the lead
+    // delegates, independent of whether the handoff itself succeeds.
+    const handoffNo = (sidekickHandoffsBySession.get(this.rootId) ?? 0) + 1
+    sidekickHandoffsBySession.set(this.rootId, handoffNo)
+    console.log(`[@chunky/server] sidekick handoff #${handoffNo} this session (${this.rootId})`)
+
+    // Fail fast on an expired sidekick sign-in — mirrors the advisor preflight;
+    // run.ts only preflights the ROOT provider's auth, never the sidekick's
+    // separate provider.
+    if (this.preflightSidekickProvider) {
+      try {
+        await getProvider(sidekickSel.provider)?.ensureAuth?.()
+      } catch (err) {
+        const detail = (err as Error)?.message ?? String(err)
+        return `error: sidekick provider "${sidekickSel.provider}" sign-in expired — run /login to re-authenticate. (${detail})`
+      }
+    }
+
+    const sidekickThreadId = `${this.rootId}:sidekick`
+
+    this.emit({ type: "thread.spawn", threadId: sidekickThreadId, parentThreadId: null, title: "Sidekick", model: sidekickSel.model })
+    this.emit({ type: "thread.status", threadId: sidekickThreadId, status: "running", title: "Sidekick" })
+
+    let finalText = ""
+    try {
+      if (providerRuntime(sidekickSel.provider) === "anthropic-sdk") {
+        // Anthropic sidekicks run via the SDK runtime with the worker prompt +
+        // the hands-on toolset (read/bash/search/write/edit — no delegation
+        // tools). The stable sidekickThreadId persists/resumes the session.
+        const { runAnthropicAgent } = await import("./anthropic-runner.ts")
+        finalText = await runAnthropicAgent({
+          selection: sidekickSel,
+          threadId: sidekickThreadId,
+          prompt: opts.brief,
+          emit: this.emit,
+          eventThreadId: sidekickThreadId,
+          systemPrompt: SIDEKICK_SYSTEM_PROMPT,
+          allowedTools: [
+            "mcp__chunky__read",
+            "mcp__chunky__bash",
+            "mcp__chunky__fffind",
+            "mcp__chunky__ffgrep",
+            "mcp__chunky__write",
+            "mcp__chunky__edit",
+          ],
+          workspace: this.workspace,
+          abort: this.abort,
+        })
+      } else {
+        // Same async-local isolation as spawn(): a cleared store so the sidekick's
+        // tokens stream only through its OWN iterator, tagged with its threadId.
+        const stream = await AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () =>
+          this.sidekickAgentFor(sidekickSel, this.workspace).stream(
+            { messages: [{ role: "user", content: opts.brief }] },
+            {
+              configurable: { thread_id: sidekickThreadId, workspace: this.workspace },
+              streamMode: ["updates", "messages"],
+              recursionLimit: RECURSION_LIMIT,
+              signal: this.abort?.signal,
+            } as any,
+          ),
+        )
+        finalText = await translateStream(stream, sidekickThreadId, this.emit)
+      }
+    } catch (err) {
+      const message = (err as Error)?.message ?? String(err)
+      this.emit({ type: "error", message, threadId: sidekickThreadId } as AgentEvent)
+      finalText = `error: ${message}`
+    } finally {
+      this.emit({ type: "thread.status", threadId: sidekickThreadId, status: "idle", title: "Sidekick" })
     }
 
     return finalText

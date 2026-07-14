@@ -43,6 +43,17 @@ export interface ThreadSpawner {
   }): Promise<string>
 
   /**
+   * Hand a brief to the sidekick — a persistent worker side thread on a cheaper
+   * model (stable thread_id, so it keeps the repo context it built across
+   * handoffs this session; follow-up briefs can be short). Returns the
+   * sidekick's report.
+   */
+  delegateToSidekick(opts: {
+    callerThreadId: string
+    brief: string
+  }): Promise<string>
+
+  /**
    * Run a dynamic-workflow `script` on behalf of `callerThreadId`: a JS
    * orchestration that fans out many sub-agents (each a real child thread) via the
    * same `spawn` machinery, and returns one synthesized string. The manager owns

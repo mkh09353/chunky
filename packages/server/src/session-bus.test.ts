@@ -161,7 +161,13 @@ describe("send_to_session tool", () => {
     resetSessionBus()
     if (!Store.exists(SELF)) Store.createSession(SELF, "sender work")
     if (!Store.exists(TARGET)) Store.createSession(TARGET, "receiver work")
-    registerThread(SELF, { sessionId: SELF, spawn: async () => "", consultAdvisor: async () => "", runWorkflow: async () => "" })
+    registerThread(SELF, {
+      sessionId: SELF,
+      spawn: async () => "",
+      consultAdvisor: async () => "",
+      delegateToSidekick: async () => "",
+      runWorkflow: async () => "",
+    })
   })
 
   test("delivers to an idle session with the sender envelope", async () => {

@@ -38,14 +38,18 @@ import {
   getCacheGuardTokens,
   getMode,
   getServerToken,
+  getSidekick,
   isEffort,
   listModes,
+  resetSidekickSeat,
   saveMode,
   setAdvisor,
   setCacheGuardTokens,
+  setSidekick,
   setWorkflowTargetOverride,
   type AdvisorConfig,
   type ModeSpec,
+  type SidekickConfig,
 } from "./settings.ts"
 import { availableWorkflowTargets } from "./workflow/router.ts"
 import { drainQueue, installSessionBus } from "./session-bus.ts"
@@ -434,6 +438,34 @@ const server = Bun.serve({
       return json({ config: getAdvisor(), active: resolveAdvisorSelection() != null })
     }
 
+    // GET /api/sidekick -> { config } (the persistent worker's seat config; an
+    // unconfigured-but-enabled seat inherits the active selection, so there is
+    // no separate "active" readiness — enabled IS active)
+    if (req.method === "GET" && pathname === "/api/sidekick") {
+      return json({ config: getSidekick() })
+    }
+
+    // POST /api/sidekick { enabled?, provider?, model?, effort? }
+    //   -> merge-persists the sidekick config, invalidates the agent cache (so
+    //      executors rebuild to add/drop the sidekick tool), returns config.
+    if (req.method === "POST" && pathname === "/api/sidekick") {
+      let body: { enabled?: unknown; provider?: unknown; model?: unknown; effort?: unknown }
+      try {
+        body = (await req.json()) as typeof body
+      } catch {
+        return json({ error: "invalid JSON body" }, 400)
+      }
+      const EFFORTS = ["low", "medium", "high", "xhigh", "max"]
+      const patch: Partial<SidekickConfig> = {}
+      if (typeof body.enabled === "boolean") patch.enabled = body.enabled
+      if (typeof body.provider === "string") patch.provider = body.provider
+      if (typeof body.model === "string") patch.model = body.model
+      if (typeof body.effort === "string" && EFFORTS.includes(body.effort)) patch.effort = body.effort as Effort
+      setSidekick(patch)
+      invalidateAgent()
+      return json({ config: getSidekick() })
+    }
+
     // ---- Modes: named executor+advisor pairings (GET/POST /api/modes,
     // POST /api/modes/:name/apply, DELETE /api/modes/:name) ----
 
@@ -481,6 +513,14 @@ const server = Bun.serve({
         } else {
           setAdvisor({ enabled: false })
         }
+        // The sidekick seat is part of the trio, but only when the mode names
+        // one — a mode saved before sidekicks existed (spec.sidekick undefined)
+        // leaves the current seat alone; an explicit null resets to inherit.
+        if (spec.sidekick) {
+          setSidekick({ enabled: true, provider: spec.sidekick.provider, model: spec.sidekick.model, effort: spec.sidekick.effort })
+        } else if (spec.sidekick === null) {
+          resetSidekickSeat()
+        }
         invalidateAgent()
         const sel = selectionOf(spec.provider)
         return json({
@@ -491,6 +531,7 @@ const server = Bun.serve({
           speed: sel.speed ?? null,
           advisor: getAdvisor(),
           advisorActive: resolveAdvisorSelection() != null,
+          sidekick: getSidekick(),
         })
       }
       if (!isApply && req.method === "DELETE") {

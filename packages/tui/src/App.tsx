@@ -36,11 +36,12 @@ import { ProviderPicker } from "./components/ProviderPicker.js"
 import { OnboardingWizard } from "./components/OnboardingWizard.js"
 import { AdvisorPicker, type AdvisorSelectionResult } from "./components/AdvisorPicker.js"
 import { SidekickSeatMenu } from "./components/SidekickSeatMenu.js"
+import { ModeMenu, type ModeApplyPayload } from "./components/ModeMenu.js"
 import { openBrowser } from "./openBrowser.js"
 import { grabClipboardImage, type ClipboardImage } from "./clipboardImage.js"
 import { writeClipboard } from "./clipboard.js"
 import { ToastContext, ToastOverlay, useToastController } from "./components/Toast.js"
-import { MIN_NOTIFY_MS, notifyTurnEnd } from "./notify.js"
+import { MIN_NOTIFY_MS, notifyTurnEnd, notifyTurnStart, resetTerminalTitle } from "./notify.js"
 
 interface Props {
   mode: "mock" | "live"
@@ -122,9 +123,11 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   const renderer = useRenderer()
   // Tear down the OpenTUI renderer (restores the terminal) and leave.
   const exit = useCallback(() => {
+    resetTerminalTitle()
     renderer.destroy()
     process.exit(0)
   }, [renderer])
+  useEffect(() => () => resetTerminalTitle(), [])
 
   // Ephemeral toast layer (the generalization of the old copy badge).
   const { toasts, api: toast } = useToastController()
@@ -182,6 +185,8 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   // `seat` targets a NAMED seat (e.g. "frontend"); undefined = the default seat.
   const [sidekickPicker, setSidekickPicker] = useState<{ seat?: string } | null>(null)
   const [sidekickSeatMenuOpen, setSidekickSeatMenuOpen] = useState(false)
+  // When true, the interactive /mode menu is open (owns the keyboard while shown).
+  const [modeMenuOpen, setModeMenuOpen] = useState(false)
   // When set, the /resume thread picker is open (owns the keyboard while shown).
   const [resumePicker, setResumePicker] = useState<{ sessions: SessionSummary[]; selected: number } | null>(null)
   // The active model selection, reflected on the status line.
@@ -269,6 +274,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     advisorPickerOpen ||
     sidekickPicker != null ||
     sidekickSeatMenuOpen ||
+    modeMenuOpen ||
     resumePicker != null ||
     pendingSend != null
 
@@ -317,6 +323,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       if (ev.type === "session.status") {
         setStartedAt(ev.status === "running" ? Date.now() : null)
         if (ev.status === "running") {
+          if (mode === "live") notifyTurnStart()
           runningSinceRef.current = Date.now()
           outboxRef.current.onRunning()
         } else {
@@ -1338,20 +1345,12 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           spec.sidekick ? `${prettyModel(spec.sidekick.model)}${effortParen(spec.sidekick.effort)}` : "inherit"
         }${fmtSeats(spec)} + advisor ${spec.advisor ? `${prettyModel(spec.advisor.model)}${effortParen(spec.advisor.effort)}` : "off"}`
       const trimmed = rest.trim()
+      // Bare `/mode` opens the interactive menu; subcommands stay text (scripting).
+      if (!trimmed) {
+        setModeMenuOpen(true)
+        return
+      }
       try {
-        if (!trimmed) {
-          const res = await fetch(baseUrl + ROUTES.modes)
-          const body = (await res.json()) as ModesResponse
-          if (body.modes.length === 0) {
-            printLine(
-              `No modes saved. Current pairing: ${fmtSpec(body.current)}. \`/mode save <name>\` snapshots it; \`/mode <name>\` applies one.`,
-            )
-            return
-          }
-          const lines = body.modes.map((m) => `  ${m.name} — ${fmtSpec(m)}`)
-          printLine(`Modes:\n${lines.join("\n")}\nCurrent: ${fmtSpec(body.current)}. \`/mode <name>\` to switch.`)
-          return
-        }
 
         const save = trimmed.match(/^save\s+(\S+)$/i)
         if (save) {
@@ -1409,6 +1408,54 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       }
     },
     [mode, baseUrl, printLine, refreshAdvisor, refreshSidekick],
+  )
+
+  // Applied a mode from the interactive menu: consume the apply response's full
+  // trio to update the status line + advisor/sidekick chips directly (no
+  // re-fetch), close the menu, echo the summary.
+  const onModeApplied = useCallback(
+    (payload: ModeApplyPayload, summary: string) => {
+      setModeMenuOpen(false)
+      setCurrentSel({
+        provider: payload.provider,
+        model: payload.model,
+        effort: payload.effort ?? null,
+        speed: payload.speed ?? null,
+      })
+      if (payload.advisor) {
+        setAdvisor({
+          enabled: payload.advisor.enabled ?? false,
+          provider: payload.advisor.provider,
+          model: payload.advisor.model,
+          effort: payload.advisor.effort,
+          active: Boolean(payload.advisorActive),
+        })
+      } else {
+        void refreshAdvisor()
+      }
+      if (payload.sidekick) {
+        setSidekick({
+          enabled: payload.sidekick.enabled ?? false,
+          provider: payload.sidekick.provider,
+          model: payload.sidekick.model,
+          effort: payload.sidekick.effort,
+          seats: payload.sidekickSeats ?? {},
+        })
+      } else {
+        void refreshSidekick()
+      }
+      printLine(summary)
+    },
+    [printLine, refreshAdvisor, refreshSidekick],
+  )
+
+  // Saved/deleted/error from the mode menu: echo the line + close.
+  const onModeNotice = useCallback(
+    (summary: string) => {
+      setModeMenuOpen(false)
+      printLine(summary)
+    },
+    [printLine],
   )
 
   const onCommand = useCallback(
@@ -1630,6 +1677,14 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
               setSidekickPicker(seat ? { seat } : {})
             }}
             onCancel={() => setSidekickSeatMenuOpen(false)}
+          />
+        )}
+        {modeMenuOpen && (
+          <ModeMenu
+            baseUrl={baseUrl}
+            onApplied={onModeApplied}
+            onNotice={onModeNotice}
+            onCancel={() => setModeMenuOpen(false)}
           />
         )}
         {pendingSend ? (

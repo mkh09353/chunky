@@ -54,7 +54,7 @@ Verified: typing a question in `--live` streams the real GLM-5.2 answer back int
 Install the latest release (Bun is required):
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/mkh09353/chunky/main/scripts/get.sh | bash
+curl -fsSL https://chunky.to/install | bash
 ```
 
 ## Updating

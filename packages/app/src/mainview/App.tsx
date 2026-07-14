@@ -28,6 +28,7 @@ import {
   listSessions,
   loadConfig,
   loginStatus,
+  fetchOnboarding,
   manageSkillRepos,
   openEventStream,
   postGoal,
@@ -46,6 +47,7 @@ import {
 import { openExternal } from "./lib/rpc"
 import { parseGoalArgs, parseSlashCommand } from "./lib/commands"
 import { fmtTokens } from "./lib/format"
+import { OnboardingWizard } from "./components/OnboardingWizard"
 
 // Which repo tab is open is THIS CLIENT's UI state (the server has no global
 // active workspace anymore) — remembered locally so a relaunch restores it.
@@ -82,6 +84,7 @@ export default function App() {
   // Bumped by /model and /advisor to open the corresponding composer menu.
   const [modelOpenSignal, setModelOpenSignal] = useState(0)
   const [advisorOpenSignal, setAdvisorOpenSignal] = useState(0)
+  const [onboardingOpen, setOnboardingOpen] = useState(false)
 
   const sessionIdRef = useRef<string | null>(null)
   const streamAbort = useRef<AbortController | null>(null)
@@ -187,6 +190,7 @@ export default function App() {
       const cfg = await loadConfig()
       if (cancelled) return
       setConfig(cfg)
+      void fetchOnboarding(cfg.baseUrl).then((p) => { if (!p.onboardedAt) setOnboardingOpen(true) }).catch(() => {})
 
       const [reg, sel, adv] = await Promise.all([
         listRepos(cfg.baseUrl).catch(() => null),
@@ -624,6 +628,9 @@ export default function App() {
           case "/login":
             await doLogin(rest)
             return
+          case "/onboard":
+            setOnboardingOpen(true)
+            return
           case "/cacheguard":
             await doCacheGuard(rest)
             return
@@ -782,6 +789,7 @@ export default function App() {
           </SideNav>
         }
       >
+        {onboardingOpen && config && <OnboardingWizard baseUrl={config.baseUrl} onClose={() => setOnboardingOpen(false)} onApplied={() => { void fetchModel(config.baseUrl).then(setModel); void fetchAdvisor(config.baseUrl).then(setAdvisorState) }} />}
         {connError ? <div className="chunky-conn-error">{connError}</div> : null}
         <ChatPane
           state={transcript}

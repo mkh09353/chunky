@@ -57,6 +57,7 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     description: "Log in to a provider (/login lists them, /login <provider> starts the flow)",
     insert: "/login ",
   },
+  { name: "/onboard", description: "Open the onboarding guide", insert: "/onboard" },
   {
     name: "/cacheguard",
     description: "Confirm-before-resend threshold for cold caches (/cacheguard <tokens|off>)",

@@ -7,12 +7,42 @@ import type {
 import type { LoginInitiation, ProviderDef } from "./registry.ts"
 import type { ModelInfo } from "./models-catalog.ts"
 import { CHUNKY_USER_AGENT } from "./app-info.ts"
+import { existsSync } from "node:fs"
+import { homedir } from "node:os"
 
 interface ClaudeAuthStatus {
   loggedIn?: boolean
   authMethod?: string
   subscriptionType?: string
   apiProvider?: string
+}
+export type ClaudeCredentialState = "ready" | "maybe" | "missing"
+export interface ClaudeCredentialDetection { state: ClaudeCredentialState; detail: string }
+
+/** Best effort only: never exposes credential contents or throws. */
+export function detectClaudeCredentials(options: { home?: string } = {}): ClaudeCredentialDetection {
+  try {
+    // An injected home is an isolated test/embedding scope; never consult the
+    // user's global CLI session in that mode.
+    if (options.home) {
+      const credentials = `${options.home}/.claude/.credentials.json`
+      if (existsSync(credentials)) return { state: "ready", detail: "Claude Code credentials file was found." }
+      if (existsSync(`${options.home}/.claude.json`)) return { state: "maybe", detail: "Claude Code configuration was found; login could not be confirmed." }
+      return { state: "missing", detail: "No Claude Code login credentials were detected." }
+    }
+    if (!options.home && process.env.CLAUDE_CODE_OAUTH_TOKEN) return { state: "ready", detail: "Claude OAuth token is available." }
+    const home = options.home ?? homedir()
+    const credentials = `${home}/.claude/.credentials.json`
+    if (existsSync(credentials)) return { state: "ready", detail: "Claude Code credentials file was found." }
+    if (process.platform === "darwin") {
+      try {
+        const result = Bun.spawnSync(["security", "find-generic-password", "-s", "Claude Code-credentials"], { stdout: "ignore", stderr: "ignore" })
+        if (result.exitCode === 0) return { state: "ready", detail: "Claude Code credentials were found in the macOS keychain." }
+      } catch { /* security unavailable */ }
+    }
+    if (existsSync(`${home}/.claude.json`)) return { state: "maybe", detail: "Claude Code configuration was found; login could not be confirmed." }
+    return { state: "missing", detail: "No Claude Code login credentials were detected." }
+  } catch { return { state: "missing", detail: "Claude Code login status could not be determined." } }
 }
 
 const AUTH_STATUS_TTL_MS = 1_000

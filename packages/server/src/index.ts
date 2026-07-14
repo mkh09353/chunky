@@ -31,21 +31,28 @@ import {
   type Effort,
   type Speed,
 } from "./providers/registry.ts"
+import { detectClaudeCredentials } from "./providers/anthropic-sdk.ts"
+import { AuthStore } from "./providers/auth-store.ts"
+import { applyOnboardingMode, suggestedModes, saveCustomProvider } from "./onboarding.ts"
 import {
   currentModeSpec,
   deleteMode,
   getAdvisor,
   getCacheGuardTokens,
   getMode,
+  getOnboardedAt,
+  loadSettings,
   getServerToken,
   getSidekick,
   isEffort,
   listModes,
   resetSidekickSeat,
   saveMode,
+  saveCustomProviders,
   setAdvisor,
   setCacheGuardTokens,
   setSidekick,
+  setOnboardedAt,
   setWorkflowTargetOverride,
   type AdvisorConfig,
   type ModeSpec,
@@ -212,6 +219,39 @@ const server = Bun.serve({
     }
 
     // ---- Provider / OAuth routes (additive; independent of sessions) ----
+
+    if (req.method === "GET" && pathname === ROUTES.onboarding) {
+      const detected = detectClaudeCredentials()
+      const statuses = listProviders().map((provider) => {
+        if (provider.id === "anthropic") {
+          return { id: provider.id, label: provider.label,
+            status: detected.state === "ready" ? "inherited" : "missing", detail: detected.detail }
+        }
+        return { id: provider.id, label: provider.label,
+          status: provider.ready() ? "ready" : "missing",
+          ...(provider.ready() ? {} : { detail: "No credentials configured." }) }
+      })
+      const ready = new Set(statuses.filter((p) => p.status !== "missing").map((p) => p.id))
+      return json({ providers: statuses, onboardedAt: getOnboardedAt(), suggestedModes: await suggestedModes(ready) })
+    }
+    if (req.method === "POST" && pathname === ROUTES.onboardingApply) {
+      const body = await req.json().catch(() => null) as { mode?: ModeSpec; name?: string } | null
+      const spec = body?.mode
+      if (!spec?.provider || !spec.model) return json({ error: "mode provider and model are required" }, 400)
+      const name = body?.name?.trim() || "default"
+      if (!/^[\w+.-]{1,40}$/.test(name)) return json({ error: "invalid mode name" }, 400)
+      try { applyOnboardingMode(name, spec) } catch (err) { return json({ error: (err as Error).message }, 404) }
+      return json({ applied: name, spec })
+    }
+    if (req.method === "POST" && pathname === ROUTES.customProvider) {
+      const body = await req.json().catch(() => null) as { id?: string; label?: string; baseURL?: string; billing?: "subscription" | "metered"; defaultModel?: string; key?: string } | null
+      if (!body?.id || !body.label || !body.baseURL || !body.key) return json({ error: "id, label, baseURL, and key are required" }, 400)
+      try { return json(saveCustomProvider({ id: body.id, label: body.label, baseURL: body.baseURL, billing: body.billing, defaultModel: body.defaultModel, key: body.key })) }
+      catch (err) { return json({ error: (err as Error).message }, 400) }
+    }
+    if (req.method === "POST" && pathname === ROUTES.onboardingComplete) {
+      return json({ onboardedAt: setOnboardedAt() })
+    }
 
     // GET /api/providers -> { providers: [{ id, label, ready, active }] }
     if (req.method === "GET" && pathname === "/api/providers") {

@@ -24,7 +24,10 @@ import {
   type Effort,
   type ModelSelection,
   type Speed,
+  loadSettings,
+  type CustomProvider,
 } from "../settings.ts"
+import { AuthStore } from "./auth-store.ts"
 
 export type { LoginInitiation } from "@chunky/protocol"
 export type { ModelInfo } from "./models-catalog.ts"
@@ -101,6 +104,42 @@ async function listZenModels(): Promise<ModelInfo[]> {
   return enrichModels(ids, ["opencode"])
 }
 
+function customProvider(def: CustomProvider): ProviderDef {
+  const base = def.baseURL.replace(/\/$/, "")
+  return {
+    id: def.id,
+    label: def.label,
+    billing: def.billing ?? "metered",
+    ready: () => Boolean(AuthStore.getApiKey(def.id)),
+    listModels: async () => {
+      const key = AuthStore.getApiKey(def.id)
+      if (!key) return def.defaultModel ? enrichModels([def.defaultModel], []) : []
+      try {
+        const response = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${key}` } })
+        if (!response.ok) throw new Error(`models returned ${response.status}`)
+        const body = (await response.json()) as { data?: Array<{ id?: string }> }
+        const ids = (body.data ?? []).map((m) => m.id).filter((id): id is string => Boolean(id))
+        return enrichModels(ids.length ? ids : (def.defaultModel ? [def.defaultModel] : []), [])
+      } catch {
+        return def.defaultModel ? enrichModels([def.defaultModel], []) : []
+      }
+    },
+    buildModel: (selection) => new ChatOpenAI({
+      model: selection.model || def.defaultModel || (() => { throw new Error(`No model configured for ${def.id}`) })(),
+      apiKey: keyOrThrow(def.id),
+      configuration: { baseURL: base },
+      streaming: true,
+      ...chatOptionsFor(selection),
+    }),
+  }
+}
+
+function keyOrThrow(id: string): string {
+  const key = AuthStore.getApiKey(id)
+  if (!key) throw new Error(`Missing API key for ${id}`)
+  return key
+}
+
 const providers: Record<string, ProviderDef> = {
   zen: {
     id: "zen",
@@ -125,11 +164,13 @@ export function registerProvider(def: ProviderDef): void {
 }
 
 export function listProviders(): ProviderDef[] {
+  ensureCustomProviders()
   return Object.values(providers)
 }
 
 /** Look up a single provider by id (undefined if unregistered). */
 export function getProvider(id: string): ProviderDef | undefined {
+  ensureCustomProviders()
   return providers[id]
 }
 
@@ -157,6 +198,7 @@ export async function listModelsFor(id: string): Promise<ModelInfo[]> {
 
 /** Complete catalog for configuration UIs, including currently hidden ids. */
 export async function listAllKnownModelsFor(id: string): Promise<ModelInfo[]> {
+  ensureCustomProviders()
   const p = providers[id]
   if (!p) throw new Error(`unknown provider "${id}"`)
   const advertised = await p.listModels()
@@ -175,11 +217,13 @@ let activeOverride: string | undefined
 
 /** The currently selected provider id. */
 export function activeProviderId(): string {
+  ensureCustomProviders()
   return activeOverride || persistedProvider() || process.env.CHUNKY_PROVIDER || "zen"
 }
 
 /** Select the active provider for subsequently-built models (persisted). */
 export function setActiveProviderId(id: string): void {
+  ensureCustomProviders()
   if (!providers[id]) throw new Error(`unknown provider "${id}"`)
   activeOverride = id
   setPersistedProvider(id)
@@ -192,12 +236,14 @@ export function selectionOf(id: string = activeProviderId()): ModelSelection {
 
 /** Persist a model + option selection for a provider. */
 export function setSelection(id: string, sel: ModelSelection): void {
+  ensureCustomProviders()
   if (!providers[id]) throw new Error(`unknown provider "${id}"`)
   setSelectionFor(id, sel)
 }
 
 /** Return a frozen, complete selection for a provider's saved model knobs. */
 export function selectionForProvider(id: string): AgentSelection {
+  ensureCustomProviders()
   if (!providers[id]) throw new Error(`unknown provider "${id}"`)
   return Object.freeze({ provider: id, ...selectionFor(id) })
 }
@@ -239,6 +285,7 @@ export function selectionSignature(selection: AgentSelection = activeSelection()
 
 /** Build a chat model for one explicit agent selection. */
 export function resolveModel(selection: AgentSelection = activeSelection()): BaseChatModel {
+  ensureCustomProviders()
   const p = providers[selection.provider]
   if (!p) throw new Error(`unknown provider "${selection.provider}"`)
   if (p.runtime === "anthropic-sdk") {
@@ -300,3 +347,23 @@ import { anthropicProvider } from "./anthropic-sdk.ts"
 registerProvider(grokProvider)
 registerProvider(codexProvider)
 registerProvider(anthropicProvider)
+
+// Settings are deliberately consulted on first use, not while this module is
+// being evaluated. Tests (and embedders) commonly select CHUNKY_SETTINGS after
+// importing the registry, and settings are user-editable between requests.
+const BUILT_INS = new Set(["zen", "codex", "grok", "anthropic"])
+let loadedCustomSignature = ""
+function ensureCustomProviders(): void {
+  const custom = loadSettings().customProviders ?? []
+  const signature = JSON.stringify(custom)
+  if (signature === loadedCustomSignature) return
+  loadedCustomSignature = signature
+  for (const id of Object.keys(providers)) if (!BUILT_INS.has(id)) delete providers[id]
+  for (const def of custom) {
+    if (!def?.id || BUILT_INS.has(def.id)) {
+      console.warn(`[@chunky/server] skipping custom provider with colliding id: ${def?.id ?? "(missing)"}`)
+      continue
+    }
+    registerProvider(customProvider(def))
+  }
+}

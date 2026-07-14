@@ -16,8 +16,12 @@ export interface OAuthInfo {
   /** ChatGPT account id extracted from the id_token/access JWT (Codex only). */
   accountId?: string
 }
+export interface ApiInfo {
+  type: "api"
+  key: string
+}
 
-export type AuthInfo = OAuthInfo
+export type AuthInfo = OAuthInfo | ApiInfo
 
 function authPath(): string {
   return process.env.CHUNKY_AUTH || "auth.json"
@@ -51,6 +55,10 @@ export const AuthStore = {
   get(provider: string): OAuthInfo | undefined {
     const info = readAll()[provider]
     return info && info.type === "oauth" ? info : undefined
+  },
+  getApiKey(provider: string): string | undefined {
+    const info = readAll()[provider]
+    return info && info.type === "api" && info.key ? info.key : undefined
   },
   set(provider: string, info: AuthInfo): void {
     const data = readAll()

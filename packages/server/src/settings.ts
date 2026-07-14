@@ -60,6 +60,8 @@ export interface ModeSpec {
 }
 
 export interface Settings {
+  customProviders?: CustomProvider[]
+  onboardedAt?: number
   /** Active provider id. */
   provider?: string
   /** provider id -> that provider's last selection. */
@@ -83,6 +85,13 @@ export interface Settings {
   skillRepos?: SkillRepoRecord[]
   /** Optional user exceptions to Chunky's zero-config workflow routing. Keys are provider/model. */
   workflowTargets?: Record<string, WorkflowTargetOverride>
+}
+export interface CustomProvider {
+  id: string
+  label: string
+  baseURL: string
+  billing?: "subscription" | "metered"
+  defaultModel?: string
 }
 
 export interface WorkflowTargetOverride {
@@ -163,10 +172,14 @@ function settingsPath(): string {
 }
 
 let cache: Settings | undefined
+let cacheFile: string | undefined
 
 export function loadSettings(): Settings {
-  if (cache) return cache
   const p = settingsPath()
+  // The path is configurable and is often set by embedders/tests after module
+  // imports have begun. Do not let a prior file's cache leak across paths.
+  if (cache && cacheFile === p) return cache
+  cacheFile = p
   if (!existsSync(p)) {
     cache = {}
     return cache
@@ -197,6 +210,14 @@ export function persistedProvider(): string | undefined {
 export function setPersistedProvider(id: string): void {
   const s = loadSettings()
   save({ ...s, provider: id })
+}
+
+export function getOnboardedAt(): number | undefined { return loadSettings().onboardedAt }
+export function setOnboardedAt(value = Date.now()): number {
+  save({ ...loadSettings(), onboardedAt: value }); return value
+}
+export function saveCustomProviders(customProviders: CustomProvider[]): void {
+  save({ ...loadSettings(), customProviders })
 }
 
 /** The stored selection for a provider (empty object if none). */

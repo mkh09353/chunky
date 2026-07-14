@@ -268,6 +268,10 @@ export type LoginInitiation =
 
 // ---- Endpoints (relative to http://localhost:<port>) ----
 export const ROUTES = {
+  onboarding: `/api/onboarding`,
+  onboardingComplete: `/api/onboarding/complete`,
+  onboardingApply: `/api/onboarding/apply`,
+  customProvider: `/api/providers/custom`,
   // POST CreateSessionRequest -> CreateSessionResponse (pinned to repoId's
   // workspace; the default repo when omitted).
   createSession: `/api/sessions`,

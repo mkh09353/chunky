@@ -33,6 +33,7 @@ import { LoginPicker, type ProviderRow } from "./components/LoginPicker.js"
 import { ResumePicker } from "./components/ResumePicker.js"
 import { ModelPicker, type ModelSelectionResult } from "./components/ModelPicker.js"
 import { ProviderPicker } from "./components/ProviderPicker.js"
+import { OnboardingWizard } from "./components/OnboardingWizard.js"
 import { AdvisorPicker, type AdvisorSelectionResult } from "./components/AdvisorPicker.js"
 import { openBrowser } from "./openBrowser.js"
 import { grabClipboardImage, type ClipboardImage } from "./clipboardImage.js"
@@ -164,6 +165,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   // When true, the /model fuzzy picker is open (owns the keyboard while shown).
   const [modelPickerOpen, setModelPickerOpen] = useState(false)
   const [providerPickerOpen, setProviderPickerOpen] = useState(false)
+  const [onboardingOpen, setOnboardingOpen] = useState(false)
   // When true, the /advisor picker is open (owns the keyboard while shown).
   const [advisorPickerOpen, setAdvisorPickerOpen] = useState(false)
   // When true, the /sidekick picker is open (owns the keyboard while shown).
@@ -670,6 +672,11 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     const firstNeedsLogin = providers.findIndex((p) => !p.ready)
     setLoginPicker({ providers, selected: firstNeedsLogin >= 0 ? firstNeedsLogin : 0 })
   }, [mode, fetchProviders, printLine])
+  const openOnboarding = useCallback(() => { if (mode === "live") setOnboardingOpen(true) }, [mode])
+  useEffect(() => {
+    if (mode !== "live") return
+    fetch(baseUrl + "/api/onboarding").then((r) => r.json()).then((p: { onboardedAt?: number }) => { if (!p.onboardedAt) setOnboardingOpen(true) }).catch(() => {})
+  }, [mode, baseUrl])
 
   // Initiate login for the chosen provider (called on enter in the picker).
   // Uses the browser loopback flow and OPENS the browser for you; the server's
@@ -1383,6 +1390,9 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         case "/login":
           void doLogin()
           break
+        case "/onboard":
+          openOnboarding()
+          break
         case "/model":
           doModel()
           break
@@ -1495,6 +1505,11 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       </scrollbox>
       {running && startedAt != null && <StatusLine startedAt={startedAt} />}
       <box flexDirection="column" width="100%" marginTop={1} flexShrink={0}>
+        {onboardingOpen && <OnboardingWizard baseUrl={baseUrl} onDone={() => setOnboardingOpen(false)} onLogin={async (p) => {
+          // `active` is LoginPicker display state; initiateLogin never reads it.
+          await initiateLogin({ id: p.id, label: p.label, ready: p.ready, active: false })
+          try { const r = await fetch(baseUrl + `/api/auth/${p.id}/status`); return Boolean((await r.json()).ready) } catch { return false }
+        }} />}
         {loginPicker && <LoginPicker providers={loginPicker.providers} selected={loginPicker.selected} />}
         {resumePicker && <ResumePicker sessions={resumePicker.sessions} selected={resumePicker.selected} />}
         {modelPickerOpen && (

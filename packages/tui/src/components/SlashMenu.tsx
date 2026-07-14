@@ -12,6 +12,7 @@ export const COMMANDS: Command[] = [
   { name: "/resume", description: "Resume a previous thread in this repo" },
   { name: "/help", description: "Show help" },
   { name: "/login", description: "Log in to an OAuth provider (Grok / Codex)" },
+  { name: "/onboard", description: "Open the first-run onboarding guide" },
   { name: "/model", description: "Pick or manage models (/model add|hide|restore|list)" },
   { name: "/skills", description: "Manage skill repos (/skills add|remove|update|list)" },
   { name: "/provider", description: "Configure available models for a provider" },

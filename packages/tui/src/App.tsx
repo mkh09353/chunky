@@ -1528,7 +1528,8 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       text: `${prettyModel(currentSel.model)}${currentSel.effort ? ` ${currentSel.effort}` : ""}`,
       color: ACCENT,
     })
-    // Sidekick chip — only when enabled. `⚒ <model>` (or `⚒ inherit`), plus a seat
+    // Sidekick chip — only when enabled. `⚒ sidekick <model>` (or `… inherit`),
+    // plus a seat
     // suffix: 1 named seat → `+name`, more than one → `+N`.
     if (sidekick?.enabled) {
       const seatNames = Object.keys(sidekick.seats)
@@ -1539,12 +1540,12 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
             ? ` +${seatNames[0]}`
             : ` +${seatNames.length}`
       const model = sidekick.model ? prettyModel(sidekick.model) : "inherit"
-      chips.push({ text: `⚒ ${model}${seatSuffix}`, dim: true })
+      chips.push({ text: `⚒ sidekick ${model}${seatSuffix}`, dim: true })
     }
     // Advisor chip — only when enabled AND it has a model; ` ✕` when suppressed.
     if (advisor?.enabled && advisor.model) {
       chips.push({
-        text: `✦ ${prettyModel(advisor.model)}${advisor.active ? "" : " ✕"}`,
+        text: `✦ advisor ${prettyModel(advisor.model)}${advisor.active ? "" : " ✕"}`,
         dim: true,
       })
     }

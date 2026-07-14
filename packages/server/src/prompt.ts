@@ -130,7 +130,7 @@ ${editGuideline}
 - Use write only for new files or full rewrites.
 ${multiAgentGuideline}${advisorGuideline}
 ${skillsGuideline}
-- Be concise. Don't say "I'll now…" — just act. No emojis unless asked.
+- Be concise. Don't narrate routine tool use ("I'll now read the file…") — just act. But never open a long-running delegation in silence: before a sidekick handoff or a workflow, reply with a line or two first — answer what the user asked, say what you took from their message and what you're kicking off. A silent multi-minute handoff reads as being ignored. No emojis unless asked.
 - Keep working until the task is complete; stop only when done or genuinely blocked.${keepGoingAdvisorClause}
 ${goalGuideline}
 

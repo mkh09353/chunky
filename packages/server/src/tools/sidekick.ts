@@ -16,10 +16,20 @@ After it reports back, review with git diff/git show — do NOT pull its files i
 
 The rhythm on a typical task: recon handoff → review its report and write ONE spec-quality brief → it implements + tests → you review the diff and hand back feedback if needed → commit. The best runs are the ones where you never open a repo file yourself.
 
+NAMED SEATS: the user may configure domain seats (e.g. "backend", "frontend"), each a SEPARATE persistent worker on its own model — pass seat to route a brief to one; omit it for the default seat. Route by domain, and keep each domain's follow-ups on the same seat (that's where its context lives). Independent briefs to two different seats may be sent in the same turn to run concurrently. When you parallelize across seats, write the shared contract (endpoints, types, events) VERBATIM into both briefs — each seat sees only its own brief — then send one final integration brief to a single seat to marry the halves.
+
 Skip the sidekick when the task isn't separable: quick answers, single-line fixes, or serial debugging where your accumulated context IS the work.`
 
 export const sidekickInputShape = {
   task: z.string().describe("The goal: what to build/change/investigate and why, in plain language."),
+  seat: z
+    .string()
+    .optional()
+    .describe(
+      'Optional NAMED seat to hand this brief to (e.g. "backend", "frontend") when the user has configured domain ' +
+        "seats — each seat is its own persistent worker. Omit for the default seat. An unknown name errors with the " +
+        "configured list.",
+    ),
   constraints: z
     .array(z.string())
     .optional()
@@ -39,6 +49,7 @@ export const sidekickInputShape = {
 
 export interface SidekickInput {
   task: string
+  seat?: string
   constraints?: string[]
   done_when?: string
   pointers?: string
@@ -61,7 +72,7 @@ export const sidekick = tool(
     if (!ctx || !callerThreadId) {
       return "error: sidekick is only available inside an active session run."
     }
-    return ctx.delegateToSidekick({ callerThreadId, brief: composeBrief(input) })
+    return ctx.delegateToSidekick({ callerThreadId, brief: composeBrief(input), seat: input.seat })
   },
   {
     name: "sidekick",

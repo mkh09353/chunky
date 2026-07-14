@@ -44,7 +44,9 @@ import {
   loadSettings,
   getServerToken,
   getSidekick,
+  getSidekickSeats,
   isEffort,
+  isValidSeatName,
   listModes,
   resetSidekickSeat,
   saveMode,
@@ -52,6 +54,8 @@ import {
   setAdvisor,
   setCacheGuardTokens,
   setSidekick,
+  setSidekickSeat,
+  setSidekickSeats,
   setOnboardedAt,
   setWorkflowTargetOverride,
   type AdvisorConfig,
@@ -478,24 +482,46 @@ const server = Bun.serve({
       return json({ config: getAdvisor(), active: resolveAdvisorSelection() != null })
     }
 
-    // GET /api/sidekick -> { config } (the persistent worker's seat config; an
-    // unconfigured-but-enabled seat inherits the active selection, so there is
-    // no separate "active" readiness — enabled IS active)
+    // GET /api/sidekick -> { config, seats } (the default seat + master switch,
+    // plus the named domain seats; an unconfigured-but-enabled default seat
+    // inherits the active selection, so there is no separate "active" readiness)
     if (req.method === "GET" && pathname === "/api/sidekick") {
-      return json({ config: getSidekick() })
+      return json({ config: getSidekick(), seats: getSidekickSeats() })
     }
 
-    // POST /api/sidekick { enabled?, provider?, model?, effort? }
-    //   -> merge-persists the sidekick config, invalidates the agent cache (so
-    //      executors rebuild to add/drop the sidekick tool), returns config.
+    // POST /api/sidekick { enabled?, provider?, model?, effort?, seat? }
+    //   -> no `seat`: merge-persists the DEFAULT seat config.
+    //      `seat: "<name>"`: sets that NAMED seat (enabled:false deletes it).
+    //   Either way invalidates the agent cache (executors rebuild so the tool,
+    //   prompt seat list, and per-seat threads stay current).
     if (req.method === "POST" && pathname === "/api/sidekick") {
-      let body: { enabled?: unknown; provider?: unknown; model?: unknown; effort?: unknown }
+      let body: { enabled?: unknown; provider?: unknown; model?: unknown; effort?: unknown; seat?: unknown }
       try {
         body = (await req.json()) as typeof body
       } catch {
         return json({ error: "invalid JSON body" }, 400)
       }
       const EFFORTS = ["low", "medium", "high", "xhigh", "max"]
+      if (typeof body.seat === "string") {
+        const name = body.seat.trim().toLowerCase()
+        if (!isValidSeatName(name)) {
+          return json({ error: `invalid seat name "${name}" — short lowercase slug, not "default"` }, 400)
+        }
+        if (body.enabled === false) {
+          setSidekickSeat(name, null)
+        } else {
+          if (typeof body.provider !== "string" || typeof body.model !== "string") {
+            return json({ error: "a named seat needs provider and model" }, 400)
+          }
+          setSidekickSeat(name, {
+            provider: body.provider,
+            model: body.model,
+            ...(typeof body.effort === "string" && EFFORTS.includes(body.effort) ? { effort: body.effort as Effort } : {}),
+          })
+        }
+        invalidateAgent()
+        return json({ config: getSidekick(), seats: getSidekickSeats() })
+      }
       const patch: Partial<SidekickConfig> = {}
       if (typeof body.enabled === "boolean") patch.enabled = body.enabled
       if (typeof body.provider === "string") patch.provider = body.provider
@@ -503,7 +529,7 @@ const server = Bun.serve({
       if (typeof body.effort === "string" && EFFORTS.includes(body.effort)) patch.effort = body.effort as Effort
       setSidekick(patch)
       invalidateAgent()
-      return json({ config: getSidekick() })
+      return json({ config: getSidekick(), seats: getSidekickSeats() })
     }
 
     // ---- Modes: named executor+advisor pairings (GET/POST /api/modes,
@@ -561,6 +587,12 @@ const server = Bun.serve({
         } else if (spec.sidekick === null) {
           resetSidekickSeat()
         }
+        // Same absent/null contract for the NAMED seats: absent = leave alone.
+        if (spec.sidekickSeats) {
+          setSidekickSeats(spec.sidekickSeats)
+        } else if (spec.sidekickSeats === null) {
+          setSidekickSeats({})
+        }
         invalidateAgent()
         const sel = selectionOf(spec.provider)
         return json({
@@ -572,6 +604,7 @@ const server = Bun.serve({
           advisor: getAdvisor(),
           advisorActive: resolveAdvisorSelection() != null,
           sidekick: getSidekick(),
+          sidekickSeats: getSidekickSeats(),
         })
       }
       if (!isApply && req.method === "DELETE") {

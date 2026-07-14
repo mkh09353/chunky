@@ -16,6 +16,7 @@ import { chatOptionsFor } from "./model-options.ts"
 import {
   getAdvisor,
   getSidekick,
+  getSidekickSeats,
   persistedProvider,
   selectionFor,
   setPersistedProvider,
@@ -336,6 +337,28 @@ export function sidekickFor(executor: AgentSelection): AgentSelection | null {
     return Object.freeze({ provider: executor.provider, model: executor.model, effort: executor.effort, speed: executor.speed })
   }
   return Object.freeze({ provider: cfg.provider, model: cfg.model, effort: cfg.effort, speed: undefined })
+}
+
+/** Configured NAMED seat names (e.g. ["backend", "frontend"]), sorted. Empty
+ *  when none are configured or the master switch is off. */
+export function listSidekickSeats(): string[] {
+  if (!getSidekick().enabled) return []
+  return Object.keys(getSidekickSeats())
+    .filter((name) => {
+      const seat = getSidekickSeats()[name]
+      return seat && providers[seat.provider] != null
+    })
+    .sort()
+}
+
+/** Resolve one NAMED seat to a selection, or null when it doesn't exist (or its
+ *  provider isn't registered, or the master switch is off). The DEFAULT seat is
+ *  resolved by sidekickFor, not here. */
+export function resolveSidekickSeat(name: string): AgentSelection | null {
+  if (!getSidekick().enabled) return null
+  const seat = getSidekickSeats()[name]
+  if (!seat || !providers[seat.provider]) return null
+  return Object.freeze({ provider: seat.provider, model: seat.model, effort: seat.effort, speed: undefined })
 }
 
 // OAuth providers self-register on import. Kept at the bottom so the registry's

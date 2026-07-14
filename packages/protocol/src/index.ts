@@ -242,6 +242,9 @@ export interface ModeSpec {
   /** The paired sidekick seat; null = seat unset in this mode (inherit);
    *  absent (undefined) = mode predates sidekicks, leave the seat alone. */
   sidekick?: ModeAdvisor | null
+  /** Named sidekick seats (e.g. frontend/backend); null = clear all named
+   *  seats in this mode; absent = mode predates seats, leave them alone. */
+  sidekickSeats?: Record<string, ModeAdvisor> | null
 }
 export interface ModeInfo extends ModeSpec {
   name: string

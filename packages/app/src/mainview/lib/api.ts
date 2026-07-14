@@ -382,6 +382,29 @@ export interface ProviderRow {
   ready: boolean
   active: boolean
 }
+export interface OnboardingProvider { id: string; label: string; status: string; detail?: string }
+export interface OnboardingSuggestion { name: string; description: string; spec: import("@chunky/protocol").ModeSpec }
+export interface OnboardingPayload { providers?: OnboardingProvider[]; suggestedModes?: OnboardingSuggestion[]; onboardedAt?: number }
+
+export async function fetchOnboarding(baseUrl: string): Promise<OnboardingPayload> {
+  const res = await fetch(baseUrl + ROUTES.onboarding)
+  if (!res.ok) throw new Error(`onboarding failed (${res.status})`)
+  return (await res.json()) as OnboardingPayload
+}
+export async function applyOnboardingMode(baseUrl: string, mode: OnboardingSuggestion["spec"], name: string): Promise<void> {
+  const res = await fetch(baseUrl + ROUTES.onboardingApply, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ mode, name }) })
+  const body = (await res.json().catch(() => ({}))) as { error?: string }
+  if (!res.ok) throw new Error(body.error || `apply onboarding failed (${res.status})`)
+}
+export async function completeOnboarding(baseUrl: string): Promise<void> {
+  const res = await fetch(baseUrl + ROUTES.onboardingComplete, { method: "POST" })
+  if (!res.ok) throw new Error(`complete onboarding failed (${res.status})`)
+}
+export async function saveCustomProvider(baseUrl: string, input: { id: string; label: string; baseURL: string; key: string }): Promise<void> {
+  const res = await fetch(baseUrl + ROUTES.customProvider, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input) })
+  const body = (await res.json().catch(() => ({}))) as { error?: string }
+  if (!res.ok) throw new Error(body.error || `save provider failed (${res.status})`)
+}
 
 export async function listProviders(baseUrl: string): Promise<ProviderRow[]> {
   try {

@@ -18,8 +18,8 @@ process.env.CHUNKY_SETTINGS = join(mkdtempSync(join(tmpdir(), "chunky-sidekick-"
 
 import type { AgentEvent } from "@chunky/protocol"
 import { executorToolsFor } from "./agent.ts"
-import { sidekickFor, type AgentSelection } from "./providers/registry.ts"
-import { setSidekick } from "./settings.ts"
+import { listSidekickSeats, resolveSidekickSeat, sidekickFor, type AgentSelection } from "./providers/registry.ts"
+import { currentModeSpec, isValidSeatName, setSidekick, setSidekickSeat } from "./settings.ts"
 import { type AgentForSelection, ThreadManager } from "./threads.ts"
 import { composeBrief } from "./tools/sidekick.ts"
 
@@ -171,6 +171,57 @@ async function main() {
     "sidekick agent must be built on the configured seat (codex/gpt-5.5)",
   )
   console.log("ok  sidekick agent built on the configured seat (codex/gpt-5.5), not the executor")
+
+  console.log("\n--- named seats: config, resolution, per-seat threads ---")
+  assert(isValidSeatName("frontend") && isValidSeatName("be-2"), "slug seat names are valid")
+  assert(!isValidSeatName("default") && !isValidSeatName("Front End") && !isValidSeatName(""), "reserved/uppercase/empty names rejected")
+
+  setSidekickSeat("frontend", { provider: "zen", model: "glm-5.2", effort: "high" })
+  setSidekickSeat("backend", { provider: "codex", model: "gpt-5.5", effort: "xhigh" })
+  assert(JSON.stringify(listSidekickSeats()) === JSON.stringify(["backend", "frontend"]), "listSidekickSeats sorted")
+  const fe = resolveSidekickSeat("frontend")
+  assert(fe != null && fe.provider === "zen" && fe.model === "glm-5.2" && fe.effort === "high", "named seat resolves as configured")
+  assert(resolveSidekickSeat("nope") === null, "unknown seat resolves null")
+
+  // Mode snapshot carries the named seats.
+  const snap = currentModeSpec()
+  assert(
+    snap.sidekickSeats != null && snap.sidekickSeats.frontend?.model === "glm-5.2" && snap.sidekickSeats.backend?.model === "gpt-5.5",
+    "currentModeSpec snapshots named seats",
+  )
+  console.log("ok  seat config + resolution + mode snapshot")
+
+  // Handoffs to a NAMED seat run on that seat's OWN stable thread id.
+  sidekickThreadIds.length = 0
+  sidekickSelectionsUsed.length = 0
+  events.length = 0
+  const manager2 = new ThreadManager(emit, ROOT, EXECUTOR, undefined, undefined, undefined, undefined, fakeSidekickAgentFor)
+  const feReport = await manager2.delegateToSidekick({ callerThreadId: ROOT, brief: "Style the wizard.", seat: "frontend" })
+  await manager2.delegateToSidekick({ callerThreadId: ROOT, brief: "Polish it.", seat: "frontend" })
+  const unknown = await manager2.delegateToSidekick({ callerThreadId: ROOT, brief: "x", seat: "fronted" })
+  manager2.dispose()
+
+  assert(feReport.includes("Sidekick report from zen/glm-5.2"), "named-seat handoff runs the seat's model")
+  const feId = `${ROOT}:sidekick:frontend`
+  assert(
+    sidekickThreadIds.length === 2 && sidekickThreadIds.every((id) => id === feId),
+    `named seat must run on its OWN stable thread id '${feId}', got ${JSON.stringify(sidekickThreadIds)}`,
+  )
+  assert(
+    sidekickSelectionsUsed.every((s) => s.provider === "zen" && s.model === "glm-5.2"),
+    "named-seat agent built on the seat's selection",
+  )
+  const feSpawns = events.filter((e) => e.type === "thread.spawn")
+  assert(
+    feSpawns.length === 2 && feSpawns.every((e) => (e as any).threadId === feId && (e as any).title === "Sidekick (frontend)"),
+    "named-seat events tagged with the seat thread id + titled 'Sidekick (frontend)'",
+  )
+  // Unknown seat: a correctable error naming the configured seats, no stream.
+  assert(
+    unknown.startsWith("error:") && unknown.includes('"backend"') && unknown.includes('"frontend"'),
+    "unknown seat errors with the configured seat list",
+  )
+  console.log("ok  named-seat handoffs: own stable thread id, seat model, unknown-seat error")
 
   console.log("\nPASS: deterministic sidekick test")
 }

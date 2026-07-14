@@ -16,6 +16,7 @@ import { createAgent, summarizationMiddleware } from "langchain"
 import {
   activeSelection,
   advisorFor,
+  listSidekickSeats,
   resolveModel,
   selectionSignature,
   sidekickFor,
@@ -193,6 +194,7 @@ export const RECURSION_LIMIT = Number(process.env.CHUNKY_RECURSION_LIMIT) || 500
  */
 export function agentPlanFor(selection: AgentSelection) {
   const { tools, hasAdvisor, hasSidekick } = executorToolsFor(selection)
+  const sidekickSeats = listSidekickSeats()
   const nativeToolSearch = supportsNativeToolSearch(selection.provider, selection.model)
   const toolSearchConfig = toolSearchMiddlewareConfigFor(
     selection.provider,
@@ -203,6 +205,7 @@ export function agentPlanFor(selection: AgentSelection) {
     tools,
     hasAdvisor,
     hasSidekick,
+    sidekickSeats,
     nativeToolSearch,
     /** Non-null only when gate is open and there is at least one deferred tool. */
     toolSearchConfig,
@@ -240,6 +243,7 @@ export function buildAgent(
       nativeToolSearch: plan.nativeToolSearch,
       portableToolSearch: providerId === "grok",
       hasSidekick: plan.hasSidekick,
+      sidekickSeats: plan.sidekickSeats,
     }),
     checkpointer: makeCheckpointer(),
     // Auto-compaction — the context-management half of Pi's efficiency win (a

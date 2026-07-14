@@ -1011,3 +1011,26 @@ body,
   color: var(--color-text-primary);
   background: var(--color-overlay-hover);
 }
+
+.chunky-onboarding-backdrop { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; padding: var(--spacing-6); background: rgba(0,0,0,.62); animation: chunky-onboarding-in 160ms ease-out; }
+.chunky-onboarding { position: relative; width: min(100%, 40rem); max-height: calc(100vh - 3rem); overflow: auto; padding: var(--spacing-8); border: 1px solid var(--color-border); border-radius: var(--radius-container); background: var(--color-background-surface); box-shadow: 0 1.5rem 4rem rgba(0,0,0,.45); }
+.chunky-onboarding h2 { margin: 0 0 var(--spacing-2); font-size: var(--font-size-2xl); }
+.chunky-onboarding-muted { color: var(--color-text-secondary); margin: 0 0 var(--spacing-5); }
+.chunky-onboarding-close { position: absolute; right: var(--spacing-4); top: var(--spacing-4); border: 0; background: transparent; color: var(--color-text-secondary); font-size: 1.5rem; cursor: pointer; }
+.chunky-onboarding-list, .chunky-onboarding-cards { display: grid; gap: var(--spacing-2); }
+.chunky-onboarding-provider { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: var(--spacing-3); padding: var(--spacing-3); border: 1px solid var(--color-border); border-radius: var(--radius-container); }
+.chunky-onboarding-provider small, .chunky-onboarding-card small { display: block; color: var(--color-text-secondary); margin-top: var(--spacing-1); }
+.chunky-onboarding-pill { font-size: var(--font-size-xs); color: var(--color-text-secondary); }
+.chunky-onboarding-pill.ready, .chunky-onboarding-pill.inherited { color: var(--chunky-purple-soft); }
+.chunky-onboarding button { border: 1px solid var(--color-border); border-radius: var(--radius-control); padding: var(--spacing-2) var(--spacing-3); background: transparent; color: var(--color-text-primary); cursor: pointer; font: inherit; }
+.chunky-onboarding button:disabled { opacity: .5; cursor: default; }
+.chunky-onboarding-primary { background: var(--chunky-purple) !important; border-color: var(--chunky-purple) !important; color: white !important; }
+.chunky-onboarding-actions { display: flex; justify-content: flex-end; gap: var(--spacing-2); margin-top: var(--spacing-6); }
+.chunky-onboarding-link { border: 0 !important; color: var(--color-text-accent) !important; padding-inline: 0 !important; margin-top: var(--spacing-3); }
+.chunky-onboarding-card { text-align: left; display: grid; gap: var(--spacing-1); }
+.chunky-onboarding-card.selected { border-color: var(--chunky-purple); background: var(--color-accent-muted); }
+.chunky-onboarding-field { display: grid; gap: var(--spacing-1); margin-top: var(--spacing-3); color: var(--color-text-secondary); font-size: var(--font-size-sm); }
+.chunky-onboarding-field input { width: 100%; padding: var(--spacing-3); border: 1px solid var(--color-border); border-radius: var(--radius-control); background: var(--color-background-body); color: var(--color-text-primary); font: inherit; }
+.chunky-onboarding-error { color: #f58b8b; margin-top: var(--spacing-3); }
+.chunky-onboarding-loading { color: var(--color-text-secondary); }
+@keyframes chunky-onboarding-in { from { opacity: 0 } to { opacity: 1 } }

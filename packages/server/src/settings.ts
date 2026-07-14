@@ -36,11 +36,24 @@ export interface AdvisorConfig {
 /** The persistent sidekick: the cheaper worker model the lead hands briefs to
  *  (one standing side thread per session — see ThreadManager.delegateToSidekick).
  *  Absent provider/model => the sidekick inherits the active selection, so the
- *  tool still works (context isolation alone is worth it) until a seat is set. */
+ *  tool still works (context isolation alone is worth it) until a seat is set.
+ *  `enabled: false` is the MASTER switch — it disables the whole sidekick
+ *  system, named seats included. */
 export interface SidekickConfig {
   enabled: boolean
   provider?: string
   model?: string
+  effort?: Effort
+}
+
+/** A NAMED sidekick seat (e.g. "frontend", "backend"): a domain-scoped worker
+ *  with its own persistent thread, so each domain accumulates its own context
+ *  (the frontend seat learns the UI, the backend seat learns the server).
+ *  Presence = configured; deletion = seat gone. The default seat stays in
+ *  SidekickConfig for back-compat. */
+export interface SidekickSeat {
+  provider: string
+  model: string
   effort?: Effort
 }
 
@@ -57,6 +70,9 @@ export interface ModeSpec {
   advisor?: { provider: string; model: string; effort?: Effort } | null
   /** The paired sidekick; null = sidekick seat unset in this mode (inherit). */
   sidekick?: { provider: string; model: string; effort?: Effort } | null
+  /** Named sidekick seats; null = clear all named seats in this mode;
+   *  absent (undefined) = mode predates seats, leave them alone. */
+  sidekickSeats?: Record<string, SidekickSeat> | null
 }
 
 export interface Settings {
@@ -68,8 +84,10 @@ export interface Settings {
   selections?: Record<string, ModelSelection>
   /** The advisor's model + on/off state. */
   advisor?: AdvisorConfig
-  /** The sidekick's model + on/off state. */
+  /** The sidekick's model + on/off state (the DEFAULT seat + master switch). */
   sidekick?: SidekickConfig
+  /** Named sidekick seats (e.g. frontend/backend), each its own persistent thread. */
+  sidekickSeats?: Record<string, SidekickSeat>
   /** Cold-cache send guard threshold in tokens (see getCacheGuardTokens).
    *  Absent = default; null = guard off. */
   cacheGuardTokens?: number | null
@@ -380,6 +398,7 @@ export function currentModeSpec(): ModeSpec {
       side.enabled && side.provider && side.model
         ? { provider: side.provider, model: side.model, ...(side.effort ? { effort: side.effort } : {}) }
         : null,
+    sidekickSeats: Object.keys(getSidekickSeats()).length > 0 ? getSidekickSeats() : null,
   }
 }
 
@@ -432,6 +451,35 @@ export function setSidekick(patch: Partial<SidekickConfig>): SidekickConfig {
   }
   save({ ...s, sidekick: next })
   return next
+}
+
+// ---- Named sidekick seats (e.g. frontend/backend) ----
+
+/** Seat names must be short lowercase slugs: they become thread-id suffixes
+ *  (`<root>:sidekick:<name>`) and a tool-call enum the lead types verbatim. */
+export function isValidSeatName(name: string): boolean {
+  return /^[a-z][a-z0-9_-]{0,23}$/.test(name) && name !== "default"
+}
+
+/** All configured named seats (empty object when none). */
+export function getSidekickSeats(): Record<string, SidekickSeat> {
+  return loadSettings().sidekickSeats ?? {}
+}
+
+/** Set (spec) or delete (null) one named seat and persist. Returns the map. */
+export function setSidekickSeat(name: string, spec: SidekickSeat | null): Record<string, SidekickSeat> {
+  const s = loadSettings()
+  const seats = { ...(s.sidekickSeats ?? {}) }
+  if (spec) seats[name] = spec
+  else delete seats[name]
+  save({ ...s, sidekickSeats: seats })
+  return seats
+}
+
+/** Replace ALL named seats at once (mode apply). */
+export function setSidekickSeats(seats: Record<string, SidekickSeat>): void {
+  const s = loadSettings()
+  save({ ...s, sidekickSeats: seats })
 }
 
 // ---- Managed skill repositories ----

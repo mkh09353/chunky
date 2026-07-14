@@ -45,12 +45,14 @@ export interface ThreadSpawner {
   /**
    * Hand a brief to the sidekick — a persistent worker side thread on a cheaper
    * model (stable thread_id, so it keeps the repo context it built across
-   * handoffs this session; follow-up briefs can be short). Returns the
-   * sidekick's report.
+   * handoffs this session; follow-up briefs can be short). `seat` targets a
+   * configured NAMED seat (e.g. "frontend"/"backend"), each its own persistent
+   * thread; omitted = the default seat. Returns the sidekick's report.
    */
   delegateToSidekick(opts: {
     callerThreadId: string
     brief: string
+    seat?: string
   }): Promise<string>
 
   /**

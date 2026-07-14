@@ -24,6 +24,9 @@ export interface SystemPromptOpts {
   portableToolSearch?: boolean
   /** When false the sidekick seat is disabled — drop its tool line + guidance. */
   hasSidekick?: boolean
+  /** Configured NAMED sidekick seats (e.g. ["backend","frontend"]). The agent is
+   *  rebuilt (invalidateAgent) when seats change, so this stays current. */
+  sidekickSeats?: string[]
 }
 
 export function buildSystemPrompt(
@@ -66,8 +69,13 @@ export function buildSystemPrompt(
   // Full catalog (fallback / non-native): enumerate every bound tool so the model
   // knows what it can call. Native tool search: list ONLY core tools — deferred
   // tools must not be falsely enumerated; the provider surfaces them on demand.
+  const seatNames = hasSidekick ? (opts.sidekickSeats ?? []) : []
+  const seatsSuffix =
+    seatNames.length > 0
+      ? ` Named seats configured: ${seatNames.join(", ")} — pass seat:"<name>" to route a brief to one (each is a separate persistent worker).`
+      : ""
   const sidekickListLine = hasSidekick
-    ? "\n- sidekick: hand a work brief to your persistent worker agent — the default way to delegate implementation (it keeps its context across handoffs this session)"
+    ? `\n- sidekick: hand a work brief to your persistent worker agent — the default way to delegate implementation (it keeps its context across handoffs this session).${seatsSuffix}`
     : ""
 
   const toolsBlock = deferredToolSearch
@@ -102,8 +110,12 @@ ${editListLine}
   // brief; reserve workflow fan-out for genuinely large work or an explicit ask.
   // Never push the model to delegate — coerced delegation delegates the wrong
   // things — but make the default (direct) and the workhorse (sidekick) unambiguous.
+  const seatsGuideline =
+    seatNames.length > 0
+      ? ` Route each brief to the right named seat by domain (${seatNames.join("/")}) and keep a domain's follow-ups on the same seat; independent briefs to different seats can go out in the same turn — when you do that, write the shared contract verbatim into BOTH briefs, then one integration brief to a single seat.`
+      : ""
   const sidekickGuideline = hasSidekick
-    ? "\n- Sidekick: your default delegate, for exploration as much as implementation. On a nontrivial task, make your FIRST handoff reconnaissance — the sidekick explores and reports back paths + key snippets, and you write the implementation brief from its report instead of reading the repo yourself. Briefs are specs: goal, explicit constraints and edge cases, definition of done. Review its work via git diff/git show (don't pull its files into your context); if the work is wrong, hand back a follow-up brief with specific feedback instead of rewriting it yourself. Keep serial debugging — where your accumulated context IS the work — and trivial edits to yourself."
+    ? `\n- Sidekick: your default delegate, for exploration as much as implementation. On a nontrivial task, make your FIRST handoff reconnaissance — the sidekick explores and reports back paths + key snippets, and you write the implementation brief from its report instead of reading the repo yourself. Briefs are specs: goal, explicit constraints and edge cases, definition of done. Review its work via git diff/git show (don't pull its files into your context); if the work is wrong, hand back a follow-up brief with specific feedback instead of rewriting it yourself.${seatsGuideline} Keep serial debugging — where your accumulated context IS the work — and trivial edits to yourself.`
     : ""
   const workflowLabel = deferredToolSearch ? "Workflow (discover via tool search)" : "Workflow"
   const multiAgentGuideline =

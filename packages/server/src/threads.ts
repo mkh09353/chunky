@@ -17,8 +17,10 @@ import {
   activeSelection,
   childSelection,
   getProvider,
+  listSidekickSeats,
   providerRuntime,
   resolveAdvisorSelection,
+  resolveSidekickSeat,
   sidekickFor,
   type AgentSelection,
   type AgentSelectionOverride,
@@ -360,14 +362,25 @@ export class ThreadManager implements ThreadSpawner {
    * the checkpointer keys on thread_id, so each handoff resumes the SAME worker
    * conversation — the sidekick keeps the repo context it built during earlier
    * briefs, which is what makes follow-up handoffs ("fix the bug in the diff
-   * you just wrote") cheap. The sidekick thread is deliberately NOT registered
-   * in the thread registry and NOT in `selections` (it has no delegation tools,
-   * so nothing inside it resolves a manager), and persists for the session.
+   * you just wrote") cheap. A NAMED seat (e.g. "frontend") gets its own stable
+   * id (`${rootId}:sidekick:frontend`), so each domain seat accumulates its own
+   * context. The sidekick thread is deliberately NOT registered in the thread
+   * registry and NOT in `selections` (it has no delegation tools, so nothing
+   * inside it resolves a manager), and persists for the session.
    */
-  async delegateToSidekick(opts: { callerThreadId: string; brief: string }): Promise<string> {
+  async delegateToSidekick(opts: { callerThreadId: string; brief: string; seat?: string }): Promise<string> {
     const rootSelection = this.selections.get(this.rootId) ?? activeSelection()
-    const sidekickSel = sidekickFor(rootSelection)
+    const seat = opts.seat?.trim() || undefined
+    const sidekickSel = seat && seat !== "default" ? resolveSidekickSeat(seat) : sidekickFor(rootSelection)
     if (!sidekickSel) {
+      if (seat && seat !== "default") {
+        // Guard the seat name like spawn_thread guards providers: error with the
+        // valid set so the lead corrects itself instead of the handoff dying.
+        const seats = listSidekickSeats()
+        return seats.length > 0
+          ? `error: unknown sidekick seat "${seat}". Configured seats: ${seats.map((s) => `"${s}"`).join(", ")} (or omit "seat" for the default). Ask the user to add seats with /sidekick <name>.`
+          : `error: no named sidekick seats are configured — omit "seat" to use the default sidekick, or ask the user to add one with /sidekick <name>.`
+      }
       return "error: the sidekick is disabled — ask the user to enable it (/sidekick)."
     }
 
@@ -389,10 +402,12 @@ export class ThreadManager implements ThreadSpawner {
       }
     }
 
-    const sidekickThreadId = `${this.rootId}:sidekick`
+    const isNamedSeat = seat !== undefined && seat !== "default"
+    const sidekickThreadId = isNamedSeat ? `${this.rootId}:sidekick:${seat}` : `${this.rootId}:sidekick`
+    const title = isNamedSeat ? `Sidekick (${seat})` : "Sidekick"
 
-    this.emit({ type: "thread.spawn", threadId: sidekickThreadId, parentThreadId: null, title: "Sidekick", model: sidekickSel.model })
-    this.emit({ type: "thread.status", threadId: sidekickThreadId, status: "running", title: "Sidekick" })
+    this.emit({ type: "thread.spawn", threadId: sidekickThreadId, parentThreadId: null, title, model: sidekickSel.model })
+    this.emit({ type: "thread.status", threadId: sidekickThreadId, status: "running", title })
 
     let finalText = ""
     try {
@@ -440,7 +455,7 @@ export class ThreadManager implements ThreadSpawner {
       this.emit({ type: "error", message, threadId: sidekickThreadId } as AgentEvent)
       finalText = `error: ${message}`
     } finally {
-      this.emit({ type: "thread.status", threadId: sidekickThreadId, status: "idle", title: "Sidekick" })
+      this.emit({ type: "thread.status", threadId: sidekickThreadId, status: "idle", title })
     }
 
     return finalText

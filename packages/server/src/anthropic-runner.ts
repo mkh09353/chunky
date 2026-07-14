@@ -15,7 +15,7 @@ import { z } from "zod"
 import type { MessageEndReason } from "@chunky/protocol"
 import { taggedEmitter, type Emit } from "./event-emitter.ts"
 import { buildSystemPrompt } from "./prompt.ts"
-import { sidekickFor, type AgentSelection } from "./providers/registry.ts"
+import { listSidekickSeats, sidekickFor, type AgentSelection } from "./providers/registry.ts"
 import { anthropicOAuthEnvironment } from "./providers/anthropic-sdk.ts"
 import { usageFromAnthropicResult } from "./usage.ts"
 import { noteRequest } from "./cache-watch.ts"
@@ -341,7 +341,11 @@ export async function buildAnthropicOptions(
     model: selection.model || undefined,
     effort: selection.effort,
     systemPrompt:
-      request.systemPrompt ?? buildSystemPrompt("edit", false, workspace, { hasSidekick: sidekickFor(selection) != null }),
+      request.systemPrompt ??
+      buildSystemPrompt("edit", false, workspace, {
+        hasSidekick: sidekickFor(selection) != null,
+        sidekickSeats: listSidekickSeats(),
+      }),
     tools: [],
     settingSources: [],
     mcpServers: { [SERVER_NAME]: createChunkySdkMcpServer(threadId, emit, eventThreadId, workspace) },

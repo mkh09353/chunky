@@ -35,6 +35,9 @@ interface Props {
   /** Which side-thread seat this picker configures. Defaults to the advisor;
    *  "sidekick" retargets the same UI at /api/sidekick (the persistent worker). */
   seat?: "advisor" | "sidekick"
+  /** NAMED sidekick seat (e.g. "frontend") — POSTs with `seat` so the server
+   *  sets that domain seat instead of the default; the OFF row removes it. */
+  seatName?: string
 }
 
 const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"]
@@ -69,10 +72,11 @@ function fuzzyScore(query: string, target: string): number {
  * effort}. The server auto-suppresses an advisor that equals the executor model —
  * we surface that as an "(inactive)" note.
  */
-export function AdvisorPicker({ baseUrl, onDone, onCancel, seat = "advisor" }: Props) {
+export function AdvisorPicker({ baseUrl, onDone, onCancel, seat = "advisor", seatName }: Props) {
   const rawSupported = rawModeSupported
   // Seat-specific copy: same picker, different side thread + endpoint.
-  const seatCap = seat === "advisor" ? "Advisor" : "Sidekick"
+  const seatCap = seatName ? `Sidekick seat "${seatName}"` : seat === "advisor" ? "Advisor" : "Sidekick"
+  const seatLabel = seatName ? `${seat} seat "${seatName}"` : seat
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -147,11 +151,11 @@ export function AdvisorPicker({ baseUrl, onDone, onCancel, seat = "advisor" }: P
       const res = await fetch(baseUrl + `/api/${seat}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(seatName ? { ...payload, seat: seatName } : payload),
       })
       const body = (await res.json()) as { error?: string; active?: boolean }
       if (body.error) {
-        onDone(payload, `Could not update ${seat}: ${body.error}`)
+        onDone(payload, `Could not update ${seatLabel}: ${body.error}`)
         return
       }
       let note = ""
@@ -207,7 +211,7 @@ export function AdvisorPicker({ baseUrl, onDone, onCancel, seat = "advisor" }: P
         const item = items[listSel]
         if (!item) return
         if (item.off) {
-          void post({ enabled: false }, `${seatCap} → off`)
+          void post({ enabled: false }, seatName ? `${seatCap} removed` : `${seatCap} → off`)
           return
         }
         if (item.row.model.reasoning) {
@@ -252,7 +256,7 @@ export function AdvisorPicker({ baseUrl, onDone, onCancel, seat = "advisor" }: P
   if (step === "effort") {
     return (
       <box flexDirection="column" border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
-        <text attributes={DIM}>Reasoning effort for {seat} {chosen?.model.id} — ↑/↓ move · enter select · esc back</text>
+        <text attributes={DIM}>Reasoning effort for {seatLabel} {chosen?.model.id} — ↑/↓ move · enter select · esc back</text>
         {EFFORTS.map((opt, i) => {
           const on = i === optSel
           return (
@@ -273,7 +277,7 @@ export function AdvisorPicker({ baseUrl, onDone, onCancel, seat = "advisor" }: P
   const visible = items.slice(start, start + WINDOW)
   return (
     <box flexDirection="column" border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
-      <text attributes={DIM}>Set the {seat} model — type to filter · ↑/↓ move · enter select · esc cancel</text>
+      <text attributes={DIM}>Set the {seatLabel} model — type to filter · ↑/↓ move · enter select · esc cancel</text>
       <box flexDirection="row">
         <text fg={ACCENT}>{figures.pointer} </text>
         <text>{filter || ""}</text>
@@ -287,7 +291,7 @@ export function AdvisorPicker({ baseUrl, onDone, onCancel, seat = "advisor" }: P
             <box key="__off__" flexDirection="row">
               <text fg={on ? ACCENT : undefined}>{on ? "❯ " : "  "}</text>
               <text fg={on ? ACCENT : undefined} attributes={(on ? BOLD : 0) | (on ? 0 : DIM)}>
-                Turn {seat} OFF
+                {seatName ? `Remove seat "${seatName}"` : `Turn ${seat} OFF`}
               </text>
             </box>
           )

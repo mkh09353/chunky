@@ -168,8 +168,9 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   const [onboardingOpen, setOnboardingOpen] = useState(false)
   // When true, the /advisor picker is open (owns the keyboard while shown).
   const [advisorPickerOpen, setAdvisorPickerOpen] = useState(false)
-  // When true, the /sidekick picker is open (owns the keyboard while shown).
-  const [sidekickPickerOpen, setSidekickPickerOpen] = useState(false)
+  // When set, the /sidekick picker is open (owns the keyboard while shown).
+  // `seat` targets a NAMED seat (e.g. "frontend"); undefined = the default seat.
+  const [sidekickPicker, setSidekickPicker] = useState<{ seat?: string } | null>(null)
   // When set, the /resume thread picker is open (owns the keyboard while shown).
   const [resumePicker, setResumePicker] = useState<{ sessions: SessionSummary[]; selected: number } | null>(null)
   // The active model selection, reflected on the status line.
@@ -183,12 +184,14 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     active: boolean
   } | null>(null)
   // The active sidekick config, reflected on the status line. No `active` flag:
-  // an enabled seat with no model inherits the executor's selection.
+  // an enabled seat with no model inherits the executor's selection. `seats` is
+  // the named domain seats (e.g. frontend/backend).
   const [sidekick, setSidekick] = useState<{
     enabled: boolean
     provider?: string
     model?: string
     effort?: string
+    seats: Record<string, { provider: string; model: string; effort?: string }>
   } | null>(null)
   // The session's current goal (drives the status line + goal transcript markers).
   const [goal, setGoal] = useState<GoalSnapshot | null>(null)
@@ -252,7 +255,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     modelPickerOpen ||
     providerPickerOpen ||
     advisorPickerOpen ||
-    sidekickPickerOpen ||
+    sidekickPicker != null ||
     resumePicker != null ||
     pendingSend != null
 
@@ -401,12 +404,14 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       const res = await fetch(baseUrl + "/api/sidekick")
       const body = (await res.json()) as {
         config?: { enabled?: boolean; provider?: string; model?: string; effort?: string }
+        seats?: Record<string, { provider: string; model: string; effort?: string }>
       }
       setSidekick({
         enabled: body.config?.enabled ?? false,
         provider: body.config?.provider,
         model: body.config?.model,
         effort: body.config?.effort,
+        seats: body.seats ?? {},
       })
     } catch {
       // leave as null; status line omits the sidekick label
@@ -496,6 +501,10 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       }
       if (command === "/workers" || command.startsWith("/workers ")) {
         void doWorkers(command.slice("/workers".length).trim())
+        return
+      }
+      if (command === "/sidekick" || command.startsWith("/sidekick ")) {
+        doSidekick(command.slice("/sidekick".length).trim())
         return
       }
       const images = attachmentsRef.current
@@ -1062,20 +1071,29 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     [printLine, refreshAdvisor],
   )
 
-  // /sidekick — open the picker that sets the persistent worker's model.
-  const doSidekick = useCallback(() => {
-    if (mode !== "live") {
-      printLine("The sidekick picker needs the live server (run the server, then the TUI with --live).")
-      return
-    }
-    setSidekickPickerOpen(true)
-  }, [mode, printLine])
+  // /sidekick [name] — open the picker for the default seat, or for the NAMED
+  // seat `name` (e.g. `/sidekick frontend` seats a domain worker).
+  const doSidekick = useCallback(
+    (rest = "") => {
+      if (mode !== "live") {
+        printLine("The sidekick picker needs the live server (run the server, then the TUI with --live).")
+        return
+      }
+      const name = rest.trim().toLowerCase()
+      if (name && !/^[a-z][a-z0-9_-]{0,23}$/.test(name)) {
+        printLine(`Seat names are short lowercase slugs (got "${name}"). Try /sidekick frontend.`)
+        return
+      }
+      setSidekickPicker(name && name !== "default" ? { seat: name } : {})
+    },
+    [mode, printLine],
+  )
 
   // Called when the sidekick picker finishes: close it, refresh the status line,
   // echo a summary.
   const onSidekickDone = useCallback(
     (_result: AdvisorSelectionResult, summary: string) => {
-      setSidekickPickerOpen(false)
+      setSidekickPicker(null)
       void refreshSidekick()
       printLine(summary)
     },
@@ -1272,10 +1290,17 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         return
       }
       const effortParen = (e?: string | null) => (e ? ` (${e})` : "")
+      const fmtSeats = (spec: ModeSpec) =>
+        spec.sidekickSeats && Object.keys(spec.sidekickSeats).length > 0
+          ? ` + seats ${Object.entries(spec.sidekickSeats)
+              .sort(([a], [b]) => a.localeCompare(b))
+              .map(([n, s]) => `${n}=${prettyModel(s.model)}${effortParen(s.effort)}`)
+              .join(", ")}`
+          : ""
       const fmtSpec = (spec: ModeSpec) =>
         `${prettyModel(spec.model)}${effortParen(spec.effort)} + sidekick ${
           spec.sidekick ? `${prettyModel(spec.sidekick.model)}${effortParen(spec.sidekick.effort)}` : "inherit"
-        } + advisor ${spec.advisor ? `${prettyModel(spec.advisor.model)}${effortParen(spec.advisor.effort)}` : "off"}`
+        }${fmtSeats(spec)} + advisor ${spec.advisor ? `${prettyModel(spec.advisor.model)}${effortParen(spec.advisor.effort)}` : "off"}`
       const trimmed = rest.trim()
       try {
         if (!trimmed) {
@@ -1460,13 +1485,20 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     advisor && advisor.enabled && advisor.model
       ? ` · advisor: ${providerModelLabel(advisor.provider, prettyModel(advisor.model))}${effortParen(advisor.effort)}${advisor.active ? "" : " (inactive)"}`
       : " · advisor: off"
-  // Sidekick segment: named seat, "inherit" (enabled, no model → executor's
-  // selection), or off.
+  // Sidekick segment: configured default seat, "inherit" (enabled, no model →
+  // executor's selection), or off — plus a +name chip per named domain seat.
+  const seatChips =
+    sidekick && sidekick.enabled && Object.keys(sidekick.seats).length > 0
+      ? ` ${Object.keys(sidekick.seats)
+          .sort()
+          .map((n) => `+${n}`)
+          .join(" ")}`
+      : ""
   const sidekickPart = sidekick
     ? sidekick.enabled && sidekick.model
-      ? ` · sidekick: ${providerModelLabel(sidekick.provider, prettyModel(sidekick.model))}${effortParen(sidekick.effort)}`
+      ? ` · sidekick: ${providerModelLabel(sidekick.provider, prettyModel(sidekick.model))}${effortParen(sidekick.effort)}${seatChips}`
       : sidekick.enabled
-        ? " · sidekick: inherit"
+        ? ` · sidekick: inherit${seatChips}`
         : " · sidekick: off"
     : ""
   // Goal segment: shown only when a goal exists; active goals carry the turn count.
@@ -1521,8 +1553,14 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         {advisorPickerOpen && (
           <AdvisorPicker baseUrl={baseUrl} onDone={onAdvisorDone} onCancel={() => setAdvisorPickerOpen(false)} />
         )}
-        {sidekickPickerOpen && (
-          <AdvisorPicker seat="sidekick" baseUrl={baseUrl} onDone={onSidekickDone} onCancel={() => setSidekickPickerOpen(false)} />
+        {sidekickPicker && (
+          <AdvisorPicker
+            seat="sidekick"
+            seatName={sidekickPicker.seat}
+            baseUrl={baseUrl}
+            onDone={onSidekickDone}
+            onCancel={() => setSidekickPicker(null)}
+          />
         )}
         {pendingSend ? (
           // The cache guard held this send: nothing ran server-side yet.

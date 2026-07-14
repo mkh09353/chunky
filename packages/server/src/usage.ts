@@ -105,13 +105,22 @@ export function usageFromAnthropicResult(message: {
 
   const models = message.modelUsage ? Object.entries(message.modelUsage) : []
   if (models.length > 0) {
+    // Label the delta with the model that carried the LARGEST prompt — the one
+    // actually running the conversation. The SDK's breakdown also lists its
+    // auxiliary calls (e.g. Haiku title generation), and "first enumerated" can
+    // be one of those.
+    let biggestPrompt = -1
     for (const [id, mu] of models) {
       inputTokens += mu.inputTokens ?? 0
       outputTokens += mu.outputTokens ?? 0
       cacheReadTokens += mu.cacheReadInputTokens ?? 0
       cacheWriteTokens += mu.cacheCreationInputTokens ?? 0
       reasoningTokens += mu.reasoningTokens ?? 0
-      if (!model) model = id
+      const prompt = (mu.inputTokens ?? 0) + (mu.cacheReadInputTokens ?? 0) + (mu.cacheCreationInputTokens ?? 0)
+      if (prompt > biggestPrompt) {
+        biggestPrompt = prompt
+        model = id
+      }
     }
   } else if (message.usage) {
     inputTokens = message.usage.input_tokens ?? 0

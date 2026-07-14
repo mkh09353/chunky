@@ -83,6 +83,25 @@ describe("usageFromAnthropicResult", () => {
     expect(delta.model).toBe("claude-sonnet-4-5")
   })
 
+  test("labels the delta with the LARGEST-prompt model, not the first enumerated", () => {
+    // The Agent SDK's modelUsage also lists its auxiliary calls (Haiku title
+    // generation etc.). When one of those enumerates first, it must not label
+    // the turn — that mislabeled a Fable thread as Haiku and manufactured a
+    // false "model switch" cache warning.
+    const delta = usageFromAnthropicResult({
+      modelUsage: {
+        "claude-haiku-4-5-20251001": { inputTokens: 300, outputTokens: 12 },
+        "claude-fable-5": {
+          inputTokens: 2000,
+          outputTokens: 400,
+          cacheReadInputTokens: 140_000,
+        },
+      },
+    })
+    expect(delta.model).toBe("claude-fable-5")
+    expect(delta.inputTokens).toBe(2300)
+  })
+
   test("falls back to flat usage when modelUsage missing", () => {
     const delta = usageFromAnthropicResult({
       usage: {

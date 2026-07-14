@@ -462,9 +462,13 @@ export async function translateAnthropicMessages(
         // Result carries the turn's usage; arm the cache watch with its prompt
         // size so the next turn can detect a cold cache. Works on subscription
         // OAuth too (token counts are reported even when cost is 0).
+        // Record the SELECTION id (cache.model), never delta.model: the SDK's
+        // modelUsage includes its auxiliary Haiku calls (title generation etc.),
+        // and checkCacheCold compares against the next turn's selection id — a
+        // haiku or API-format id here manufactures a false "model switch".
         const delta = usageFromAnthropicResult(message as any)
         if (cache) {
-          noteRequest(cache.conversationId, delta, delta.model ?? cache.model, Date.now())
+          noteRequest(cache.conversationId, delta, cache.model, Date.now())
         }
         emit({ type: "usage.update", usage: delta })
       }

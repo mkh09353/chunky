@@ -200,8 +200,12 @@ export async function translateStream(
 
   // Arm the cache watch with this turn's final prompt size so the NEXT turn can
   // tell whether the cache went cold (idle past the TTL or a model switch).
+  // Record the SELECTION id (cache.model), not the provider-reported usage
+  // model: checkCacheCold compares against the next turn's selection id, so
+  // both sides must share that namespace — a provider-format id (or an aux
+  // model's id) here manufactures a false "model switch" warning.
   if (cache && lastRequestUsage) {
-    noteRequest(cache.conversationId, lastRequestUsage, lastRequestUsage.model ?? cache.model, Date.now())
+    noteRequest(cache.conversationId, lastRequestUsage, cache.model, Date.now())
   }
   if (lastRequestUsage) emitT({ type: "usage.update", usage: lastRequestUsage })
 

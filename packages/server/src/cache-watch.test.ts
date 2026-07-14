@@ -51,6 +51,15 @@ describe("checkCacheCold", () => {
     expect(w?.reason).toBe("model-switch")
   })
 
+  test("a [1m] context-variant tag is NOT a model switch", () => {
+    // claude-fable-5 and claude-fable-5[1m] are the same model, different context
+    // window — must not trip the switch (the reported false positive).
+    noteRequest(CONV, { inputTokens: BIG, outputTokens: 100 }, "claude-fable-5", T0)
+    expect(checkCacheCold(CONV, "claude-fable-5[1m]", T0 + 30_000)).toBeUndefined()
+    // ...but only within the TTL; a real idle gap still warns (as idle).
+    expect(checkCacheCold(CONV, "claude-fable-5[1m]", T0 + 6 * 60_000)?.reason).toBe("idle")
+  })
+
   test("stays quiet when the context is too small to matter", () => {
     noteRequest(CONV, { inputTokens: 5_000, outputTokens: 100 }, "claude-opus-4-8", T0)
     expect(checkCacheCold(CONV, "claude-opus-4-8", T0 + 60 * 60_000)).toBeUndefined()

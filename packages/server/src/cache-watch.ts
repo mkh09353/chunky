@@ -68,6 +68,15 @@ export function resetCacheWatch(conversationId: string): void {
  * Model-switch takes precedence over idle: switching models re-bills the whole
  * prompt regardless of how recently you spoke, and it's the more actionable note.
  */
+/** Collapse a model id to its cache identity: drop a trailing variant tag like
+ *  `[1m]` (the 1M-context beta is the SAME model for prompt-cache purposes, so
+ *  `claude-fable-5` and `claude-fable-5[1m]` must not read as a model switch)
+ *  and normalize case. Only the tag is stripped — a genuine base-model change
+ *  (fable → opus) still trips the switch. */
+export function cacheModelKey(model: string): string {
+  return model.replace(/\s*\[[^\]]*\]\s*$/, "").toLowerCase()
+}
+
 export function checkCacheCold(
   conversationId: string,
   model: string,
@@ -77,7 +86,7 @@ export function checkCacheCold(
   if (!prev) return undefined
   if (prev.contextTokens < NOTICE_MIN_TOKENS) return undefined
 
-  const modelChanged = model !== prev.model
+  const modelChanged = cacheModelKey(model) !== cacheModelKey(prev.model)
   const idleMs = Math.max(0, now - prev.at)
 
   if (modelChanged) {

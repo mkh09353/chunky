@@ -2,7 +2,6 @@ import { useCallback, useEffect, useRef, useState } from "react"
 import { TextAttributes } from "@opentui/core"
 import { useRenderer } from "@opentui/react"
 import { rawModeSupported, useInput } from "./useInput.js"
-import { providerModelLabel } from "./providerMark.js"
 import {
   ROUTES,
   readSSE,
@@ -24,11 +23,11 @@ import {
 import { mockRun } from "@chunky/protocol/mock"
 import { mockThreadsRun } from "./mockThreads.js"
 import { initialState, pushUser, reduce, type TranscriptState } from "./transcript.js"
-import { ACCENT, WARNING } from "./theme.js"
+import { ACCENT, BORDER, WARNING } from "./theme.js"
 import { WelcomeBanner } from "./components/WelcomeBanner.js"
 import { Transcript, fmtTokens } from "./components/Transcript.js"
 import { StatusLine } from "./components/StatusLine.js"
-import { PromptInput } from "./components/PromptInput.js"
+import { PromptInput, type StatusSegment } from "./components/PromptInput.js"
 import { LoginPicker, type ProviderRow } from "./components/LoginPicker.js"
 import { ResumePicker } from "./components/ResumePicker.js"
 import { ModelPicker, type ModelSelectionResult } from "./components/ModelPicker.js"
@@ -1446,7 +1445,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           break
         case "/help":
           printLine(
-            "Commands: /clear, /resume, /help, /login, /model, /skills, /provider, /workers, /advisor, /sidekick, /mode, /goal, /shipit, /cacheguard, /quit. `/workers` shows automatic workflow routes; `/workers tag|auto|reset` changes exceptions.",
+            "Commands: /clear, /resume, /help, /login, /model, /skills, /provider, /workers, /advisor, /sidekick, /mode, /goal, /shipit, /cacheguard, /quit. `/workers` shows automatic workflow routes; `/workers tag|auto|reset` changes exceptions. Input: enter to send (queues during a running turn), alt+enter to steer a running turn, ctrl+v to attach a clipboard image.",
           )
           break
         case "/login":
@@ -1514,38 +1513,59 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         ? `${currentSel.model} · ${currentSel.provider}`
         : "connecting…"
       : "mock transcript"
-  // Grok-code-style status drawn into the input's bottom rule: the executor model
-  // and effort, then the advisor's model and effort. "advisor: off" when there's
-  // none; "(inactive)" when it's configured but suppressed (same model as executor).
   const effortParen = (e?: string | null) => (e ? ` (${e})` : "")
-  const advisorPart =
-    advisor && advisor.enabled && advisor.model
-      ? ` · advisor: ${providerModelLabel(advisor.provider, prettyModel(advisor.model))}${effortParen(advisor.effort)}${advisor.active ? "" : " (inactive)"}`
-      : " · advisor: off"
-  // Sidekick segment: configured default seat, "inherit" (enabled, no model →
-  // executor's selection), or off — plus a +name chip per named domain seat.
-  const seatChips =
-    sidekick && sidekick.enabled && Object.keys(sidekick.seats).length > 0
-      ? ` ${Object.keys(sidekick.seats)
-          .sort()
-          .map((n) => `+${n}`)
-          .join(" ")}`
-      : ""
-  const sidekickPart = sidekick
-    ? sidekick.enabled && sidekick.model
-      ? ` · sidekick: ${providerModelLabel(sidekick.provider, prettyModel(sidekick.model))}${effortParen(sidekick.effort)}${seatChips}`
-      : sidekick.enabled
-        ? ` · sidekick: inherit${seatChips}`
-        : " · sidekick: off"
-    : ""
-  // Goal segment: shown only when a goal exists; active goals carry the turn count.
-  const goalPart = goal
-    ? ` · goal: ${goal.status}${goal.status === "active" ? ` ${goal.turns}/${goal.maxTurns}` : ""}`
-    : ""
-  const bottomStatus =
-    mode === "live"
-      ? `${providerModelLabel(currentSel?.provider, prettyModel(currentSel?.model))}${effortParen(currentSel?.effort)}${sidekickPart}${advisorPart}${goalPart}`
-      : "mock"
+  // Styled status drawn into the input's bottom rule (right-aligned). The
+  // executor model+effort is the ACCENT headline; sidekick/advisor/goal are DIM
+  // chips shown ONLY when present — absence means off, so there are no "off"
+  // labels. Separators are BORDER-dim `·`. Mock mode shows a lone `mock` chip;
+  // a connecting live session (no selection yet) yields no segments → plain rule.
+  const bottomStatus = ((): StatusSegment[] | undefined => {
+    if (mode !== "live") return [{ text: "mock", dim: true }]
+    if (!currentSel?.model) return undefined // connecting — plain full-width rule
+    const chips: StatusSegment[] = []
+    // Executor: `<model> <effort>` in ACCENT, effort without parens.
+    chips.push({
+      text: `${prettyModel(currentSel.model)}${currentSel.effort ? ` ${currentSel.effort}` : ""}`,
+      color: ACCENT,
+    })
+    // Sidekick chip — only when enabled. `⚒ <model>` (or `⚒ inherit`), plus a seat
+    // suffix: 1 named seat → `+name`, more than one → `+N`.
+    if (sidekick?.enabled) {
+      const seatNames = Object.keys(sidekick.seats)
+      const seatSuffix =
+        seatNames.length === 0
+          ? ""
+          : seatNames.length === 1
+            ? ` +${seatNames[0]}`
+            : ` +${seatNames.length}`
+      const model = sidekick.model ? prettyModel(sidekick.model) : "inherit"
+      chips.push({ text: `⚒ ${model}${seatSuffix}`, dim: true })
+    }
+    // Advisor chip — only when enabled AND it has a model; ` ✕` when suppressed.
+    if (advisor?.enabled && advisor.model) {
+      chips.push({
+        text: `✦ ${prettyModel(advisor.model)}${advisor.active ? "" : " ✕"}`,
+        dim: true,
+      })
+    }
+    // Goal chip — only when a goal exists; WARNING while active (carries turns),
+    // DIM otherwise.
+    if (goal) {
+      const active = goal.status === "active"
+      chips.push({
+        text: `goal ${goal.status}${active ? ` ${goal.turns}/${goal.maxTurns}` : ""}`,
+        color: active ? WARNING : undefined,
+        dim: !active,
+      })
+    }
+    // Interleave BORDER-dim `·` separators between present chips.
+    const segments: StatusSegment[] = []
+    chips.forEach((c, i) => {
+      if (i > 0) segments.push({ text: " · ", color: BORDER, dim: true })
+      segments.push(c)
+    })
+    return segments
+  })()
 
   return (
     <ToastContext.Provider value={toast}>
@@ -1661,15 +1681,12 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           onSubmit={submit}
           onCommand={onCommand}
           status={bottomStatus}
+          threadsHint={hasThreads ? "  ·  ctrl+t to " + (threadsCollapsed ? "expand" : "collapse") + " threads" : ""}
           onPasteImage={onPasteImage}
           attachmentCount={attachments.length}
           baseUrl={mode === "live" ? baseUrl : undefined}
           prefill={prefill}
         />
-        <text attributes={TextAttributes.DIM}>
-          {"  / commands · @ files · ↑ history · enter queue · alt+enter steer · ctrl+v image · ctrl+c quit"}
-          {hasThreads ? "  ·  ctrl+t to " + (threadsCollapsed ? "expand" : "collapse") + " threads" : ""}
-        </text>
       </box>
       {/* Ephemeral toasts (copy confirmation at the cursor, image-attach, etc.),
           floated on top of everything. */}

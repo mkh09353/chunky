@@ -10,6 +10,15 @@ import { expandPastes, normalizePaste, pasteLabel, shouldCollapsePaste } from ".
 
 const { DIM, INVERSE } = TextAttributes
 
+/** One styled span of the bottom-rule status label. `color` sets the foreground
+ *  (omitted → terminal default); `dim` applies the DIM attribute. BottomRule
+ *  renders each segment as its own span and sums their text length for the fill. */
+export interface StatusSegment {
+  text: string
+  color?: string
+  dim?: boolean
+}
+
 interface Props {
   disabled?: boolean
   /** `text` is the full message (pastes expanded) sent to the model; `display`
@@ -21,8 +30,13 @@ interface Props {
   /** A turn is in flight — the composer stays live for type-ahead; a plain Enter
    *  queues the message, Alt+Enter steers it. Only drives the placeholder hint. */
   running?: boolean
-  /** Right-aligned status (model/effort/advisor) drawn INTO the bottom rule. */
-  status?: string
+  /** Right-aligned status (model/effort/advisor) drawn INTO the bottom rule, as
+   *  styled segments so BottomRule can color each span. Empty/undefined → a plain
+   *  full-width rule (the connecting fallback). */
+  status?: StatusSegment[]
+  /** Pre-computed ctrl+t threads hint (with its leading separator) appended to
+   *  the idle hints line; empty when no child threads exist. */
+  threadsHint?: string
   /** Ctrl+V: grab an image off the clipboard and attach it (async, in App). */
   onPasteImage?: () => void
   /** How many images are attached to the next message (shown above the input). */
@@ -50,6 +64,7 @@ export function PromptInput({
   baseUrl,
   prefill,
   running = false,
+  threadsHint = "",
 }: Props) {
   const rawSupported = rawModeSupported
   // value + cursor live in ONE state so the key handler edits them with a
@@ -317,8 +332,38 @@ export function PromptInput({
         <CursorText value={value} cursor={cursor} showCursor={rawSupported && !disabled} running={running} />
       </box>
       <BottomRule status={status} />
+      <HintsLine value={value} running={running} threadsHint={threadsHint} />
     </box>
   )
+}
+
+/**
+ * Contextual hint row under the input. Full hints only when idle AND the input is
+ * empty; a single steer hint while a turn runs; nothing (a blank line to hold the
+ * row height) while the user is typing.
+ */
+function HintsLine({
+  value,
+  running,
+  threadsHint,
+}: {
+  value: string
+  running: boolean
+  threadsHint: string
+}) {
+  if (running) {
+    return <text attributes={DIM}>{"  alt+enter steer · ctrl+c quit"}</text>
+  }
+  if (value.length === 0) {
+    return (
+      <text attributes={DIM}>
+        {"  / commands · @ files · ↑ history · ctrl+c quit"}
+        {threadsHint}
+      </text>
+    )
+  }
+  // Typing: keep the row present (stable height) but empty.
+  return <text> </text>
 }
 
 /**
@@ -327,21 +372,30 @@ export function PromptInput({
  * label appears to cut through the border line (grok-code style). Falls back to
  * a plain full-width rule when there's no status yet.
  */
-function BottomRule({ status }: { status?: string }) {
+function BottomRule({ status }: { status?: StatusSegment[] }) {
   const { width: cols } = useTerminalDimensions()
-  const label = (status ?? "").trim()
+  const segments = status ?? []
+  // Total on-screen width of the label = sum of segment text lengths. The glyphs
+  // used (⚒ ✦ ✕ ·) are single BMP code units, so String.length matches cells.
+  const labelLen = segments.reduce((n, s) => n + s.text.length, 0)
   // The dashes use the SAME border color as the top rule so both lines match.
   // The status is embedded near the right with the rule continuing past it to
   // the edge (grok-code style), a space on each side.
-  if (!label) {
+  if (labelLen === 0) {
     return <text fg={BORDER}>{"─".repeat(Math.max(0, cols - 1))}</text>
   }
   const rightDashes = 3
-  const left = Math.max(0, cols - label.length - rightDashes - 3) // 2 spaces + 1 margin
+  const left = Math.max(0, cols - labelLen - rightDashes - 3) // 2 spaces + 1 margin
   return (
     <text wrapMode="none">
       <span fg={BORDER}>{"─".repeat(left)}</span>
-      <span attributes={DIM}> {label} </span>
+      <span>{" "}</span>
+      {segments.map((s, i) => (
+        <span key={i} fg={s.color} attributes={s.dim ? DIM : undefined}>
+          {s.text}
+        </span>
+      ))}
+      <span>{" "}</span>
       <span fg={BORDER}>{"─".repeat(rightDashes)}</span>
     </text>
   )

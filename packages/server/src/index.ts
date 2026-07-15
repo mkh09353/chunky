@@ -34,7 +34,7 @@ import {
 import { detectClaudeCredentials } from "./providers/anthropic-sdk.ts"
 import { AuthStore } from "./providers/auth-store.ts"
 import { checkForUpdate, persistCheck, readPersistedCheck } from "./update/updater.ts"
-import { applyOnboardingMode, suggestedModes, saveCustomProvider } from "./onboarding.ts"
+import { applyOnboardingMode, suggestedModes, ensureDefaultModes, saveCustomProvider } from "./onboarding.ts"
 import {
   currentModeSpec,
   deleteMode,
@@ -567,6 +567,8 @@ const server = Bun.serve({
 
     // GET -> ModesResponse (saved modes + the current, possibly unsaved, pairing).
     if (req.method === "GET" && pathname === ROUTES.modes) {
+      const ready = new Set(listProviders().filter((p) => p.ready()).map((p) => p.id))
+      await ensureDefaultModes(ready)
       return json({ modes: listModes(), current: currentModeSpec() })
     }
 

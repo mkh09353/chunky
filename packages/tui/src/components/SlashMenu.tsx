@@ -7,6 +7,7 @@ export interface Command {
   description: string
 }
 
+
 export const COMMANDS: Command[] = [
   { name: "/clear", description: "Clear the conversation" },
   { name: "/resume", description: "Resume a previous thread in this repo" },
@@ -25,6 +26,8 @@ export const COMMANDS: Command[] = [
   { name: "/cacheguard", description: "Confirm before re-sending a big cold cache (/cacheguard 100k|off)" },
   { name: "/quit", description: "Exit Chunky CLI" },
 ]
+
+export const builtinCommandNames = new Set(COMMANDS.map((c) => c.name.toLowerCase()))
 
 /**
  * The slash-command popup, styled after kimi's CustomSelect: a rounded box

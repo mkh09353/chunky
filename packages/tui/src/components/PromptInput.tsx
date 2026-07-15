@@ -46,6 +46,7 @@ interface Props {
   /** When the nonce changes, replace the buffer with `text` — used to hand a
    *  message back after a canceled cache-guard confirm so nothing is lost. */
   prefill?: { text: string; nonce: number } | null
+  commands?: Command[]
 }
 
 /**
@@ -65,6 +66,7 @@ export function PromptInput({
   prefill,
   running = false,
   threadsHint = "",
+  commands = COMMANDS,
 }: Props) {
   const rawSupported = rawModeSupported
   // value + cursor live in ONE state so the key handler edits them with a
@@ -134,7 +136,7 @@ export function PromptInput({
   // ---- Slash commands ----
   const slashActive = value.startsWith("/") && !value.includes(" ")
   const matches: Command[] = slashActive
-    ? COMMANDS.filter((c) => c.name.startsWith(value.toLowerCase()))
+    ? commands.filter((c) => c.name.startsWith(value.toLowerCase()))
     : []
 
   // ---- @-mention file search ----

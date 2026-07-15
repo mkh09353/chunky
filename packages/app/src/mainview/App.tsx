@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import type { CacheCold, GoalSnapshot, ModeSpec, SessionSummary } from "@chunky/protocol"
+import type { CacheCold, GoalSnapshot, ModeInfo, ModeSpec, SessionSummary } from "@chunky/protocol"
 import { AppShell } from "@astryxdesign/core/AppShell"
 import { SideNav, SideNavItem, SideNavSection } from "@astryxdesign/core/SideNav"
 import { TopNav, TopNavHeading } from "@astryxdesign/core/TopNav"
@@ -47,7 +47,7 @@ import {
   type Repo,
 } from "./lib/api"
 import { openExternal } from "./lib/rpc"
-import { parseGoalArgs, parseSlashCommand } from "./lib/commands"
+import { parseGoalArgs, parseSlashCommand, SLASH_COMMANDS } from "./lib/commands"
 import { fmtTokens } from "./lib/format"
 import { OnboardingWizard } from "./components/OnboardingWizard"
 
@@ -76,6 +76,11 @@ export default function App() {
   // Passive cold-cache indicator: while idle, the NEXT send would re-send this
   // much context. Shown above the composer so the warning lands BEFORE you send.
   const [cacheCold, setCacheCold] = useState<CacheCold | null>(null)
+  // Saved modes double as direct slash commands (/fire applies the "fire" mode)
+  // and as `/` menu entries. A ref mirrors the list so handleSubmit matches
+  // typed slash text without a stale closure.
+  const [modes, setModes] = useState<ModeInfo[]>([])
+  const modesRef = useRef<ModeInfo[]>([])
   // Images pasted onto the NEXT message. A ref mirrors it so handleSubmit reads
   // the latest set without going stale in its closure.
   const [attachments, setAttachments] = useState<InputImage[]>([])
@@ -341,6 +346,25 @@ export default function App() {
     setTranscript((s) => pushNotice(s, text))
   }, [])
 
+  // Refresh the saved-modes list (powers the `/` menu and the /<name> direct
+  // slash-command matching). Kept quiet — a failed refresh keeps the last list.
+  const refreshModes = useCallback(async () => {
+    if (!config) return
+    try {
+      const body = await fetchModes(config.baseUrl)
+      modesRef.current = body.modes
+      setModes(body.modes)
+    } catch {
+      /* keep the previously loaded list */
+    }
+  }, [config])
+
+  // Load saved modes once the server URL is known (TUI/onboarding may have
+  // seeded "fire"/"cheap"). The `/` menu also refetches when it opens.
+  useEffect(() => {
+    void refreshModes()
+  }, [refreshModes])
+
   // /login — bare lists providers; `/login <provider>` starts the browser
   // loopback flow (the server's callback captures the token) and polls until
   // the provider reports ready.
@@ -472,6 +496,7 @@ export default function App() {
         const name = save[1]!
         const { current } = await fetchModes(config.baseUrl)
         await saveMode(config.baseUrl, name)
+        void refreshModes()
         const samePair =
           current.advisor && current.advisor.provider === current.provider && current.advisor.model === current.model
         notice(
@@ -485,6 +510,7 @@ export default function App() {
       const rm = trimmed.match(/^(?:rm|delete)\s+(\S+)$/i)
       if (rm) {
         await deleteMode(config.baseUrl, rm[1]!)
+        void refreshModes()
         notice(`Mode "${rm[1]}" deleted.`)
         return
       }
@@ -498,9 +524,10 @@ export default function App() {
         speed: body.speed ?? null,
       })
       void fetchAdvisor(config.baseUrl).then((a) => a && setAdvisorState(a))
+      void refreshModes()
       notice(`Mode "${body.applied}" applied: ${prettyModel(body.model)}${effortParen(body.effort)} · ${body.provider}.`)
     },
-    [config, notice],
+    [config, notice, refreshModes],
   )
 
   // /skills — manage git skill repositories (add/remove/update/list).
@@ -693,6 +720,22 @@ export default function App() {
         await runCommand(cmd.name, cmd.rest)
         return
       }
+      // A bare "/<name>" with no args may be a saved mode used as a direct slash
+      // command (e.g. /fire applies the "fire" mode). Builtins were already
+      // intercepted above and always win; match the remaining single-token slash
+      // text against saved modes case-insensitively. Non-matches (including
+      // unknown /foo) fall through to the model, as before.
+      if (/^\/\S+$/.test(trimmed)) {
+        const token = trimmed.slice(1).toLowerCase()
+        const isBuiltin = SLASH_COMMANDS.some((c) => c.name.toLowerCase() === `/${token}`)
+        if (!isBuiltin) {
+          const mode = modesRef.current.find((m) => m.name.toLowerCase() === token)
+          if (mode) {
+            await doMode(mode.name)
+            return
+          }
+        }
+      }
       // The server echoes the user turn back over SSE (message.user), so we
       // don't optimistically insert it here — that keeps a single source of
       // truth and means resumed threads show past prompts too.
@@ -727,7 +770,7 @@ export default function App() {
         setConnError((err as Error).message)
       }
     },
-    [config, refreshSessions, runCommand, sessionId],
+    [config, doMode, refreshSessions, runCommand, sessionId],
   )
 
   const handleStop = useCallback(() => {
@@ -832,6 +875,8 @@ export default function App() {
           repoId={activeRepoId}
           model={model}
           onModelChange={setModel}
+          modes={modes}
+          onRefreshModes={refreshModes}
           advisor={advisor}
           onAdvisorChange={setAdvisorState}
           goal={goal}

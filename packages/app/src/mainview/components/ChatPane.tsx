@@ -1,6 +1,6 @@
-import { useCallback, useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ChatComposer, ChatComposerInput, ChatLayout } from "@astryxdesign/core/Chat"
-import type { CacheCold, GoalSnapshot } from "@chunky/protocol"
+import type { CacheCold, GoalSnapshot, ModeInfo } from "@chunky/protocol"
 import type { AdvisorState, InputImage, ModelSelection } from "../lib/api"
 import { fmtTokens } from "../lib/format"
 import { hasTranscript, type TranscriptState } from "../lib/transcript"
@@ -48,6 +48,8 @@ export function ChatPane({
   repoId,
   model,
   onModelChange,
+  modes,
+  onRefreshModes,
   advisor,
   onAdvisorChange,
   goal,
@@ -75,6 +77,10 @@ export function ChatPane({
   repoId?: string | null
   model: ModelSelection | null
   onModelChange: (sel: ModelSelection) => void
+  /** Saved modes, surfaced as `/<name>` entries in the slash menu. */
+  modes: ModeInfo[]
+  /** Refetch saved modes (called when the `/` menu opens, to stay fresh). */
+  onRefreshModes: () => void
   advisor: AdvisorState | null
   onAdvisorChange: (a: AdvisorState) => void
   goal: GoalSnapshot | null
@@ -105,9 +111,19 @@ export function ChatPane({
   // the `/` slash-command menu. Rebuilt per baseUrl + repo so the mention
   // trigger's AbortController-based SearchSource is scoped to one server and one
   // repo index. Absent baseUrl → plain input.
+  // Read the latest modes through a ref so the slash trigger reflects /mode
+  // save|rm without rebuilding the trigger (and its SearchSource) each change.
+  const modesRef = useRef<ModeInfo[]>(modes)
+  modesRef.current = modes
   const triggers = useMemo(
-    () => (baseUrl ? [createMentionTrigger(baseUrl, repoId), createSlashTrigger()] : undefined),
-    [baseUrl, repoId],
+    () =>
+      baseUrl
+        ? [
+            createMentionTrigger(baseUrl, repoId),
+            createSlashTrigger({ getModes: () => modesRef.current, refreshModes: onRefreshModes }),
+          ]
+        : undefined,
+    [baseUrl, repoId, onRefreshModes],
   )
 
   // Paste-to-attach: an image on the clipboard becomes an attachment on the next

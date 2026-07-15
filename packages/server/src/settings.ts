@@ -95,6 +95,8 @@ export interface Settings {
   cacheGuardTokens?: number | null
   /** Named executor+advisor pairings, applied as one unit via /mode. */
   modes?: Record<string, ModeSpec>
+  /** Builtin modes already seeded; deletion of one is permanent. */
+  seededModes?: string[]
   /** Global provider catalog overlays. Added ids supplement provider discovery;
    *  hidden ids disappear from pickers without invalidating existing sessions. */
   modelCatalog?: Record<string, ModelCatalogOverlay>
@@ -360,12 +362,18 @@ export function listModes(): Array<{ name: string } & ModeSpec> {
 }
 
 export function getMode(name: string): ModeSpec | undefined {
-  return loadSettings().modes?.[name]
+  const modes = loadSettings().modes ?? {}
+  const key = Object.keys(modes).find((candidate) => candidate.toLowerCase() === name.toLowerCase())
+  return key ? modes[key] : undefined
 }
 
 export function saveMode(name: string, spec: ModeSpec): void {
   const s = loadSettings()
   save({ ...s, modes: { ...(s.modes ?? {}), [name]: spec } })
+}
+
+export function markSeededModes(names: string[]): void {
+  save({ ...loadSettings(), seededModes: names })
 }
 
 /** Delete a mode; returns whether it existed. */

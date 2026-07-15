@@ -37,6 +37,7 @@ import { OnboardingWizard } from "./components/OnboardingWizard.js"
 import { AdvisorPicker, type AdvisorSelectionResult } from "./components/AdvisorPicker.js"
 import { SidekickSeatMenu } from "./components/SidekickSeatMenu.js"
 import { ModeMenu, type ModeApplyPayload } from "./components/ModeMenu.js"
+import { COMMANDS, builtinCommandNames, type Command } from "./components/SlashMenu.js"
 import { openBrowser } from "./openBrowser.js"
 import { grabClipboardImage, type ClipboardImage } from "./clipboardImage.js"
 import { writeClipboard } from "./clipboard.js"
@@ -187,6 +188,8 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   const [sidekickSeatMenuOpen, setSidekickSeatMenuOpen] = useState(false)
   // When true, the interactive /mode menu is open (owns the keyboard while shown).
   const [modeMenuOpen, setModeMenuOpen] = useState(false)
+  const [slashModes, setSlashModes] = useState<Command[]>([])
+  const doModeRef = useRef<(rest: string) => void>(() => {})
   // When set, the /resume thread picker is open (owns the keyboard while shown).
   const [resumePicker, setResumePicker] = useState<{ sessions: SessionSummary[]; selected: number } | null>(null)
   // The active model selection, reflected on the status line.
@@ -485,7 +488,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         apply({ type: "error", message: `send failed: ${String(err)}` })
       }
     },
-    [baseUrl, apply],
+    [baseUrl, apply, slashModes],
   )
 
   const submit = useCallback(
@@ -495,6 +498,16 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       // Slash commands that take arguments arrive here (the menu only fires bare
       // commands via onCommand): `/goal <objective>`, `/cacheguard <tokens|off>`.
       const command = text.trim()
+      if (/^\/[^/\s]+$/.test(command)) {
+        const name = command.slice(1).toLowerCase()
+        if (!builtinCommandNames.has(`/${name}`)) {
+          const saved = slashModes.find((m) => m.name.toLowerCase() === `/${name}`)
+          if (saved) {
+            doModeRef.current(name)
+            return
+          }
+        }
+      }
       if (command === "/goal" || command.startsWith("/goal ")) {
         void doGoal(command.slice("/goal".length).trim())
         return
@@ -1409,6 +1422,22 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     },
     [mode, baseUrl, printLine, refreshAdvisor, refreshSidekick],
   )
+  doModeRef.current = doMode
+
+  useEffect(() => {
+    if (mode !== "live") return
+    const refresh = () => {
+      void fetch(baseUrl + ROUTES.modes)
+        .then((r) => r.json() as Promise<ModesResponse>)
+        .then((body) => setSlashModes(body.modes
+          .filter((m) => !builtinCommandNames.has(`/${m.name.toLowerCase()}`))
+          .map((m) => ({ name: `/${m.name}`, description: `Apply mode: ${prettyModel(m.model)}` }))))
+        .catch(() => {})
+    }
+    refresh()
+    const timer = setInterval(refresh, 5000)
+    return () => clearInterval(timer)
+  }, [baseUrl, mode])
 
   // Applied a mode from the interactive menu: consume the apply response's full
   // trio to update the status line + advisor/sidekick chips directly (no
@@ -1739,6 +1768,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           running={running && mode === "live"}
           onSubmit={submit}
           onCommand={onCommand}
+          commands={[...COMMANDS, ...slashModes]}
           status={bottomStatus}
           threadsHint={hasThreads ? "  ·  ctrl+t to " + (threadsCollapsed ? "expand" : "collapse") + " threads" : ""}
           onPasteImage={onPasteImage}

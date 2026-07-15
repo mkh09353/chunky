@@ -80,6 +80,13 @@ body,
 
 .chunky-shell .astryx-app-shell-header {
   padding-inline-start: var(--chunky-traffic-clearance);
+  /* Frameless window: opt the header in as the window drag handle, but keep
+     buttons/links/inputs inside it clickable. */
+  -webkit-app-region: drag;
+}
+
+.chunky-shell .astryx-app-shell-header :is(button, a, input, select, [role="button"], [role="tab"]) {
+  -webkit-app-region: no-drag;
 }
 
 .chunky-chat-wrap {

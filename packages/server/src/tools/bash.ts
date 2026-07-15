@@ -17,6 +17,36 @@ import { workspaceFromConfig } from "../workspace.ts"
 import { MAX_BYTES, MAX_LINES } from "./fs-util.ts"
 import { compressBashOutput } from "./compress.ts"
 
+// Commands still run under `bash -lc` (the model writes bash, so bash semantics
+// are guaranteed), but PATH is snapshotted once from the user's real login shell
+// ($SHELL -lc). On macOS the login shell is zsh, so version managers (rbenv /
+// mise / asdf / nvm shims) are initialized in ~/.zprofile — which bash never
+// reads, leaving `ruby` etc. resolving to the system binary. All of those
+// managers work via PATH shims, so importing PATH alone makes tools resolve
+// exactly like the user's terminal.
+let loginPath: string | null | undefined
+
+async function userLoginPath(): Promise<string | null> {
+  if (loginPath !== undefined) return loginPath
+  loginPath = null
+  const shell = process.env.SHELL
+  if (shell && !shell.endsWith("/bash") && !shell.endsWith("/sh")) {
+    try {
+      const proc = Bun.spawn([shell, "-lc", 'printf %s "$PATH"'], { stdout: "pipe", stderr: "ignore" })
+      const timer = setTimeout(() => proc.kill(), 5000)
+      const out = (await new Response(proc.stdout).text()).trim()
+      clearTimeout(timer)
+      if ((await proc.exited) === 0 && out.includes("/")) loginPath = out
+    } catch { /* fall back to inherited PATH */ }
+  }
+  return loginPath
+}
+
+/** Test seam: reset the cached login-shell PATH snapshot. */
+export function resetLoginPathForTests(): void {
+  loginPath = undefined
+}
+
 export const bashInputShape = {
   command: z.string().describe("The bash command."),
   timeout: z.number().optional().describe("Timeout in seconds (optional)."),
@@ -74,8 +104,10 @@ async function readPipe(reader: ReadableStreamDefaultReader<Uint8Array>): Promis
 
 export const bash = tool(
   async ({ command, timeout }: { command: string; timeout?: number }, config?: unknown) => {
+    const path = await userLoginPath()
     const proc = Bun.spawn(["bash", "-lc", command], {
       cwd: workspaceFromConfig(config),
+      env: path ? { ...process.env, PATH: path } : process.env,
       stdout: "pipe",
       stderr: "pipe",
     })
@@ -97,11 +129,22 @@ export const bash = tool(
       }, timeout * 1000)
     }
 
-    const [stdout, stderr] = await Promise.all([
-      readPipe(stdoutReader),
-      readPipe(stderrReader),
-    ])
+    const stdoutPromise = readPipe(stdoutReader)
+    const stderrPromise = readPipe(stderrReader)
+
+    // A backgrounded child (`server & ...`) inherits the pipes, so EOF may never
+    // arrive even though the shell has exited. Wait for exit first, then give
+    // trailing foreground output a short grace window before cancelling the
+    // readers (cancel resolves the pending read, keeping everything read so far).
     const exitCode = await proc.exited
+    let detached = false
+    const grace = setTimeout(() => {
+      detached = true
+      void stdoutReader.cancel()
+      void stderrReader.cancel()
+    }, 1500)
+    const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise])
+    clearTimeout(grace)
     if (timer) clearTimeout(timer)
 
     let combined = stdout
@@ -124,7 +167,10 @@ export const bash = tool(
     }
 
     const status = timedOut ? `${exitCode} (timed out after ${timeout}s)` : String(exitCode)
-    return `${out ? `${out}\n` : ""}[exit code: ${status}]`
+    const note = detached && !timedOut
+      ? "\n[note: a background process is still running and holding the output pipe; its further output is not captured]"
+      : ""
+    return `${out ? `${out}\n` : ""}[exit code: ${status}]${note}`
   },
   {
     name: "bash",

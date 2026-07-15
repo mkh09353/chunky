@@ -30,3 +30,24 @@ describe("bash timeout", () => {
     }
   })
 })
+
+describe("bash background processes", () => {
+  test("returns promptly when a backgrounded process holds the pipe open, keeping foreground output", async () => {
+    const started = Date.now()
+    const output = await bash.invoke({ command: "sleep 10 & echo server-started" })
+
+    expect(Date.now() - started).toBeLessThan(5_000)
+    expect(String(output)).toContain("server-started")
+    expect(String(output)).toContain("[exit code: 0]")
+    expect(String(output)).toContain("background process is still running")
+  })
+
+  test("no grace delay or note for ordinary commands", async () => {
+    const started = Date.now()
+    const output = await bash.invoke({ command: "echo done" })
+
+    expect(Date.now() - started).toBeLessThan(1_000)
+    expect(String(output)).toContain("done")
+    expect(String(output)).not.toContain("background process")
+  })
+})

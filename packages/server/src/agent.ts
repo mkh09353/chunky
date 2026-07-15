@@ -24,7 +24,7 @@ import {
 } from "./providers/registry.ts"
 import { threadContextFor } from "./thread-context.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
-import { ADVISOR_SYSTEM_PROMPT, SIDEKICK_SYSTEM_PROMPT, buildSystemPrompt, type EditToolName } from "./prompt.ts"
+import { ADVISOR_SYSTEM_PROMPT, sidekickSystemPrompt, buildSystemPrompt, type EditToolName } from "./prompt.ts"
 import {
   buildToolSearchMiddleware,
   portableToolSetFor,
@@ -221,6 +221,7 @@ export function buildAgent(
   selection: AgentSelection = activeSelection(),
   workspace: string = LAUNCH_WORKSPACE,
   _opts: BuildAgentOpts = {},
+  agentsMd?: string | null,
 ) {
   const providerId = selection.provider
   const modelId = selection.model
@@ -244,6 +245,7 @@ export function buildAgent(
       portableToolSearch: providerId === "grok",
       hasSidekick: plan.hasSidekick,
       sidekickSeats: plan.sidekickSeats,
+      agentsMd,
     }),
     checkpointer: makeCheckpointer(),
     // Auto-compaction — the context-management half of Pi's efficiency win (a
@@ -279,11 +281,12 @@ const agentCache = new Map<string, ReturnType<typeof buildAgent>>()
 export function getAgent(
   selection: AgentSelection = activeSelection(),
   workspace: string = LAUNCH_WORKSPACE,
+  agentsMd?: string | null,
 ): ReturnType<typeof buildAgent> {
-  const sig = `${selectionSignature(selection)}@@${workspace}`
+  const sig = `${selectionSignature(selection)}@@${workspace}@@${agentsMd ?? ""}`
   let a = agentCache.get(sig)
   if (!a) {
-    a = buildAgent(selection, workspace)
+    a = buildAgent(selection, workspace, {}, agentsMd)
     agentCache.set(sig, a)
   }
   return a
@@ -343,12 +346,12 @@ export function getAdvisorAgent(selection: AgentSelection = activeSelection()): 
  * persistent side thread on a stable thread_id, so the checkpointer gives it
  * continuity across handoffs — that's what makes follow-up briefs cheap.
  */
-export function buildSidekickAgent(selection: AgentSelection) {
+export function buildSidekickAgent(selection: AgentSelection, agentsMd?: string | null) {
   const model = resolveModel(selection)
   return createAgent({
     model,
     tools: [read, bash, fffind, ffgrep, write, ...editToolsForModel(selection.model, selection.provider)],
-    systemPrompt: SIDEKICK_SYSTEM_PROMPT,
+    systemPrompt: sidekickSystemPrompt(agentsMd),
     checkpointer: makeCheckpointer(),
     middleware: [
       summarizationMiddleware({
@@ -363,11 +366,11 @@ export function buildSidekickAgent(selection: AgentSelection) {
 /** The sidekick agent for one selection, cached in the SAME agentCache (keyed
  *  "sidekick::<sig>") so invalidateAgent() clears it too. ThreadManager's default
  *  sidekickAgentFor injectable. */
-export function getSidekickAgent(selection: AgentSelection = activeSelection()): ReturnType<typeof buildAgent> {
-  const sig = "sidekick::" + selectionSignature(selection)
+export function getSidekickAgent(selection: AgentSelection = activeSelection(), _workspace?: string, agentsMd?: string | null): ReturnType<typeof buildAgent> {
+  const sig = "sidekick::" + selectionSignature(selection) + "@@" + (agentsMd ?? "")
   let a = agentCache.get(sig)
   if (!a) {
-    a = buildSidekickAgent(selection) as ReturnType<typeof buildAgent>
+    a = buildSidekickAgent(selection, agentsMd) as ReturnType<typeof buildAgent>
     agentCache.set(sig, a)
   }
   return a

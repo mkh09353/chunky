@@ -18,6 +18,7 @@ export const ADVISOR_SYSTEM_PROMPT = `You are an expert software-engineering adv
 export const SIDEKICK_SYSTEM_PROMPT = `You are the hands-on engineer for a lead coding agent working in this repository. The lead hands you briefs; you do the hands-on work and report back. Briefs come in two shapes: RECONNAISSANCE (explore the code and map it) and IMPLEMENTATION (goal, constraints, definition of done — edit, build, test). Honor every stated constraint literally; they are requirements, not suggestions. If a brief conflicts with what you find in the code, say so in your report instead of guessing. This is a persistent conversation: later briefs may reference your earlier work ("fix the bug in the diff you just wrote"), so keep track of what you did. Verify before reporting done — run the tests/build the brief names, or say plainly that you didn't. Reports are how the lead works without reading the repo itself, so make them load-bearing. For a recon brief: the relevant file paths (with line hints), the few key snippets that matter, how the pieces connect, and existing patterns/conventions the implementation should follow — a map the lead can write a spec from. For an implementation brief: what you changed (files), how you verified it, and anything the lead should review or decide. Do not expand scope beyond the brief.`
 
 export interface SystemPromptOpts {
+  agentsMd?: string | null
   /** When true, only list core (always-bound) tools; deferred tools are found via native tool search. */
   nativeToolSearch?: boolean
   /** Grok fallback: deferred tools are discovered and invoked through two compact local meta-tools. */
@@ -131,6 +132,7 @@ ${editListLine}
     ? "- Goal mode: if a message is prefixed \"[goal mode…]\", you're working autonomously toward a set goal — follow that message's instructions without asking for confirmation; when the goal is fully done and verified call goal_complete with evidence, or goal_blocked if you hit a real impasse (discover those tools via tool search if not already loaded). An \"[goal mode: orchestrator]\" goal means delegate the hands-on work to workflow runs instead of doing it yourself."
     : "- Goal mode: if a message is prefixed \"[goal mode…]\", you're working autonomously toward a set goal — follow that message's instructions without asking for confirmation; when the goal is fully done and verified call goal_complete with evidence, or goal_blocked if you hit a real impasse. An \"[goal mode: orchestrator]\" goal means delegate the hands-on work to workflow runs instead of doing it yourself."
 
+  const repoNotes = opts.agentsMd?.trim() ? `\n\nRepo notes (distilled from AGENTS.md — follow these):\n${opts.agentsMd.trim()}` : ""
   return `You are Chunky, an expert coding assistant. You help by reading files, running commands, editing code, and writing files. The user sees your responses and tool output in real time.
 
 ${toolsBlock}
@@ -148,5 +150,9 @@ ${skillsGuideline}
 ${goalGuideline}
 
 Current date: ${date}
-Working directory: ${workspace}`
+Working directory: ${workspace}${repoNotes}`
+}
+
+export function sidekickSystemPrompt(agentsMd?: string | null): string {
+  return agentsMd?.trim() ? `${SIDEKICK_SYSTEM_PROMPT}\n\nRepo notes (distilled from AGENTS.md — follow these):\n${agentsMd.trim()}` : SIDEKICK_SYSTEM_PROMPT
 }

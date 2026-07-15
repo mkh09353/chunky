@@ -15,6 +15,7 @@ import { checkCacheCold, cacheWarningEvent, noteRequest } from "./cache-watch.ts
 import { Store } from "./store.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { classifyGoalError, decideGoalStep, firstLine, goalContinuationPrompt, toSnapshot, type GoalStep } from "./goal.ts"
+import { distilledAgentsMd } from "./agents-md.ts"
 
 export type { Emit } from "./event-emitter.ts"
 
@@ -308,6 +309,7 @@ export async function runAgent(
   // call, child thread, and advisor consult in this run operates here, so
   // sessions in different repos run concurrently without interfering.
   const workspace = Store.workspaceOf(sessionId) ?? LAUNCH_WORKSPACE
+  const agentsMd = await distilledAgentsMd(workspace, selection)
 
   // Preflight credentials: refresh an expiring OAuth token, or fail fast with a
   // clear "run /login" error. Without this a revoked token hangs the whole turn
@@ -344,9 +346,9 @@ export async function runAgent(
   const runTurn = async (prompt: string, turnImages?: InputImage[]): Promise<void> => {
     if (providerRuntime(selection.provider) === "anthropic-sdk") {
       const { runAnthropicAgent } = await import("./anthropic-runner.ts")
-      await runAnthropicAgent({ selection, threadId: sessionId, prompt, emit, cache, abort, workspace })
+      await runAnthropicAgent({ selection, threadId: sessionId, prompt, emit, cache, abort, workspace, agentsMd })
     } else {
-      const stream = await getAgent(selection, workspace).stream(
+      const stream = await getAgent(selection, workspace, agentsMd).stream(
         { messages: [{ role: "user", content: userMessageContent(prompt, turnImages) }] } as any,
         {
           configurable: { thread_id: sessionId, workspace },

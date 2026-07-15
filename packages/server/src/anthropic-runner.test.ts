@@ -10,6 +10,9 @@ import {
 } from "./anthropic-runner.ts"
 import { anthropicOAuthEnvironment } from "./providers/anthropic-sdk.ts"
 import type { AgentSelection } from "./providers/registry.ts"
+import { join } from "node:path"
+import { mkdtempSync } from "node:fs"
+import { tmpdir } from "node:os"
 
 const selection: AgentSelection = Object.freeze({
   provider: "anthropic",
@@ -30,6 +33,9 @@ const fakeQuery = (() => {
 }) as AnthropicRunnerDependencies["query"]
 
 async function main() {
+  // Keep prompt expectations independent of a developer's real settings file.
+  const previousSettings = process.env.CHUNKY_SETTINGS
+  process.env.CHUNKY_SETTINGS = join(mkdtempSync(join(tmpdir(), "chunky-anthropic-test-")), "settings.json")
   const events: AgentEvent[] = []
   const emit = (event: AgentEvent) => events.push(event)
 
@@ -116,6 +122,8 @@ async function main() {
   const env = anthropicOAuthEnvironment()
   assert(env.CLAUDE_AGENT_SDK_CLIENT_APP === "chunky-cli/0.0.0", "SDK client app must be identified")
   console.log("PASS: Anthropic SDK uses OAuth, Chunky's prompt/tools, streaming events, and durable resume")
+  if (previousSettings === undefined) delete process.env.CHUNKY_SETTINGS
+  else process.env.CHUNKY_SETTINGS = previousSettings
 }
 
 await main()

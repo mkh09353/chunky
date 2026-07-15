@@ -322,6 +322,7 @@ export interface AnthropicRunRequest {
   abort?: AbortController
   /** The session's workspace (cwd + tool jail). Defaults to the launch dir. */
   workspace?: string
+  agentsMd?: string | null
 }
 
 export async function buildAnthropicOptions(
@@ -345,6 +346,7 @@ export async function buildAnthropicOptions(
       buildSystemPrompt("edit", false, workspace, {
         hasSidekick: sidekickFor(selection) != null,
         sidekickSeats: listSidekickSeats(),
+        agentsMd: request.agentsMd,
       }),
     tools: [],
     settingSources: [],

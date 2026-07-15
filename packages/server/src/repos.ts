@@ -25,7 +25,7 @@ interface Registry {
 }
 
 /** Where repos.json lives — next to settings.json / the sqlite db, else cwd. */
-function stateDir(): string {
+export function stateDir(): string {
   const settings = process.env.CHUNKY_SETTINGS
   if (settings) return dirname(settings)
   const db = process.env.CHUNKY_DB
@@ -37,7 +37,7 @@ const REGISTRY_FILE = join(stateDir(), "repos.json")
 
 /** Stable id from a resolved path (djb2 → base36) so re-adding the same folder
  *  dedupes to one entry and ids stay consistent across restarts. */
-function repoId(path: string): string {
+export function repoId(path: string): string {
   let h = 5381
   for (let i = 0; i < path.length; i++) h = ((h << 5) + h + path.charCodeAt(i)) | 0
   return "r" + (h >>> 0).toString(36)

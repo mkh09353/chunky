@@ -12,7 +12,8 @@ import type { AgentEvent } from "@chunky/protocol"
 import type { Emit } from "./event-emitter.ts"
 import { translateStream } from "./run.ts"
 import { getAdvisorAgent, getAgent, getSidekickAgent, RECURSION_LIMIT } from "./agent.ts"
-import { ADVISOR_SYSTEM_PROMPT, SIDEKICK_SYSTEM_PROMPT } from "./prompt.ts"
+import { ADVISOR_SYSTEM_PROMPT, sidekickSystemPrompt } from "./prompt.ts"
+import { distilledAgentsMd } from "./agents-md.ts"
 import {
   activeSelection,
   childSelection,
@@ -44,7 +45,7 @@ export interface StreamableAgent {
   stream(...args: any[]): Promise<AsyncIterable<unknown>>
 }
 
-export type AgentForSelection = (selection: AgentSelection, workspace: string) => StreamableAgent
+export type AgentForSelection = (selection: AgentSelection, workspace: string, agentsMd?: string | null) => StreamableAgent
 
 /** Per-session advisor-consult tally, keyed by root session id. A fresh
  *  ThreadManager is built per turn (run.ts), so this lives module-level to
@@ -411,6 +412,7 @@ export class ThreadManager implements ThreadSpawner {
 
     let finalText = ""
     try {
+      const agentsMd = await distilledAgentsMd(this.workspace, rootSelection)
       if (providerRuntime(sidekickSel.provider) === "anthropic-sdk") {
         // Anthropic sidekicks run via the SDK runtime with the worker prompt +
         // the hands-on toolset (read/bash/search/write/edit — no delegation
@@ -422,7 +424,7 @@ export class ThreadManager implements ThreadSpawner {
           prompt: opts.brief,
           emit: this.emit,
           eventThreadId: sidekickThreadId,
-          systemPrompt: SIDEKICK_SYSTEM_PROMPT,
+          systemPrompt: sidekickSystemPrompt(agentsMd),
           allowedTools: [
             "mcp__chunky__read",
             "mcp__chunky__bash",
@@ -432,13 +434,14 @@ export class ThreadManager implements ThreadSpawner {
             "mcp__chunky__edit",
           ],
           workspace: this.workspace,
+          agentsMd,
           abort: this.abort,
         })
       } else {
         // Same async-local isolation as spawn(): a cleared store so the sidekick's
         // tokens stream only through its OWN iterator, tagged with its threadId.
         const stream = await AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () =>
-          this.sidekickAgentFor(sidekickSel, this.workspace).stream(
+          this.sidekickAgentFor(sidekickSel, this.workspace, agentsMd).stream(
             { messages: [{ role: "user", content: opts.brief }] },
             {
               configurable: { thread_id: sidekickThreadId, workspace: this.workspace },

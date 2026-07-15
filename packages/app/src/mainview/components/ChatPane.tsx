@@ -145,12 +145,55 @@ export function ChatPane({
   // is closed and focus sits in the composer.
   const handleKeyDown = useCallback(
     (e: React.KeyboardEvent) => {
-      if (e.key === "Escape" && pendingSkill && !draft.trim()) {
+      if (e.key === "Escape") {
+        // Pickers/menus (model, advisor, skills) stopPropagation + preventDefault
+        // their own Esc, so those never reach here. When nothing owns it: an
+        // empty composer with a queued skill clears the skill (TUI parity),
+        // otherwise a running turn is stopped — same action as the Stop button.
+        if (e.defaultPrevented) return
+        if (pendingSkill && !draft.trim()) {
+          e.preventDefault()
+          onClearSkill()
+          return
+        }
+        if (running) {
+          e.preventDefault()
+          onStop()
+        }
+        return
+      }
+      // Cmd+Enter → send, mirroring plain Enter (the Astryx composer only submits
+      // on Enter without Shift, so Cmd+Enter would otherwise do nothing). Reuse
+      // the controlled onSubmit flow, which trims-guards and clears the draft.
+      if (
+        e.key === "Enter" &&
+        e.metaKey &&
+        !e.shiftKey &&
+        !e.ctrlKey &&
+        !e.altKey &&
+        e.target instanceof HTMLElement &&
+        e.target.isContentEditable
+      ) {
         e.preventDefault()
-        onClearSkill()
+        if (draft.trim()) onSubmit(draft)
+        return
+      }
+      // Shift+Enter → newline. The Astryx composer submits on plain Enter and
+      // lets Shift+Enter fall through to the browser, but WebKit wraps the new
+      // line in a <div> which the composer's serializer drops. Insert a real
+      // <br> instead (serialized as "\n", and the input event keeps the
+      // controlled value in sync).
+      if (
+        e.key === "Enter" &&
+        e.shiftKey &&
+        e.target instanceof HTMLElement &&
+        e.target.isContentEditable
+      ) {
+        e.preventDefault()
+        document.execCommand("insertLineBreak")
       }
     },
-    [pendingSkill, draft, onClearSkill],
+    [pendingSkill, draft, running, onClearSkill, onStop, onSubmit],
   )
 
   return (

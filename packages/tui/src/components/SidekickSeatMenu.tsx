@@ -26,10 +26,13 @@ interface Props {
   /** Called with the selected seat; undefined means the default seat. */
   onDone: (seatName?: string) => void
   onCancel: () => void
+  /** The lead's current model id — shown as the effective model when the
+   *  default seat inherits (no provider/model of its own). */
+  currentModel?: string
 }
 
-function modelLabel(provider?: string, model?: string, effort?: string) {
-  if (!provider || !model) return "inherit"
+function modelLabel(provider?: string, model?: string, effort?: string, currentModel?: string) {
+  if (!provider || !model) return currentModel ? `inherit (${currentModel})` : "inherit"
   return `${provider}/${model}${effort ? ` (${effort})` : ""}`
 }
 
@@ -38,7 +41,7 @@ function validSeatName(name: string) {
 }
 
 /** First step of /sidekick: make the default and named seats discoverable. */
-export function SidekickSeatMenu({ baseUrl, onDone, onCancel }: Props) {
+export function SidekickSeatMenu({ baseUrl, onDone, onCancel, currentModel }: Props) {
   const [config, setConfig] = useState<SidekickResponse["config"]>()
   const [seats, setSeats] = useState<Record<string, SeatSpec>>({})
   const [loading, setLoading] = useState(true)
@@ -149,7 +152,7 @@ export function SidekickSeatMenu({ baseUrl, onDone, onCancel }: Props) {
         const focused = index === selected
         const prefix = focused ? "❯ " : "  "
         if (row.kind === "add") return <text key="add" fg={focused ? ACCENT : undefined} attributes={focused ? BOLD : 0}>{prefix}+ Add a seat…</text>
-        if (row.kind === "default") return <box key="default" flexDirection="row"><text fg={focused ? ACCENT : undefined} attributes={focused ? BOLD : 0}>{prefix}Sidekick (default)</text><text attributes={DIM}>  {row.config?.enabled === false ? "off" : modelLabel(row.config?.provider, row.config?.model, row.config?.effort)}</text></box>
+        if (row.kind === "default") return <box key="default" flexDirection="row"><text fg={focused ? ACCENT : undefined} attributes={focused ? BOLD : 0}>{prefix}Sidekick (default)</text><text attributes={DIM}>  {row.config?.enabled === false ? "off" : modelLabel(row.config?.provider, row.config?.model, row.config?.effort, currentModel)}</text></box>
         return <box key={row.name} flexDirection="row"><text fg={focused ? ACCENT : undefined} attributes={focused ? BOLD : 0}>{prefix}{row.name}</text><text attributes={DIM}>  {modelLabel(row.spec.provider, row.spec.model, row.spec.effort)}</text></box>
       })}
       <text attributes={DIM}>{rows.length > WINDOW ? `${selected + 1}/${rows.length}` : `${rows.length - 2} named seat${rows.length === 3 ? "" : "s"}`}</text>

@@ -1575,8 +1575,8 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       text: `${prettyModel(currentSel.model)}${currentSel.effort ? ` ${currentSel.effort}` : ""}`,
       color: ACCENT,
     })
-    // Sidekick chip — only when enabled. `⚒ sidekick <model>` (or `… inherit`),
-    // plus a seat
+    // Sidekick chip — only when enabled. `⚒ sidekick <model>` (the lead's model
+    // when the seat inherits), plus a seat
     // suffix: 1 named seat → `+name`, more than one → `+N`.
     if (sidekick?.enabled) {
       const seatNames = Object.keys(sidekick.seats)
@@ -1586,7 +1586,9 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           : seatNames.length === 1
             ? ` +${seatNames[0]}`
             : ` +${seatNames.length}`
-      const model = sidekick.model ? prettyModel(sidekick.model) : "inherit"
+      // An unconfigured default seat INHERITS the lead's selection — show the
+      // effective model (what a handoff actually runs on), not the word "inherit".
+      const model = sidekick.model ? prettyModel(sidekick.model) : `${prettyModel(currentSel.model)}`
       chips.push({ text: `⚒ sidekick ${model}${seatSuffix}`, dim: true })
     }
     // Advisor chip — only when enabled AND it has a model; ` ✕` when suppressed.
@@ -1672,6 +1674,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         {sidekickSeatMenuOpen && (
           <SidekickSeatMenu
             baseUrl={baseUrl}
+            currentModel={currentSel?.model ?? undefined}
             onDone={(seat) => {
               setSidekickSeatMenuOpen(false)
               setSidekickPicker(seat ? { seat } : {})

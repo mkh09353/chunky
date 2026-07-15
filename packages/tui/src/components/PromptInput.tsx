@@ -256,6 +256,12 @@ export function PromptInput({
       if (key.downArrow) return recallHistory(1)
 
       if (key.return) {
+        // Shift+Enter → newline (needs a terminal that reports shift on Enter,
+        // i.e. the kitty keyboard protocol — kitty/Ghostty/WezTerm/iTerm2).
+        if (key.shift) {
+          insertChunk("\n")
+          return
+        }
         const display = bufRef.current.value.trim()
         const text = expandPastes(display, pastesRef.current).trim()
         // Allow an image-only message: submit when there's text OR attachments.

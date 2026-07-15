@@ -57,6 +57,38 @@ export function RepoTabs({
     if (adding) inputRef.current?.focus()
   }, [adding])
 
+  // Global tab switching (Codex/browser parity): Cmd+1…Cmd+9 jumps to the Nth
+  // repo tab, and Cmd+Shift+[ / Cmd+Shift+] step to the previous/next tab,
+  // wrapping at the ends. Guarded to bare Cmd (no Ctrl/Alt) so it can't collide
+  // with the transcript's Ctrl+Shift+C / Ctrl+T or the native Cmd+C menu role.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (!e.metaKey || e.ctrlKey || e.altKey) return
+      if (repos.length === 0) return
+      // Cmd+Shift+[ / ] — prev/next by physical key (e.code is layout- and
+      // shift-stable, unlike e.key which becomes "{"/"}" under Shift).
+      if (e.shiftKey && (e.code === "BracketLeft" || e.code === "BracketRight")) {
+        e.preventDefault()
+        const idx = repos.findIndex((r) => r.id === activeId)
+        const base = idx === -1 ? 0 : idx
+        const delta = e.code === "BracketRight" ? 1 : -1
+        const next = (base + delta + repos.length) % repos.length
+        onSelect(repos[next]!.id)
+        return
+      }
+      // Cmd+1…Cmd+9 — select the Nth tab (no-op past the last tab).
+      if (!e.shiftKey && e.key >= "1" && e.key <= "9") {
+        const n = Number(e.key) - 1
+        if (n < repos.length) {
+          e.preventDefault()
+          onSelect(repos[n]!.id)
+        }
+      }
+    }
+    document.addEventListener("keydown", onKey)
+    return () => document.removeEventListener("keydown", onKey)
+  }, [repos, activeId, onSelect])
+
   const add = useCallback(
     async (value: string) => {
       const trimmed = value.trim()

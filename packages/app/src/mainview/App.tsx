@@ -29,6 +29,7 @@ import {
   loadConfig,
   loginStatus,
   fetchOnboarding,
+  completeOnboarding,
   getSkills,
   manageSkillRepos,
   openEventStream,
@@ -822,7 +823,7 @@ export default function App() {
           </SideNav>
         }
       >
-        {onboardingOpen && config && <OnboardingWizard baseUrl={config.baseUrl} onClose={() => setOnboardingOpen(false)} onApplied={() => { void fetchModel(config.baseUrl).then(setModel); void fetchAdvisor(config.baseUrl).then(setAdvisorState) }} />}
+        {onboardingOpen && config && <OnboardingWizard baseUrl={config.baseUrl} onClose={() => { setOnboardingOpen(false); void completeOnboarding(config.baseUrl).catch(() => {}) }} onApplied={() => { void fetchModel(config.baseUrl).then(setModel); void fetchAdvisor(config.baseUrl).then(setAdvisorState) }} />}
         {connError ? <div className="chunky-conn-error">{connError}</div> : null}
         <ChatPane
           state={transcript}

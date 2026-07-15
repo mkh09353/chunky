@@ -1645,7 +1645,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       {running && startedAt != null && <StatusLine startedAt={startedAt} />}
       {updateNotice && <text attributes={TextAttributes.DIM}>{updateNotice}</text>}
       <box flexDirection="column" width="100%" marginTop={1} flexShrink={0}>
-        {onboardingOpen && <OnboardingWizard baseUrl={baseUrl} onDone={() => setOnboardingOpen(false)} onLogin={async (p) => {
+        {onboardingOpen && <OnboardingWizard baseUrl={baseUrl} onDone={(stamped) => { setOnboardingOpen(false); if (!stamped) void fetch(baseUrl + "/api/onboarding/complete", { method: "POST" }).catch(() => {}) }} onLogin={async (p) => {
           // `active` is LoginPicker display state; initiateLogin never reads it.
           await initiateLogin({ id: p.id, label: p.label, ready: p.ready, active: false })
           try { const r = await fetch(baseUrl + `/api/auth/${p.id}/status`); return Boolean((await r.json()).ready) } catch { return false }

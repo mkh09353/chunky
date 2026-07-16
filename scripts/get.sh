@@ -21,8 +21,15 @@ fi
 
 mkdir -p "$APP" "$STATE" "$BIN"
 api="https://api.github.com/repos/$REPO/releases/latest"
-json=$(curl -fsSL -H 'Accept: application/vnd.github+json' "$api")
+json=$(curl -fsSL -H 'Accept: application/vnd.github+json' "$api") || {
+  echo "error: GitHub release lookup failed ($api)." >&2
+  echo "       This is often unauthenticated API rate limiting (60 req/hr per IP); wait a bit and retry." >&2
+  exit 1
+}
 url=$(printf '%s' "$json" | "$BUN" -e 'let s=""; for await(const x of Bun.stdin.stream())s+=new TextDecoder().decode(x); let j=JSON.parse(s); let a=j.assets?.find(x=>/\.tar\.gz$|\.tgz$/.test(x.name)); if(!a) throw Error("release tarball missing"); console.log(a.browser_download_url)')
+version=$(printf '%s' "$json" | "$BUN" -e 'let s=""; for await(const x of Bun.stdin.stream())s+=new TextDecoder().decode(x); console.log((JSON.parse(s).tag_name||"").replace(/^v/,""))')
+prev=$("$BUN" -e 'try{console.log(JSON.parse(await Bun.file(process.argv[1]).text()).version||"")}catch{console.log("")}' "$APP/package.json" 2>/dev/null || true)
+echo "→ latest release: v$version${prev:+ (installed: v$prev)}"
 tmp="$CHUNKY/app.new"; rm -rf "$tmp"; mkdir -p "$tmp"
 curl -fsSL "$url" -o "$CHUNKY/update.tar.gz"
 tar -xzf "$CHUNKY/update.tar.gz" --strip-components=1 -C "$tmp"
@@ -61,4 +68,13 @@ BUN="\$(command -v bun || true)"
 exec "\$BUN" run "$APP/chunky.ts" "\$@"
 SH
 chmod +x "$BIN/chunky"
-echo "Installed Chunky to $APP. Run: chunky"
+installed=$("$BUN" -e 'console.log(JSON.parse(await Bun.file(process.argv[1]).text()).version)' "$APP/package.json")
+if [ "$installed" != "$version" ]; then
+  echo "error: expected v$version but $APP has v$installed after install." >&2
+  exit 1
+fi
+echo "Installed Chunky v$installed to $APP. Run: chunky"
+if [ -n "$prev" ] && [ "$prev" = "$installed" ]; then
+  echo "note: v$installed was already the latest release — nothing newer to install."
+fi
+echo "note: if a chunky server/TUI is already running, restart it to pick up the new version."

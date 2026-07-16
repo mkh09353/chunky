@@ -86,6 +86,12 @@ import { getModelAvailability, manageModelCatalog, setModelAvailability, type Mo
 import { manageSkillRepos, type SkillRepoMutationAction } from "./skill-repos.ts"
 import { resetTasks } from "./tasks.ts"
 import { databaseErrorMessage } from "./sqlite.ts"
+import {
+  removeDiscoveryRecordIfOwned,
+  SERVER_IDENTITY_PATH,
+  SERVER_LEASES_PATH,
+  ServerLeaseTracker,
+} from "./launcher-discovery.ts"
 
 type Subscriber = ReadableStreamDefaultController<Uint8Array>
 
@@ -124,6 +130,11 @@ function subscribers(sessionId: string): Set<Subscriber> {
     live.set(sessionId, set)
   }
   return set
+}
+
+function hasLiveSubscribers(): boolean {
+  for (const set of live.values()) if (set.size > 0) return true
+  return false
 }
 
 /** Persist an event, then push it to every connected subscriber of the session. */
@@ -300,6 +311,8 @@ function json(body: unknown, status = 200): Response {
 }
 
 const port = Number(process.env.CHUNKY_PORT) || DEFAULT_PORT
+const launcherManaged = !!process.env.CHUNKY_SERVER_NONCE
+const serverLeases = launcherManaged ? new ServerLeaseTracker(() => Date.now(), 30_000, 30_000) : null
 
 // This is deliberately fire-and-forget: a GitHub outage must never affect boot.
 const previousUpdateCheck = readPersistedCheck()
@@ -323,6 +336,23 @@ const server = Bun.serve({
 
     const url = new URL(req.url)
     const { pathname } = url
+
+    if (req.method === "GET" && pathname === SERVER_IDENTITY_PATH) {
+      const workspace = process.env.CHUNKY_WORKSPACE
+      const version = process.env.CHUNKY_VERSION
+      const buildId = process.env.CHUNKY_BUILD_ID
+      const nonce = process.env.CHUNKY_SERVER_NONCE
+      if (!workspace || !version || !buildId || !nonce) return json({ error: "launcher identity unavailable" }, 404)
+      return json({ workspace, version, buildId, nonce, port: server.port })
+    }
+
+    if (pathname === SERVER_LEASES_PATH && serverLeases && (req.method === "POST" || req.method === "DELETE")) {
+      const body = await req.json().catch(() => null) as { token?: unknown } | null
+      if (!body || typeof body.token !== "string" || !body.token) return json({ error: "missing lease token" }, 400)
+      if (req.method === "POST") serverLeases.attach(body.token)
+      else serverLeases.release(body.token)
+      return json({ leases: serverLeases.size })
+    }
 
     if (req.method === "GET" && pathname === ROUTES.updateStatus) return json(readPersistedCheck() ?? { current: "unknown", latest: null, available: false })
 
@@ -1141,6 +1171,18 @@ const server = Bun.serve({
 console.log(
   `[@chunky/server] listening on http://localhost:${server.port} (provider=${activeProviderId()})`,
 )
+
+if (serverLeases) {
+  const retirement = setInterval(() => {
+    if (hasLiveSubscribers() || running.size > 0 || shuttingDown || !serverLeases.shouldRetire()) return
+    const recordPath = process.env.CHUNKY_DISCOVERY_RECORD
+    const nonce = process.env.CHUNKY_SERVER_NONCE
+    if (recordPath && nonce) removeDiscoveryRecordIfOwned(recordPath, nonce)
+    clearInterval(retirement)
+    void shutdownServer("SIGTERM")
+  }, 5_000)
+  retirement.unref()
+}
 
 // Relay uplink: when this computer has been paired (`bun run pair` wrote
 // relay.json), dial out to the relay so paired phones can reach this server —

@@ -24,6 +24,10 @@ import {
 } from "./providers/registry.ts"
 import { threadContextFor } from "./thread-context.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
+import { HumanMessage } from "@langchain/core/messages"
+import { Store } from "./store.ts"
+import { snapshotSessionTasks } from "./tasks.ts"
+import { formatSystemReminder } from "./system-reminder.ts"
 import { ADVISOR_SYSTEM_PROMPT, sidekickSystemPrompt, buildSystemPrompt, type EditToolName } from "./prompt.ts"
 import {
   buildToolSearchMiddleware,
@@ -48,6 +52,27 @@ import { skillTools } from "./tools/skills.ts"
 import { write } from "./tools/write.ts"
 import { dualTool } from "./tools/result.ts"
 import { getTaskOutput, killTask } from "./tools/task.ts"
+
+export async function postCompactionReminder(
+  state: { messages: any[] },
+  runtime: { configurable?: { thread_id?: unknown } },
+  collect: (sessionId: string) => Parameters<typeof formatSystemReminder>[0] = (sessionId) => {
+    const goal = Store.getGoal(sessionId)
+    return {
+      goal: goal ? { objective: goal.objective, status: goal.status, mode: goal.mode ?? "direct", turns: goal.turns, maxTurns: goal.maxTurns } : undefined,
+      tasks: snapshotSessionTasks(sessionId).filter((task) => task.status === "running").map((task) => ({ taskId: task.taskId, status: task.status, command: task.command })),
+    }
+  },
+) {
+  if (!state.messages.some((message) => message?.additional_kwargs?.lc_source === "summarization")) return
+  const sessionId = runtime.configurable?.thread_id
+  if (typeof sessionId !== "string") return
+  const messages = state.messages.filter((message) => message?.additional_kwargs?.lc_source !== "chunky-system-reminder")
+  const summaryIndex = messages.findIndex((message) => message?.additional_kwargs?.lc_source === "summarization")
+  const reminder = formatSystemReminder(collect(sessionId))
+  if (reminder) messages.splice(summaryIndex + 1, 0, new HumanMessage({ content: reminder, additional_kwargs: { lc_source: "chunky-system-reminder" } }))
+  return { messages }
+}
 
 // Re-export pure gating/classification helpers for tests and callers.
 export {
@@ -266,6 +291,14 @@ export function buildAgent(
         trigger: { tokens: 60_000 },
         keep: { messages: 15 },
       }),
+      // LangChain's summarizer exposes a reliable beforeModel state update: it
+      // returns RemoveAll + summary + preserved messages. A following hook
+      // observes that update and inserts the freshly collected reminder at the
+      // only stable point, immediately after the generated summary.
+      {
+        name: "postCompactionReminder",
+        beforeModel: postCompactionReminder,
+      },
       ...(toolSearchMw ? [toolSearchMw] : []),
     ],
   })
@@ -336,7 +369,7 @@ export function getAdvisorAgent(selection: AgentSelection = activeSelection()): 
   const sig = "advisor::" + selectionSignature(selection)
   let a = agentCache.get(sig)
   if (!a) {
-    a = buildAdvisorAgent(selection) as ReturnType<typeof buildAgent>
+    a = buildAdvisorAgent(selection) as unknown as ReturnType<typeof buildAgent>
     agentCache.set(sig, a)
   }
   return a
@@ -374,7 +407,7 @@ export function getSidekickAgent(selection: AgentSelection = activeSelection(), 
   const sig = "sidekick::" + selectionSignature(selection) + "@@" + (agentsMd ?? "")
   let a = agentCache.get(sig)
   if (!a) {
-    a = buildSidekickAgent(selection, agentsMd) as ReturnType<typeof buildAgent>
+    a = buildSidekickAgent(selection, agentsMd) as unknown as ReturnType<typeof buildAgent>
     agentCache.set(sig, a)
   }
   return a

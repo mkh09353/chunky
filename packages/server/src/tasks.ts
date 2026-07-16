@@ -92,6 +92,10 @@ export function snapshotTask(record: TaskRecord): TaskSnapshot {
 }
 
 export function getTaskRecord(sessionId: string, id: string): TaskRecord | undefined { return tasks.get(sessionId)?.get(id) }
+/** Immutable metadata snapshots for live-state consumers. */
+export function snapshotSessionTasks(sessionId: string): TaskSnapshot[] {
+  return [...(tasks.get(sessionId)?.values() ?? [])].map(snapshotTask)
+}
 export async function waitTasks(sessionId: string, ids: string[], timeoutMs: number): Promise<void> {
   const records = ids.map((id) => getTaskRecord(sessionId, id)).filter((r): r is TaskRecord => !!r)
   if (!records.length || !timeoutMs) return

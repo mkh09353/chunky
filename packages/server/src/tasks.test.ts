@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
-import { appendTaskOutput, cleanupSession, consumeTaskReminder, createTask, finishTask, pendingTaskReminders, resetTasks, snapshotTask, taskOutputCap, taskSpillPath } from "./tasks.ts"
+import { appendTaskOutput, cleanupSession, consumeTaskReminder, createTask, finishTask, pendingTaskReminders, resetTasks, snapshotTask, snapshotSessionTasks, taskOutputCap, taskSpillPath } from "./tasks.ts"
 
 afterEach(async () => { await resetTasks() })
 
@@ -34,5 +34,11 @@ describe("background task registry", () => {
     const record = createTask("consume", { command: "true", process: proc, spillPath: taskSpillPath("consume") })
     finishTask(record, 0); consumeTaskReminder("consume", record.taskId)
     expect(pendingTaskReminders("consume")).toBe("")
+  })
+  test("snapshots live session tasks", () => {
+    const proc = Bun.spawn(["bash", "-lc", "true"], { stdout: "pipe", stderr: "pipe" })
+    const record = createTask("snap", { command: "true", process: proc, spillPath: taskSpillPath("snap") })
+    expect(snapshotSessionTasks("snap")[0].taskId).toBe(record.taskId)
+    finishTask(record, 0)
   })
 })

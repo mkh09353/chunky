@@ -29,6 +29,10 @@ export interface CacheContext {
   /** Model driving this turn — recorded so a later switch is detected. */
   model: string
 }
+export interface InterjectionBoundary {
+  prompt: string
+  text: string
+}
 
 // Extract plain text from an AIMessageChunk `content`, which is either a string
 // or an array of content blocks (we only care about text blocks).
@@ -70,6 +74,7 @@ export async function translateStream(
   threadId: string | undefined,
   emit: Emit,
   cache?: CacheContext,
+  onToolBoundary?: () => InterjectionBoundary | undefined,
 ): Promise<string> {
   // Tag message/tool/error events with the owning threadId (omitted for main).
   const emitT = taggedEmitter(emit, threadId)
@@ -189,6 +194,8 @@ export async function translateStream(
                 output: result.promptText,
                 ...(result.raw !== undefined ? { raw: result.raw } : {}),
               })
+              const interjection = onToolBoundary?.()
+              if (interjection !== undefined) throw Object.assign(new Error(JSON.stringify(interjection)), { name: "InterjectionBoundary" })
             }
           }
         }
@@ -196,7 +203,11 @@ export async function translateStream(
       }
     }
   } catch (error) {
-    closeAssistant((error as Error)?.name === "AbortError" ? "interrupted" : "error")
+    // The coordinator deliberately uses an exception to leave the provider
+    // iterator at a completed tool node. This is an internal continuation, not
+    // an interruption/error visible to the user.
+    const name = (error as Error)?.name
+    closeAssistant(name === "AbortError" ? "interrupted" : name === "InterjectionBoundary" ? "complete" : "error")
     throw error
   } finally {
     closeAssistant()
@@ -302,6 +313,7 @@ export async function runAgent(
     /** Skip the turn-start cold-cache notice — the user already confirmed this
      *  re-send through the cache guard, so repeating the warning is noise. */
     suppressCacheWarning?: boolean
+    onToolBoundary?: () => InterjectionBoundary | undefined
   },
 ): Promise<void> {
   emit({ type: "session.status", sessionId, status: "running" })
@@ -368,7 +380,7 @@ export async function runAgent(
         } as any,
       )
 
-      await translateStream(stream, undefined, emit, cache)
+      await translateStream(stream, undefined, emit, cache, options?.onToolBoundary)
     }
   }
 
@@ -381,7 +393,16 @@ export async function runAgent(
     // model calls goal_complete/goal_blocked, the run is interrupted, or the turn
     // budget is spent.
     while (true) {
-      await runTurn(prompt, turnImages)
+      try { await runTurn(prompt, turnImages) } catch (err) {
+        if ((err as Error)?.name === "InterjectionBoundary") {
+          const boundary = JSON.parse((err as Error).message) as InterjectionBoundary
+          prompt = boundary.prompt
+          turnImages = undefined
+          emit({ type: "message.interjection", sessionId, text: boundary.text, injected: true })
+          continue
+        }
+        throw err
+      }
       turnImages = undefined // pasted images ride only the first turn
 
       const step = decideGoalStep(Store.getGoal(sessionId), abort?.signal.aborted ?? false)

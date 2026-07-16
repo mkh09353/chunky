@@ -454,7 +454,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   // parked in pendingSend (nothing ran server-side); otherwise echo the user
   // line locally and start the turn timer.
   const postMessage = useCallback(
-    async (text: string, shown: string, images: ClipboardImage[], force: boolean, steer = false, skill?: string | null) => {
+    async (text: string, shown: string, images: ClipboardImage[], force: boolean, steer = false, skill?: string | null, delivery?: "interject" | "queue") => {
       const id = sessionIdRef.current
       if (!id) {
         apply({ type: "error", message: "no live session yet" })
@@ -473,6 +473,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
             ...(images.length ? { images } : {}),
             ...(force ? { force: true } : {}),
             ...(steer ? { steer: true } : {}),
+            ...(delivery ? { delivery } : {}),
             ...(skill ? { skill } : {}),
           }),
         })
@@ -492,7 +493,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   )
 
   const submit = useCallback(
-    async (text: string, display?: string, opts?: { steer?: boolean }) => {
+    async (text: string, display?: string, opts?: { delivery?: "interject" | "steer" }) => {
       // `text` is the full message (paste chips expanded) sent to the model;
       // `display` is the shortened echo (chips kept) shown in the transcript.
       // Slash commands that take arguments arrive here (the menu only fires bare
@@ -553,8 +554,9 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       // so they ride with the buffered message.
       if (mode === "live" && runningRef.current) {
         const item: Outgoing = { text, shown, images }
-        if (opts?.steer) setSteerQueue((q) => [...q, item])
-        else setQueue((q) => [...q, item])
+        // The server is authoritative for both paths; retain local buffers only
+        // for the legacy boundary delivery callbacks during migration.
+        void postMessage(text, shown, images, false, false, undefined, opts?.delivery === "interject" ? "interject" : "queue")
         return
       }
       if (mode === "mock") {
@@ -568,7 +570,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       // parks the message instead, and nothing should look sent.
       const skill = pendingSkill
       setPendingSkill(null)
-      await postMessage(text, shown, images, false, false, skill)
+      await postMessage(text, shown, images, false, opts?.delivery === "steer", skill)
     },
     [mode, apply, demo, postMessage, pendingSkill],
   )

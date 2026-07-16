@@ -25,7 +25,7 @@ interface Props {
    *  is the shortened echo (paste placeholders kept) shown in the transcript.
    *  `opts.steer` is set when the user held Alt/Option (Alt+Enter) — a request to
    *  cut into a running turn at the next tool result instead of queueing it. */
-  onSubmit: (text: string, display: string | undefined, opts?: { steer?: boolean }) => void
+  onSubmit: (text: string, display: string | undefined, opts?: { delivery?: "interject" | "steer" }) => void
   onCommand: (name: string) => void
   /** A turn is in flight — the composer stays live for type-ahead; a plain Enter
    *  queues the message, Alt+Enter steers it. Only drives the placeholder hint. */
@@ -278,9 +278,8 @@ export function PromptInput({
         histIdxRef.current = null
         // Alt/Option+Enter marks a STEER (cut into a running turn at the next tool
         // result); a plain Enter queues/sends. App decides based on run state.
-        const steer = key.meta
         reset()
-        onSubmit(text, display, { steer })
+        onSubmit(text, display, key.meta ? { delivery: "interject" } : undefined)
         return
       }
       // Ctrl+V — pull an image off the clipboard (Cmd+V is owned by the terminal).

@@ -25,6 +25,12 @@ export interface UsageDelta {
 
 export type MessageEndReason = "complete" | "max_tokens" | "interrupted" | "error"
 
+export type MessageDelivery = "auto" | "queue" | "interject" | "steer"
+export interface QueueEntry {
+  id: string; version: number; text: string; shown: string
+  kind: "prompt" | "steer" | "interject"; position: number; createdAt: number
+}
+
 export type AgentEvent =
   | { type: "session.status"; sessionId: string; status: "idle" | "running" }
   /** Emitted at the START of a turn when the prompt cache for this thread is
@@ -51,6 +57,8 @@ export type AgentEvent =
    * e.g. `fix tests (0f3a21c9)`) — clients render provenance instead of a
    * plain user bubble. */
   | { type: "message.user"; text: string; threadId?: string; from?: string }
+  | { type: "message.interjection"; sessionId: string; text: string; injected: boolean }
+  | { type: "queue.changed"; sessionId: string; entries: QueueEntry[]; running: boolean }
   | { type: "message.start"; role: "assistant"; threadId?: string }
   | { type: "message.delta"; text: string; threadId?: string }
   | { type: "message.end"; reason?: MessageEndReason; threadId?: string }
@@ -121,6 +129,11 @@ export interface SendMessageRequest {
   text: string
   /** Send even if the cache guard would block (the user confirmed the re-send). */
   force?: boolean
+  skill?: string
+  images?: { base64: string; mediaType: string }[]
+  /** Compatibility field; use delivery: "steer". */
+  steer?: boolean
+  delivery?: MessageDelivery
 }
 
 /** Why a thread's prompt cache is (or would be) cold, and how much a send now

@@ -12,7 +12,7 @@ import {
   type SendBlockedResponse,
   type ShipRequest,
 } from "@chunky/protocol"
-import { runAgent, type InputImage } from "./run.ts"
+import { runAgent, type InputImage, type InterjectionBoundary } from "./run.ts"
 import { shipHandoffPrompt } from "./tools/ship.ts"
 import { Store } from "./store.ts"
 import { DEFAULT_MAX_TURNS, firstLine, goalKickoffPrompt, toSnapshot, type Goal } from "./goal.ts"
@@ -67,6 +67,7 @@ import { availableWorkflowTargets } from "./workflow/router.ts"
 import { discoverSkills, loadSkill } from "./skills.ts"
 import { saveDisabledSkills } from "./settings.ts"
 import { drainQueue, installSessionBus } from "./session-bus.ts"
+import { InterjectionBuffer, PromptQueue, formatInterjection } from "./prompt-queue.ts"
 import { cacheColdPayload, checkCacheCold, exceedsGuard } from "./cache-watch.ts"
 import { getFinder } from "./fff.ts"
 import {
@@ -94,6 +95,9 @@ const running = new Map<string, AbortController>()
 // and WAIT for it to fully tear down before starting the superseding one — that
 // ordering (old idle → message.user → new running) keeps the stream flicker-free.
 const runDone = new Map<string, Promise<void>>()
+const promptQueues = new Map<string, PromptQueue>()
+const interjections = new Map<string, InterjectionBuffer>()
+const queueBusy = new Set<string>()
 const encoder = new TextEncoder()
 
 let shuttingDown = false
@@ -188,7 +192,13 @@ function startRun(
 ): Promise<void> {
   const ac = new AbortController()
   running.set(sessionId, ac)
-  const done = runAgent(sessionId, text, (ev) => emitTo(sessionId, ev), images, ac, options)
+  const done = runAgent(sessionId, text, (ev) => emitTo(sessionId, ev), images, ac, {
+    ...options,
+    onToolBoundary: (): InterjectionBoundary | undefined => {
+      const note = interjections.get(sessionId)?.shift()
+      return note ? { prompt: formatInterjection(note.text), text: note.text } : undefined
+    },
+  })
     .catch((err) => {
       emitTo(sessionId, { type: "error", message: (err as Error)?.message ?? String(err) })
       emitTo(sessionId, { type: "session.status", sessionId, status: "idle" })
@@ -197,6 +207,24 @@ function startRun(
       if (running.get(sessionId) === ac) running.delete(sessionId)
       if (runDone.get(sessionId) === done) runDone.delete(sessionId)
       drainQueue(sessionId)
+      queueBusy.delete(sessionId)
+      const leftovers = interjections.get(sessionId)?.drainAll() ?? []
+      if (leftovers.length) {
+        const queue = promptQueues.get(sessionId) ?? new PromptQueue()
+        for (const note of leftovers) queue.enqueue({ prompt: formatInterjection(note.text), shown: note.text, images: note.images, kind: "interject" })
+        promptQueues.set(sessionId, queue)
+      }
+      if (!running.has(sessionId)) {
+        const next = promptQueues.get(sessionId)?.shift()
+        if (next) {
+          queueBusy.add(sessionId)
+          emitTo(sessionId, { type: "queue.changed", sessionId, entries: promptQueues.get(sessionId)?.snapshot() ?? [], running: false })
+          emitTo(sessionId, { type: "message.user", text: next.shown })
+          void startRun(sessionId, next.prompt, next.images)
+        } else {
+          emitTo(sessionId, { type: "queue.changed", sessionId, entries: [], running: false })
+        }
+      }
     })
   runDone.set(sessionId, done)
   return done
@@ -892,13 +920,16 @@ const server = Bun.serve({
         let text = ""
         let force = false
         let steer = false
+        let delivery: "auto" | "queue" | "interject" | "steer" = "auto"
         let skill: string | undefined
         let images: { base64: string; mediaType: string }[] | undefined
         try {
-          const body = (await req.json()) as { text?: unknown; images?: unknown; force?: unknown; steer?: unknown; skill?: unknown }
+          const body = (await req.json()) as { text?: unknown; images?: unknown; force?: unknown; steer?: unknown; skill?: unknown; delivery?: unknown }
           text = typeof body?.text === "string" ? body.text : ""
           force = body?.force === true
           steer = body?.steer === true
+          if (body?.delivery === "queue" || body?.delivery === "interject" || body?.delivery === "steer") delivery = body.delivery
+          if (steer) delivery = "steer"
           skill = typeof body?.skill === "string" ? body.skill.trim() : undefined
           if (Array.isArray(body?.images)) {
             images = body.images.filter(
@@ -922,12 +953,19 @@ const server = Bun.serve({
         // tear down before emitting/starting below, so events stay ordered. The
         // agent is checkpointed per-node, so the completed tool result survives
         // into the superseding turn. Cache is warm mid-turn → skip the cold guard.
-        if (steer) await abortForSteer(sessionId)
+        if (delivery === "interject" && running.has(sessionId)) {
+          const buffer = interjections.get(sessionId) ?? new InterjectionBuffer()
+          buffer.push({ id: randomUUID(), text: visibleText, images })
+          interjections.set(sessionId, buffer)
+          emitTo(sessionId, { type: "message.interjection", sessionId, text: visibleText, injected: false })
+          return new Response(null, { status: 202, headers: CORS })
+        }
+        if (delivery === "steer") await abortForSteer(sessionId)
 
         // Cache guard: BEFORE running (or billing) anything, refuse a send that
         // would rebuild a big cold cache. 409 carries the details; the client
         // asks the user and re-POSTs with force: true (or starts a fresh thread).
-        if (!force && !steer) {
+        if (!force && delivery !== "steer") {
           const model = activeSelection().model
           const guardTokens = getCacheGuardTokens()
           const cold = model ? checkCacheCold(sessionId, model, Date.now()) : undefined
@@ -948,6 +986,14 @@ const server = Bun.serve({
         // Echo the user turn into the event stream so it is persisted and
         // replayed on resume (clients render it instead of an optimistic local
         // echo). Emitted before the run so it lands ahead of the assistant reply.
+        if (running.has(sessionId) || queueBusy.has(sessionId)) {
+          const queue = promptQueues.get(sessionId) ?? new PromptQueue()
+          queue.enqueue({ prompt: text, shown: visibleText, images, kind: "prompt" })
+          promptQueues.set(sessionId, queue)
+          emitTo(sessionId, { type: "queue.changed", sessionId, entries: queue.snapshot(), running: running.has(sessionId) })
+          return new Response(null, { status: 202, headers: CORS })
+        }
+
         if (visibleText) emitTo(sessionId, { type: "message.user", text: visibleText })
 
         // Abort any prior in-flight turn, then run this one (tracked so /interrupt
@@ -963,6 +1009,7 @@ const server = Bun.serve({
         const ac = running.get(sessionId)
         if (ac) ac.abort()
         else reconcileStaleRun(sessionId)
+        interjections.get(sessionId)?.clear()
         return new Response(null, { status: 202, headers: CORS })
       }
 

@@ -59,6 +59,8 @@ import {
   setSidekickSeats,
   setOnboardedAt,
   setWorkflowTargetOverride,
+  agentsMdEnabled,
+  setAgentsMdEnabled,
   type AdvisorConfig,
   type ModeSpec,
   type SidekickConfig,
@@ -831,6 +833,19 @@ const server = Bun.serve({
       }
       if (!isSelect && req.method === "DELETE") {
         return json(removeRepo(repoId!))
+      }
+    }
+
+    const instructionsMatch = pathname.match(/^\/api\/repos\/([^/]+)\/instructions$/)
+    if (instructionsMatch) {
+      const repo = repoById(instructionsMatch[1]!)
+      if (!repo) return json({ error: `unknown repo "${instructionsMatch[1]}"` }, 404)
+      if (req.method === "GET") return json({ enabled: agentsMdEnabled(repo.id) })
+      if (req.method === "POST") {
+        let body: { enabled?: unknown }
+        try { body = (await req.json()) as typeof body } catch { return json({ error: "invalid JSON body" }, 400) }
+        if (typeof body.enabled !== "boolean") return json({ error: "enabled must be boolean" }, 400)
+        return json({ enabled: setAgentsMdEnabled(repo.id, body.enabled) })
       }
     }
 

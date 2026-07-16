@@ -199,6 +199,9 @@ export interface ReposResponse {
   repos: Repo[]
   activeId: string | null
 }
+export interface RepositoryInstructionsResponse {
+  enabled: boolean
+}
 export interface AddRepoRequest {
   path: string
 }
@@ -310,6 +313,8 @@ export const ROUTES = {
   selectRepo: (id: string) => `/api/repos/${id}/select`,
   // DELETE -> ReposResponse. Remove a repo from the list (does not delete files).
   removeRepo: (id: string) => `/api/repos/${id}`,
+  // GET -> repository-scoped AGENTS.md setting; POST {enabled} updates it.
+  repositoryInstructions: (id: string) => `/api/repos/${id}/instructions`,
   // POST SendMessageRequest -> 202, or 409 SendBlockedResponse when the cache
   // guard blocks (resend with force: true after the user confirms).
   sendMessage: (id: string) => `/api/sessions/${id}/messages`,

@@ -25,6 +25,8 @@ import {
   interruptSession,
   listProviders,
   listRepos,
+  getRepositoryInstructions,
+  setRepositoryInstructions,
   listSessions,
   loadConfig,
   loginStatus,
@@ -67,6 +69,7 @@ export default function App() {
   const [model, setModel] = useState<ModelSelection | null>(null)
   const [repos, setRepos] = useState<Repo[]>([])
   const [activeRepoId, setActiveRepoId] = useState<string | null>(null)
+  const [agentsMdEnabled, setAgentsMdEnabled] = useState(true)
   const [connError, setConnError] = useState<string | null>(null)
   const [booting, setBooting] = useState(true)
   // The always-on advisor config (composer trigger label + /advisor).
@@ -106,6 +109,19 @@ export default function App() {
   const activeRepoIdRef = useRef<string | null>(null)
   sessionIdRef.current = sessionId
   activeRepoIdRef.current = activeRepoId
+
+  useEffect(() => {
+    if (!config || !activeRepoId) { setAgentsMdEnabled(true); return }
+    void getRepositoryInstructions(config.baseUrl, activeRepoId)
+      .then((value) => setAgentsMdEnabled(value.enabled))
+      .catch(() => setAgentsMdEnabled(true))
+  }, [config, activeRepoId])
+
+  const toggleAgentsMd = useCallback(async (enabled: boolean) => {
+    if (!config || !activeRepoIdRef.current) return
+    const value = await setRepositoryInstructions(config.baseUrl, activeRepoIdRef.current, enabled)
+    setAgentsMdEnabled(value.enabled)
+  }, [config])
 
   // Turn-end notification bookkeeping: when the run started (wall clock, so
   // replayed history — processed in ms — never notifies) and the final
@@ -808,6 +824,8 @@ export default function App() {
                 onSelect={(id) => void handleSelectRepo(id)}
                 onAdd={handleAddRepo}
                 onRemove={(id) => void handleRemoveRepo(id)}
+                agentsMdEnabled={agentsMdEnabled}
+                onToggleAgentsMd={toggleAgentsMd}
               />
             }
           />

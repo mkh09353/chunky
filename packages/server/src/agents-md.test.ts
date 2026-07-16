@@ -1,10 +1,12 @@
 // Deterministic AGENTS.md distillation/cache tests. No provider request is made;
 // the one-shot model invocation is replaced through the test seam.
 import { strict as assert } from "node:assert"
-import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { distilledAgentsMd, setAgentsMdInvokerForTests } from "./agents-md.ts"
+import { repoId } from "./repos.ts"
+import { setAgentsMdEnabled } from "./settings.ts"
 import type { AgentSelection } from "./providers/registry.ts"
 
 const selection: AgentSelection = Object.freeze({ provider: "codex", model: "gpt-5.5", effort: "low" })
@@ -39,6 +41,72 @@ async function main() {
       assert.equal(await distilledAgentsMd(t.workspace, selection), "- Run `bun test`")
       assert.equal(await distilledAgentsMd(t.workspace, selection), "- Run `bun test`")
       assert.equal(calls, 1, "a matching hash must skip the model call")
+    } finally { t.restore() }
+  }
+
+  {
+    const t = setup()
+    try {
+      mkdirSync(join(t.workspace, ".git"))
+      writeFileSync(join(t.workspace, "AGENTS.md"), "Should be ignored.\n")
+      setAgentsMdEnabled(repoId(t.workspace), false)
+      setAgentsMdInvokerForTests(async () => { throw new Error("disabled repo must not distill") })
+      assert.equal(await distilledAgentsMd(t.workspace, selection), null)
+    } finally { t.restore() }
+  }
+
+  {
+    const parent = mkdtempSync(join(tmpdir(), "chunky-agents-md-parent-"))
+    const t = setup()
+    try {
+      // A nested git repository is a hard boundary: instructions above it are
+      // not inherited, even when the workspace itself is nested.
+      writeFileSync(join(parent, "AGENTS.md"), "Outside rule.\n")
+      mkdirSync(join(t.workspace, ".git"))
+      writeFileSync(join(t.workspace, "AGENTS.md"), "Inside rule.\n")
+      const nested = join(t.workspace, "src")
+      mkdirSync(nested)
+      let calls = 0
+      setAgentsMdInvokerForTests(async (_model, messages) => {
+        calls++
+        assert.match(String(messages[1]?.content), /Inside rule/)
+        assert.doesNotMatch(String(messages[1]?.content), /Outside rule/)
+        return { content: "- inside" }
+      })
+      assert.equal(await distilledAgentsMd(nested, selection), "- inside")
+      assert.equal(calls, 1)
+    } finally { t.restore() }
+  }
+
+  {
+    const t = setup()
+    try {
+      mkdirSync(join(t.workspace, ".git"))
+      const nested = join(t.workspace, "packages", "server")
+      mkdirSync(nested, { recursive: true })
+      writeFileSync(join(t.workspace, "AGENTS.md"), "Root rule.\n")
+      let calls = 0
+      setAgentsMdInvokerForTests(async (_model, messages) => {
+        calls++
+        assert.match(String(messages[1]?.content), /Root rule/)
+        return { content: "- root" }
+      })
+      assert.equal(await distilledAgentsMd(nested, selection), "- root")
+      assert.equal(calls, 1, "nested workspaces discover the repository root file")
+    } finally { t.restore() }
+  }
+
+  {
+    const t = setup()
+    try {
+      const file = join(t.workspace, "AGENTS.md")
+      writeFileSync(file, "x".repeat(32 * 1024) + "tail-one")
+      let calls = 0
+      setAgentsMdInvokerForTests(async () => ({ content: `- rule ${++calls}` }))
+      assert.equal(await distilledAgentsMd(t.workspace, selection), "- rule 1")
+      writeFileSync(file, "x".repeat(32 * 1024) + "tail-two")
+      assert.equal(await distilledAgentsMd(t.workspace, selection), "- rule 2")
+      assert.equal(calls, 2, "changes after the old 32 KiB limit invalidate")
     } finally { t.restore() }
   }
 

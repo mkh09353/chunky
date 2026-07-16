@@ -428,7 +428,11 @@ export function buildSidekickAgent(selection: AgentSelection, agentsMd?: string 
  *  "sidekick::<sig>") so invalidateAgent() clears it too. ThreadManager's default
  *  sidekickAgentFor injectable. */
 export function getSidekickAgent(selection: AgentSelection = activeSelection(), _workspace?: string, agentsMd?: string | null): ReturnType<typeof buildAgent> {
-  const sig = "sidekick::" + selectionSignature(selection) + "@@" + resolveFileToolProfile() + "@@" + (agentsMd ?? "")
+  // Include the session workspace as well as the instruction text: identical
+  // repo notes must not make a tool-bearing agent instance cross repository
+  // boundaries (tools resolve cwd at runtime, but the prompt/checkpointer do
+  // not represent that boundary).
+  const sig = "sidekick::" + selectionSignature(selection) + "@@" + (_workspace ?? LAUNCH_WORKSPACE) + "@@" + resolveFileToolProfile() + "@@" + (agentsMd ?? "")
   let a = agentCache.get(sig)
   if (!a) {
     a = buildSidekickAgent(selection, agentsMd) as unknown as ReturnType<typeof buildAgent>

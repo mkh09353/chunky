@@ -16,6 +16,8 @@ export function RepoTabs({
   onSelect,
   onAdd,
   onRemove,
+  agentsMdEnabled,
+  onToggleAgentsMd,
   busy,
 }: {
   repos: Repo[]
@@ -23,6 +25,8 @@ export function RepoTabs({
   onSelect: (id: string) => void
   onAdd: (path: string) => Promise<void>
   onRemove: (id: string) => void
+  agentsMdEnabled?: boolean
+  onToggleAgentsMd?: (enabled: boolean) => Promise<void>
   busy?: boolean
 }) {
   const [adding, setAdding] = useState(false)
@@ -166,6 +170,18 @@ export function RepoTabs({
       </TabList>
 
       <div className="chunky-repotab-addwrap">
+        {activeId && onToggleAgentsMd && (
+          <button
+            type="button"
+            className="chunky-repotab-add"
+            aria-label={`${agentsMdEnabled === false ? "Enable" : "Disable"} AGENTS.md instructions`}
+            title={`${agentsMdEnabled === false ? "Enable" : "Disable"} AGENTS.md instructions for this repository`}
+            onClick={() => void onToggleAgentsMd(agentsMdEnabled === false)}
+            disabled={busy}
+          >
+            {agentsMdEnabled === false ? "AGENTS off" : "AGENTS on"}
+          </button>
+        )}
         <button
           type="button"
           className="chunky-repotab-add"

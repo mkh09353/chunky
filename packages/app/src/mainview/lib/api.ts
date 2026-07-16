@@ -15,6 +15,7 @@ import {
   type ModesResponse,
   type Repo,
   type ReposResponse,
+  type RepositoryInstructionsResponse,
   type SendBlockedResponse,
   type SessionSummary,
   type ManageSkillReposRequest,
@@ -146,6 +147,23 @@ export async function removeRepo(baseUrl: string, id: string): Promise<ReposResp
   const res = await fetch(baseUrl + ROUTES.removeRepo(id), { method: "DELETE" })
   if (!res.ok) throw new Error(`remove repo failed (${res.status})`)
   return (await res.json()) as ReposResponse
+}
+
+export async function getRepositoryInstructions(baseUrl: string, id: string): Promise<RepositoryInstructionsResponse> {
+  const res = await fetch(baseUrl + ROUTES.repositoryInstructions(id))
+  if (!res.ok) throw new Error(`get repository instructions failed (${res.status})`)
+  return (await res.json()) as RepositoryInstructionsResponse
+}
+
+export async function setRepositoryInstructions(baseUrl: string, id: string, enabled: boolean): Promise<RepositoryInstructionsResponse> {
+  const res = await fetch(baseUrl + ROUTES.repositoryInstructions(id), {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  })
+  const data = (await res.json().catch(() => ({}))) as RepositoryInstructionsResponse & { error?: string }
+  if (!res.ok) throw new Error(data.error || `set repository instructions failed (${res.status})`)
+  return data
 }
 
 /** Create a session pinned to `repoId`'s workspace (server default when omitted).

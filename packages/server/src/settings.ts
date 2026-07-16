@@ -76,6 +76,8 @@ export interface ModeSpec {
 }
 
 export interface Settings {
+  /** Repository-scoped instruction loading. Missing entries are enabled. */
+  repositoryInstructions?: Record<string, { agentsMd?: boolean }>
   fileToolProfile?: "standard" | "hashline"
   /** User/project skill names disabled globally. */
   disabledSkills?: string[]
@@ -108,6 +110,18 @@ export interface Settings {
   skillRepos?: SkillRepoRecord[]
   /** Optional user exceptions to Chunky's zero-config workflow routing. Keys are provider/model. */
   workflowTargets?: Record<string, WorkflowTargetOverride>
+}
+
+export function agentsMdEnabled(repo: string): boolean {
+  return loadSettings().repositoryInstructions?.[repo]?.agentsMd !== false
+}
+
+export function setAgentsMdEnabled(repo: string, enabled: boolean): boolean {
+  const s = loadSettings()
+  const repositoryInstructions = { ...(s.repositoryInstructions ?? {}) }
+  repositoryInstructions[repo] = { ...(repositoryInstructions[repo] ?? {}), agentsMd: enabled }
+  save({ ...s, repositoryInstructions })
+  return enabled
 }
 export type FileToolProfile = "standard" | "hashline"
 export function resolveFileToolProfile(): FileToolProfile {

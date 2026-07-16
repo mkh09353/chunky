@@ -87,23 +87,6 @@ function coldReason(w: CacheCold): string {
   return `${mins}m idle`
 }
 
-/** One-line preview of a buffered message for the outbox indicators: first line,
- *  clipped so a long paste can't blow out the width. */
-function outboxPreview(shown: string): string {
-  const line = shown.replace(/\s+/g, " ").trim()
-  return line.length > 56 ? line.slice(0, 55) + "…" : line
-}
-
-/** A message the user composed while a turn was in flight, buffered for later
- *  delivery. `text` is the full model prompt (pastes expanded); `shown` is the
- *  transcript echo; `images` are its pasted attachments. Queue items send when the
- *  turn ends; steer items cut in at the next tool result (see the outbox logic). */
-interface Outgoing {
-  text: string
-  shown: string
-  images: ClipboardImage[]
-}
-
 /** A send the server refused via the cache guard, parked until the user decides. */
 interface PendingSend {
   text: string
@@ -241,32 +224,12 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   const attachmentsRef = useRef<ClipboardImage[]>([])
   attachmentsRef.current = attachments
 
-  // ---- Outbox: type-ahead while a turn runs ----
-  // Messages composed mid-turn are buffered here instead of interrupting. Queue
-  // items (plain Enter) send in order when the turn ends; steer items (Alt+Enter)
-  // cut in at the next main-thread tool result, else fall through to the queue on
-  // idle. Refs mirror the state so the stable `apply` callback reads the latest.
-  const [queue, setQueue] = useState<Outgoing[]>([])
-  const [steerQueue, setSteerQueue] = useState<Outgoing[]>([])
+  // Server-authoritative count from queue.changed. The queued prompt bodies live
+  // only on the server; this client never drains or re-sends them.
   const [authoritativeQueueCount, setAuthoritativeQueueCount] = useState(0)
-  const queueRef = useRef<Outgoing[]>([])
-  queueRef.current = queue
-  const steerRef = useRef<Outgoing[]>([])
-  steerRef.current = steerQueue
   // Latest run state for `submit`, which is defined before `running` is derived.
   const runningRef = useRef(false)
   runningRef.current = state.status === "running"
-  // True from the moment a steer POST leaves until the superseding turn's
-  // `running` arrives: the aborted turn's transient `idle` must NOT drain the
-  // queue (that would race the steer). Cleared on the next `running`.
-  const steerInFlightRef = useRef(false)
-  // Stable indirection so `apply` (kept dep-light to avoid tearing down the SSE
-  // stream) can invoke the latest outbox handlers. Reassigned every render.
-  const outboxRef = useRef<{ onIdle: () => void; onRunning: () => void; onMainToolEnd: () => void }>({
-    onIdle: () => {},
-    onRunning: () => {},
-    onMainToolEnd: () => {},
-  })
 
   const rawSupported = rawModeSupported
 
@@ -296,11 +259,6 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       if (key.escape && mode === "live" && state.status === "running") {
         const sid = sessionIdRef.current
         if (sid) void fetch(baseUrl + ROUTES.interrupt(sid), { method: "POST" }).catch(() => {})
-        // Interrupt means stop: drop anything buffered so it doesn't auto-fire on
-        // the idle the interrupt produces. (The composer's unsent draft is kept.)
-        setQueue([])
-        setSteerQueue([])
-        steerInFlightRef.current = false
       }
     },
     { isActive: rawSupported },
@@ -325,28 +283,25 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       if (ev.type === "message.start" && !ev.threadId) lastAssistantRef.current = ""
       if (ev.type === "message.delta" && !ev.threadId) lastAssistantRef.current += ev.text
       if (ev.type === "queue.changed") setAuthoritativeQueueCount(ev.entries.length)
-      // injected:true is a model-continuation marker; the accepted injected:false
-      // event is the sole transcript echo, including during resume replay.
+      // Live sends are echoed locally after the POST is accepted. On resume, the
+      // accepted injected:false event is the sole raw transcript echo;
+      // injected:true is only a model-continuation marker.
+      if (ev.type === "message.interjection" && !ev.injected && resumeReplayRef.current) {
+        setState((s) => pushUser(s, ev.text))
+      }
       if (ev.type === "session.status") {
         setStartedAt(ev.status === "running" ? Date.now() : null)
         if (ev.status === "running") {
           if (mode === "live") notifyTurnStart()
           runningSinceRef.current = Date.now()
-          outboxRef.current.onRunning()
         } else {
           const since = runningSinceRef.current
           runningSinceRef.current = null
           if (mode === "live" && since != null && Date.now() - since >= MIN_NOTIFY_MS) {
             notifyTurnEnd(lastAssistantRef.current)
           }
-          outboxRef.current.onIdle()
         }
       }
-      // The main agent finished a tool call — the boundary a steer waits for.
-      if (ev.type === "tool.end" && !ev.threadId) outboxRef.current.onMainToolEnd()
-      // Safety net: a steer-abort is quiet (emits no error), so an error here means
-      // the steer send itself failed — un-stick the guard so the queue can drain.
-      if (ev.type === "error") steerInFlightRef.current = false
       // Track goal state for the status line. History replay (resume) re-runs these
       // in order, so the last one wins and the status line reflects the true state.
       if (ev.type === "goal.update") setGoal(ev.goal)
@@ -552,12 +507,10 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       const shownText = display ?? text
       const shown =
         shownText || (images.length ? `📎 ${images.length} image${images.length === 1 ? "" : "s"}` : shownText)
-      // A turn is in flight (live mode): buffer instead of interrupting. Alt+Enter
-      // (steer) parks it to cut in at the next tool result; plain Enter queues it
-      // to send when the turn ends. The images already left `attachments` above,
-      // so they ride with the buffered message.
+      // While a turn is in flight the server owns both paths: plain Enter queues
+      // the prompt, while Option+Enter buffers an interjection for the next safe
+      // main-thread tool boundary.
       if (mode === "live" && runningRef.current) {
-        const item: Outgoing = { text, shown, images }
         void postMessage(text, shown, images, false, false, undefined, opts?.delivery === "interject" ? "interject" : "queue")
         return
       }
@@ -576,52 +529,6 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     },
     [mode, apply, demo, postMessage, pendingSkill],
   )
-
-  // Deliver a buffered message via the live send path. `steer: true` tells the
-  // server to abort the in-flight turn and resume mid-work with this message.
-  const deliverOutgoing = useCallback(
-    (m: Outgoing, steer: boolean) => {
-      void postMessage(m.text, m.shown, m.images, false, steer)
-    },
-    [postMessage],
-  )
-
-  // Outbox handlers, reassigned every render so the dep-light `apply` (kept lean
-  // to avoid tearing down the SSE stream) always calls the latest closures.
-  outboxRef.current.onRunning = () => {
-    // The superseding turn started — a queue drain on the next idle is safe again.
-    steerInFlightRef.current = false
-  }
-  outboxRef.current.onMainToolEnd = () => {
-    // Main agent hit a tool boundary: cut the oldest steer message in now. The
-    // server aborts the current turn and resumes with it; the checkpointer keeps
-    // the just-finished tool result in context. Guarded so one steer fires at a
-    // time (its own turn's tool boundaries won't re-trigger until it's running).
-    if (steerInFlightRef.current) return
-    const [head, ...rest] = steerRef.current
-    if (!head) return
-    setSteerQueue(rest)
-    steerInFlightRef.current = true
-    deliverOutgoing(head, true)
-  }
-  outboxRef.current.onIdle = () => {
-    // The turn ended. Ignore the transient idle a steer-abort produces (its own
-    // turn is starting) — draining now would race it.
-    if (steerInFlightRef.current) return
-    // A steer that never met a tool boundary still goes first (it's urgent), then
-    // the plain queue. One send per idle; its turn's end drains the next.
-    const steerHead = steerRef.current[0]
-    if (steerHead) {
-      setSteerQueue((q) => q.slice(1))
-      deliverOutgoing(steerHead, false) // idle: plain send, nothing to abort
-      return
-    }
-    const head = queueRef.current[0]
-    if (head) {
-      setQueue((q) => q.slice(1))
-      deliverOutgoing(head, false)
-    }
-  }
 
   // Cache-guard confirm bar: enter/y sends anyway (force), esc/n hands the
   // message (text + attachments) back to the input untouched.
@@ -841,9 +748,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     setGoal(null)
     setAttachments([])
     setPrefill(null)
-    setQueue([])
-    setSteerQueue([])
-    steerInFlightRef.current = false
+    setAuthoritativeQueueCount(0)
     resumeTargetRef.current = s.sessionId
     sessionIdRef.current = null
     setSessionKey((k) => k + 1)
@@ -1502,9 +1407,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           setGoal(null)
           setAttachments([])
           setPrefill(null)
-          setQueue([])
-          setSteerQueue([])
-          steerInFlightRef.current = false
+          setAuthoritativeQueueCount(0)
           if (mode === "live") {
             const old = sessionIdRef.current
             if (old) void fetch(baseUrl + ROUTES.interrupt(old), { method: "POST" }).catch(() => {})
@@ -1759,20 +1662,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         )}
         {/* Server-authoritative queued prompt count. */}
         {authoritativeQueueCount > 0 && <text attributes={TextAttributes.DIM}>{`  ⏎ queued: ${authoritativeQueueCount}`}</text>}
-        {/* Legacy local displays retained only for explicit steer compatibility. */}
-        {steerQueue.map((m, i) => (
-          <text key={`steer-${i}`} fg={ACCENT}>
-            {"  ↪ steer · next tool result: "}
-            {outboxPreview(m.shown)}
-          </text>
-        ))}
         {pendingSkill && <text fg={ACCENT}>{`  skill: ${pendingSkill} — type your prompt, Esc to clear`}</text>}
-        {queue.map((m, i) => (
-          <text key={`queue-${i}`} attributes={TextAttributes.DIM}>
-            {"  ⏎ queued: "}
-            {outboxPreview(m.shown)}
-          </text>
-        ))}
         <PromptInput
           disabled={pickerOpen || (running && mode !== "live")}
           running={running && mode === "live"}

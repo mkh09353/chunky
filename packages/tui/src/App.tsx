@@ -23,6 +23,7 @@ import {
 import { mockRun } from "@chunky/protocol/mock"
 import { mockThreadsRun } from "./mockThreads.js"
 import { initialState, pushUser, reduce, type TranscriptState } from "./transcript.js"
+import { abortableSleep, isIntentionalAbort, reconnectDelay, retryableHttpMessage } from "./reconnect.js"
 import { ACCENT, BORDER, WARNING } from "./theme.js"
 import { WelcomeBanner } from "./components/WelcomeBanner.js"
 import { Transcript, fmtTokens } from "./components/Transcript.js"
@@ -152,6 +153,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     }
   }, [renderer, toast])
   const [state, setState] = useState<TranscriptState>(initialState)
+  const [connection, setConnection] = useState<"connecting" | "connected" | "reconnecting">("connecting")
   const [startedAt, setStartedAt] = useState<number | null>(null)
   const [threadsCollapsed, setThreadsCollapsed] = useState(false)
   // When set, the /login provider picker is open; PromptInput is disabled and
@@ -331,18 +333,44 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         resumeReplayRef.current = resumeTargetRef.current != null
         // New conversation: nothing tracked yet, so the cold banner must go.
         setCacheCold(null)
-        const evRes = await fetch(baseUrl + ROUTES.events(sessionId), { signal: streamAbort.signal })
-        for await (const ev of readSSE(evRes)) {
-          if (cancelled) break
-          apply(ev)
+        let attempt = 0
+        while (!cancelled) {
+          try {
+            setConnection(attempt ? "reconnecting" : "connecting")
+            const evRes = await fetch(baseUrl + ROUTES.events(sessionId), { signal: streamAbort.signal })
+            if (!evRes.ok) throw new Error(retryableHttpMessage(evRes.status))
+            // /events always begins with the complete history. Reset the
+            // projection before consuming it so replay never duplicates rows.
+            setState(initialState)
+            resumeReplayRef.current = true
+            setConnection("connected")
+            for await (const ev of readSSE(evRes)) {
+              if (cancelled) break
+              apply(ev)
+              // A successful replay or live event proves the attachment is
+              // healthy; the next independent failure starts at base delay.
+              attempt = 0
+            }
+            if (cancelled) break
+            setConnection("reconnecting")
+            attempt = 1
+            // EOF is a disconnect even when the server closed cleanly.
+            await abortableSleep(reconnectDelay(attempt - 1), streamAbort.signal)
+          } catch (err) {
+            if (isIntentionalAbort(err, streamAbort.signal, cancelled)) break
+            attempt++
+            setConnection("reconnecting")
+            await abortableSleep(reconnectDelay(attempt), streamAbort.signal)
+          }
         }
       } catch (err) {
-        if (!cancelled) apply({ type: "error", message: `connect failed: ${String(err)}` })
+        if (!isIntentionalAbort(err, streamAbort.signal, cancelled)) setConnection("reconnecting")
       }
     })()
     return () => {
       cancelled = true
       streamAbort.abort()
+      setConnection("connecting")
     }
   }, [mode, baseUrl, apply, sessionKey])
 
@@ -1585,7 +1613,9 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         <WelcomeBanner mode={mode} cwd={cwd} model={bannerModel} />
         <Transcript state={state} collapsed={threadsCollapsed} />
       </scrollbox>
-      {running && startedAt != null && <StatusLine startedAt={startedAt} />}
+      {(running && startedAt != null) || connection === "reconnecting" ? (
+        <StatusLine startedAt={startedAt ?? undefined} reconnecting={connection === "reconnecting"} />
+      ) : null}
       {updateNotice && <text attributes={TextAttributes.DIM}>{updateNotice}</text>}
       <box flexDirection="column" width="100%" marginTop={1} flexShrink={0}>
         {onboardingOpen && <OnboardingWizard baseUrl={baseUrl} onDone={(stamped) => { setOnboardingOpen(false); if (!stamped) void fetch(baseUrl + "/api/onboarding/complete", { method: "POST" }).catch(() => {}) }} onLogin={async (p) => {

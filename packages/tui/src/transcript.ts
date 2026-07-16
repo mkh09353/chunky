@@ -58,6 +58,12 @@ export interface TranscriptState {
   status: "idle" | "running"
 }
 
+/** Rebuild the projection from a server history replay, preventing duplicate
+ * rows when an SSE reconnect replays the complete session history. */
+export function replayHistory(events: AgentEvent[]): TranscriptState {
+  return events.reduce(reduce, initialState)
+}
+
 export const initialState: TranscriptState = {
   threads: { [MAIN]: { id: MAIN, parentId: null, title: "main", status: "idle", items: [] } },
   order: [MAIN],

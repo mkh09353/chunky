@@ -9,6 +9,7 @@ import {
   type Options as AnthropicOptions,
   type Query,
   type SDKMessage,
+  type SDKUserMessage,
 } from "@anthropic-ai/claude-agent-sdk"
 import { createHash, randomUUID } from "node:crypto"
 import { z } from "zod"
@@ -19,7 +20,7 @@ import { listSidekickSeats, sidekickFor, type AgentSelection } from "./providers
 import { anthropicOAuthEnvironment } from "./providers/anthropic-sdk.ts"
 import { usageFromAnthropicResult } from "./usage.ts"
 import { noteRequest } from "./cache-watch.ts"
-import type { CacheContext } from "./run.ts"
+import type { CacheContext, InputImage } from "./run.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { bash, bashInputShape } from "./tools/bash.ts"
 import { editInputShape, editTool } from "./tools/edit.ts"
@@ -331,6 +332,8 @@ export interface AnthropicRunRequest {
   selection: AgentSelection
   threadId: string
   prompt: string
+  /** Pasted attachments (Ctrl+V) for the first turn, sent as image content blocks. */
+  images?: InputImage[]
   emit: Emit
   eventThreadId?: string
   freshSession?: boolean
@@ -515,12 +518,49 @@ export async function translateAnthropicMessages(
   return textChunks.join("")
 }
 
+// Anthropic accepts base64 image blocks only for these media types; anything
+// else (or a missing type) falls back to PNG so the block is never rejected.
+const ANTHROPIC_IMAGE_MEDIA_TYPES = ["image/jpeg", "image/png", "image/gif", "image/webp"] as const
+type AnthropicImageMediaType = (typeof ANTHROPIC_IMAGE_MEDIA_TYPES)[number]
+
+function clampImageMediaType(mediaType: string): AnthropicImageMediaType {
+  return (ANTHROPIC_IMAGE_MEDIA_TYPES as readonly string[]).includes(mediaType)
+    ? (mediaType as AnthropicImageMediaType)
+    : "image/png"
+}
+
+/** Plain string prompt (unchanged, resume/cache-friendly) when there are no
+ *  images; otherwise a one-shot streaming-input generator yielding a single
+ *  multimodal user message (text block + base64 image blocks). */
+function anthropicPrompt(
+  prompt: string,
+  images?: InputImage[],
+): string | AsyncIterable<SDKUserMessage> {
+  if (!images || images.length === 0) return prompt
+  return (async function* (): AsyncGenerator<SDKUserMessage> {
+    yield {
+      type: "user",
+      parent_tool_use_id: null,
+      message: {
+        role: "user",
+        content: [
+          ...(prompt ? [{ type: "text" as const, text: prompt }] : []),
+          ...images.map((i) => ({
+            type: "image" as const,
+            source: { type: "base64" as const, media_type: clampImageMediaType(i.mediaType), data: i.base64 },
+          })),
+        ],
+      },
+    }
+  })()
+}
+
 export async function runAnthropicAgent(
   request: AnthropicRunRequest,
   dependencies: AnthropicRunnerDependencies = defaultDependencies,
 ): Promise<string> {
   const options = await buildAnthropicOptions(request, dependencies)
-  const q: Query = dependencies.query({ prompt: request.prompt, options })
+  const q: Query = dependencies.query({ prompt: anthropicPrompt(request.prompt, request.images), options })
   request.onSubmitted?.()
   try {
     const account = await q.accountInfo()

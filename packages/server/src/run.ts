@@ -324,7 +324,8 @@ export function userMessageContent(text: string, images?: InputImage[]): unknown
  * This is the MAIN session thread: its message/tool events are untagged, and it
  * installs a ThreadManager (registered under `sessionId`) so the model can call
  * the `spawn_thread` tool to launch real, independent, streamable child threads.
- * `images` are pasted attachments (Ctrl+V); ignored on the Anthropic-SDK path for now.
+ * `images` are pasted attachments (Ctrl+V); sent as multimodal content on both
+ * the LangChain (`image_url`) and Anthropic-SDK (image content blocks) paths.
  */
 export async function runAgent(
   sessionId: string,
@@ -393,7 +394,7 @@ export async function runAgent(
     if (providerRuntime(selection.provider) === "anthropic-sdk") {
       const { runAnthropicAgent } = await import("./anthropic-runner.ts")
       await runAnthropicAgent({
-        selection, threadId: sessionId, prompt, emit, cache, abort, workspace, agentsMd,
+        selection, threadId: sessionId, prompt, images: turnImages, emit, cache, abort, workspace, agentsMd,
         onSubmitted: () => consumeTaskReminders(sessionId, pendingReminder.ids),
       })
     } else {

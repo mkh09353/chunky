@@ -19,4 +19,36 @@ describe("translateStream", () => {
       "provider returned an empty response",
     )
   })
+
+  test("emits structured tool raw while keeping output equal to prompt text", async () => {
+    const events: any[] = []
+    async function* withToolResult() {
+      yield ["updates", {
+        tools: {
+          messages: [{
+            type: "tool",
+            tool_call_id: "call-1",
+            content: "concise model text",
+            artifact: {
+              promptText: "concise model text",
+              raw: { kind: "bash", exitCode: 0 },
+              ok: true,
+            },
+          }],
+        },
+      }]
+      yield ["updates", { model: { messages: [{ type: "ai", content: "done" }] } }]
+    }
+
+    await translateStream(withToolResult(), undefined, (event) => events.push(event))
+
+    expect(events).toContainEqual({
+      type: "tool.end",
+      id: "call-1",
+      ok: true,
+      output: "concise model text",
+      raw: { kind: "bash", exitCode: 0 },
+    })
+    expect(events.find((event) => event.type === "tool.end")?.output).not.toContain("exitCode")
+  })
 })

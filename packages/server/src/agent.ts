@@ -46,6 +46,7 @@ import { manageModels } from "./tools/manage-models.ts"
 import { manageSkillReposTool } from "./tools/manage-skill-repos.ts"
 import { skillTools } from "./tools/skills.ts"
 import { write } from "./tools/write.ts"
+import { dualTool } from "./tools/result.ts"
 
 // Re-export pure gating/classification helpers for tests and callers.
 export {
@@ -140,7 +141,7 @@ function isGptCodexFamily(modelId: string | undefined, providerId: string): bool
  * edit tool is bound per model — this is the per-model swap.
  */
 export function editToolsForModel(modelId: string | undefined, providerId: string) {
-  return isGptCodexFamily(modelId, providerId) ? [applyPatch] : [editTool]
+  return isGptCodexFamily(modelId, providerId) ? [applyPatch] : [dualTool(editTool)]
 }
 
 /** The name of the edit tool bound for the active model — used to adapt the
@@ -161,7 +162,7 @@ export function executorToolsFor(selection: AgentSelection) {
   const sidekickSel = sidekickFor(selection)
   const tools = [
     read,
-    bash,
+    dualTool(bash),
     fffind,
     ffgrep,
     write,

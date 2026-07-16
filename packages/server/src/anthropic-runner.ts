@@ -51,6 +51,7 @@ import {
   searchSkillsTool,
 } from "./tools/skills.ts"
 import { write, writeInputShape } from "./tools/write.ts"
+import { asToolRunResult } from "./tools/result.ts"
 
 const SERVER_NAME = "chunky"
 const ALLOWED_TOOLS = [`mcp__${SERVER_NAME}__*`]
@@ -103,13 +104,28 @@ export interface AnthropicRunnerDependencies {
 
 const defaultDependencies: AnthropicRunnerDependencies = { query, getSessionInfo }
 
-function outputText(value: unknown): string {
-  if (typeof value === "string") return value
-  if (value == null) return ""
+export async function runChunkyToolForSdk(
+  name: string,
+  args: unknown,
+  invoke: (args: any) => Promise<unknown>,
+  emit: ReturnType<typeof taggedEmitter>,
+) {
+  const id = randomUUID()
+  emit({ type: "tool.start", id, name, input: args })
   try {
-    return JSON.stringify(value)
-  } catch {
-    return String(value)
+    const result = asToolRunResult(await invoke(args))
+    emit({
+      type: "tool.end",
+      id,
+      ok: result.ok,
+      output: result.promptText,
+      ...(result.raw !== undefined ? { raw: result.raw } : {}),
+    })
+    return { content: [{ type: "text" as const, text: result.promptText }] }
+  } catch (err) {
+    const output = (err as Error)?.message ?? String(err)
+    emit({ type: "tool.end", id, ok: false, output })
+    return { content: [{ type: "text" as const, text: output }], isError: true }
   }
 }
 
@@ -127,19 +143,7 @@ function wrapChunkyTool<Shape extends Record<string, z.ZodTypeAny>>(
     name,
     description,
     inputShape,
-    async (args) => {
-      const id = randomUUID()
-      emit({ type: "tool.start", id, name, input: args })
-      try {
-        const output = outputText(await invoke(args as z.infer<z.ZodObject<Shape>>))
-        emit({ type: "tool.end", id, ok: true, output })
-        return { content: [{ type: "text" as const, text: output }] }
-      } catch (err) {
-        const output = (err as Error)?.message ?? String(err)
-        emit({ type: "tool.end", id, ok: false, output })
-        return { content: [{ type: "text" as const, text: output }], isError: true }
-      }
-    },
+    (args) => runChunkyToolForSdk(name, args, invoke, emit),
     annotations ? { annotations } : undefined,
   )
 }

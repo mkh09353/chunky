@@ -16,6 +16,7 @@ import { Store } from "./store.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { classifyGoalError, decideGoalStep, firstLine, goalContinuationPrompt, toSnapshot, type GoalStep } from "./goal.ts"
 import { distilledAgentsMd } from "./agents-md.ts"
+import { asToolRunResult } from "./tools/result.ts"
 
 export type { Emit } from "./event-emitter.ts"
 
@@ -173,13 +174,19 @@ export async function translateStream(
               const id = msg?.tool_call_id ?? msg?.id ?? "unknown"
               if (seenToolEnd.has(id)) continue
               seenToolEnd.add(id)
-              const output =
-                typeof msg?.content === "string" ? msg.content : contentToText(msg?.content)
+              const result = asToolRunResult(
+                msg?.artifact && typeof msg.artifact === "object"
+                  ? msg.artifact
+                  : typeof msg?.content === "string"
+                    ? msg.content
+                    : contentToText(msg?.content),
+              )
               emitT({
                 type: "tool.end",
                 id,
-                ok: msg?.status !== "error",
-                output,
+                ok: result.ok && msg?.status !== "error",
+                output: result.promptText,
+                ...(result.raw !== undefined ? { raw: result.raw } : {}),
               })
             }
           }

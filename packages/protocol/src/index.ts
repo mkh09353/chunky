@@ -64,7 +64,7 @@ export type AgentEvent =
    *  future cost/context reporting; clients may ignore it. */
   | { type: "usage.update"; usage: UsageDelta; threadId?: string }
   | { type: "tool.start"; id: string; name: string; input: unknown; threadId?: string }
-  | { type: "tool.end"; id: string; ok: boolean; output: string; threadId?: string }
+  | { type: "tool.end"; id: string; ok: boolean; output: string; raw?: unknown; threadId?: string }
   /** `model` is the child's EFFECTIVE model id (inherited or overridden) so the
    *  TUI can label each thread with the model running it — omitted if unknown. */
   | { type: "thread.spawn"; threadId: string; parentThreadId: string | null; title: string; model?: string }

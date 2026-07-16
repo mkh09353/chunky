@@ -1,5 +1,13 @@
-import { describe, expect, test } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
+import { rmSync } from "node:fs"
 import { bash } from "./bash.ts"
+import { asToolRunResult, dualTool } from "./result.ts"
+
+const spillPaths: string[] = []
+
+afterEach(() => {
+  for (const path of spillPaths.splice(0)) rmSync(path, { force: true })
+})
 
 describe("bash timeout", () => {
   test("terminates descendants that inherit the command pipes", async () => {
@@ -49,5 +57,48 @@ describe("bash background processes", () => {
     expect(Date.now() - started).toBeLessThan(1_000)
     expect(String(output)).toContain("done")
     expect(String(output)).not.toContain("background process")
+  })
+
+  test("returns prompt text separately from structured execution metadata", async () => {
+    const result = asToolRunResult(await bash.invoke({ command: "printf hello" }))
+
+    expect(result.promptText).toContain("hello")
+    expect(result.promptText).toContain("[exit code: 0]")
+    expect(result.raw).toMatchObject({
+      kind: "bash",
+      command: "printf hello",
+      exitCode: 0,
+      timedOut: false,
+      truncated: false,
+      rawBytes: 5,
+    })
+  })
+
+  test("the LangChain adapter exposes only prompt text as message content", async () => {
+    const message = await dualTool(bash).invoke({ command: "printf adapted" }, { toolCall: { id: "bash-1" } } as any)
+
+    expect(message.content).toContain("adapted")
+    expect(message.content).not.toContain("rawBytes")
+    expect(message.artifact).toMatchObject({
+      promptText: expect.stringContaining("adapted"),
+      raw: { kind: "bash", exitCode: 0, rawBytes: 7 },
+      ok: true,
+    })
+  })
+
+  test("reports truncation and a recoverable spill path without embedding raw output", async () => {
+    const result = asToolRunResult(await bash.invoke({ command: "yes x | head -n 25000" }))
+    const raw = result.raw as any
+    spillPaths.push(raw.spillPath)
+
+    expect(raw).toMatchObject({
+      kind: "bash",
+      exitCode: 0,
+      truncated: true,
+      rawBytes: 50_000,
+    })
+    expect(raw.spillPath).toBeString()
+    expect(result.promptText).toContain(`full output: ${raw.spillPath}`)
+    expect(result.promptText.length).toBeLessThan(raw.rawBytes)
   })
 })

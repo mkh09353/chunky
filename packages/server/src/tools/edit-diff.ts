@@ -66,6 +66,7 @@ interface MatchedEdit {
   matchIndex: number
   matchLength: number
   newText: string
+  usedFuzzyMatch: boolean
 }
 
 type TextReplacement = Pick<MatchedEdit, "matchIndex" | "matchLength" | "newText">
@@ -190,6 +191,14 @@ export interface Edit {
 export interface AppliedEditsResult {
   baseContent: string
   newContent: string
+  appliedEdits: Array<{
+    editIndex: number
+    startLine: number
+    endLine: number
+    oldText: string
+    newText: string
+    fuzzy: boolean
+  }>
 }
 
 /**
@@ -334,6 +343,7 @@ export function applyEditsToNormalizedContent(
       matchIndex: matchResult.index,
       matchLength: matchResult.matchLength,
       newText: edit.newText,
+      usedFuzzyMatch: matchResult.usedFuzzyMatch,
     })
   }
 
@@ -357,5 +367,21 @@ export function applyEditsToNormalizedContent(
     throw getNoChangeError(path, normalizedEdits.length)
   }
 
-  return { baseContent, newContent }
+  const lines = getLineSpans(replacementBaseContent)
+  return {
+    baseContent,
+    newContent,
+    appliedEdits: matchedEdits.map((match) => {
+      const range = getReplacementLineRange(lines, match)
+      const edit = edits[match.editIndex]
+      return {
+        editIndex: match.editIndex,
+        startLine: range.startLine + 1,
+        endLine: range.endLine,
+        oldText: edit.oldText,
+        newText: edit.newText,
+        fuzzy: match.usedFuzzyMatch,
+      }
+    }),
+  }
 }

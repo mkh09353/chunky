@@ -17,6 +17,7 @@ import {
   restoreLineEndings,
   stripBom,
 } from "./edit-diff.ts"
+import { toolResult } from "./result.ts"
 
 interface EditInput {
   path: string
@@ -85,11 +86,27 @@ export const editTool = tool(
     const { bom, text: content } = stripBom(rawContent)
     const originalEnding = detectLineEnding(content)
     const normalized = normalizeToLF(content)
-    const { newContent } = applyEditsToNormalizedContent(normalized, edits, path)
+    const { newContent, appliedEdits } = applyEditsToNormalizedContent(normalized, edits, path)
     const finalContent = bom + restoreLineEndings(newContent, originalEnding)
     writeFileSync(full, finalContent, "utf-8")
 
-    return `Successfully replaced ${edits.length} block(s) in ${path}.`
+    const maxSnippet = 2_000
+    const bounded = appliedEdits.slice(0, 32).map((edit) => ({
+      ...edit,
+      oldText: edit.oldText.slice(0, maxSnippet),
+      newText: edit.newText.slice(0, maxSnippet),
+      ...(edit.oldText.length > maxSnippet || edit.newText.length > maxSnippet
+        ? { snippetsTruncated: true } : {}),
+    }))
+    return toolResult(`Successfully replaced ${edits.length} block(s) in ${path}.`, {
+      raw: {
+        kind: "edit",
+        path,
+        editCount: edits.length,
+        edits: bounded,
+        ...(appliedEdits.length > bounded.length ? { editsTruncated: true } : {}),
+      },
+    })
   },
   {
     name: "edit",

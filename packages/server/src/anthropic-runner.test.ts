@@ -5,6 +5,7 @@ import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk"
 import { buildSystemPrompt } from "./prompt.ts"
 import {
   buildAnthropicOptions,
+  runChunkyToolForSdk,
   translateAnthropicMessages,
   type AnthropicRunnerDependencies,
 } from "./anthropic-runner.ts"
@@ -13,6 +14,7 @@ import type { AgentSelection } from "./providers/registry.ts"
 import { join } from "node:path"
 import { mkdtempSync } from "node:fs"
 import { tmpdir } from "node:os"
+import { toolResult } from "./tools/result.ts"
 
 const selection: AgentSelection = Object.freeze({
   provider: "anthropic",
@@ -118,6 +120,23 @@ async function main() {
     rejectedApiKey = String(err).includes("expected Claude OAuth")
   }
   assert(rejectedApiKey, "non-OAuth SDK initialization must fail closed")
+
+  const toolEvents: AgentEvent[] = []
+  const toolResponse = await runChunkyToolForSdk(
+    "test_tool",
+    { value: 1 },
+    async () => toolResult("model-only text", { raw: { kind: "test", value: 1 } }),
+    (event) => toolEvents.push(event),
+  )
+  assert(toolResponse.content[0]?.text === "model-only text", "Anthropic tool content must contain only promptText")
+  assert(
+    toolEvents.some((event) =>
+      event.type === "tool.end" &&
+      event.output === "model-only text" &&
+      (event.raw as any)?.kind === "test"
+    ),
+    "Anthropic tool.end must carry raw separately from output",
+  )
 
   const env = anthropicOAuthEnvironment()
   assert(env.CLAUDE_AGENT_SDK_CLIENT_APP === "chunky-cli/0.0.0", "SDK client app must be identified")

@@ -16,6 +16,7 @@ import { z } from "zod"
 import { workspaceFromConfig } from "../workspace.ts"
 import { MAX_BYTES, MAX_LINES } from "./fs-util.ts"
 import { compressBashOutput } from "./compress.ts"
+import { toolResult } from "./result.ts"
 
 // Commands still run under `bash -lc` (the model writes bash, so bash semantics
 // are guaranteed), but PATH is snapshotted once from the user's real login shell
@@ -152,6 +153,7 @@ export const bash = tool(
 
     const { content, truncated, originalLines, reducer } = compressBashOutput(command, combined)
     let out = content
+    let spillPath: string | undefined
 
     // Spill when we dropped content (size cap OR reducer) so the model can recover.
     // Compare against the raw combined output — if cleanup alone shortened it but
@@ -159,6 +161,7 @@ export const bash = tool(
     // enough; we spill whenever `truncated` is set by compress.
     if (truncated && combined.length > 0 && content.length < combined.length) {
       const tmp = join(tmpdir(), `chunky-bash-${Date.now()}-${randomBytes(4).toString("hex")}.txt`)
+      spillPath = tmp
       writeFileSync(tmp, combined, "utf-8")
       const bits = [`full output: ${tmp}`]
       if (originalLines > 0) bits.unshift(`kept compressed view of ${originalLines} lines`)
@@ -170,7 +173,11 @@ export const bash = tool(
     const note = detached && !timedOut
       ? "\n[note: a background process is still running and holding the output pipe; its further output is not captured]"
       : ""
-    return `${out ? `${out}\n` : ""}[exit code: ${status}]${note}`
+    const promptText = `${out ? `${out}\n` : ""}[exit code: ${status}]${note}`
+    return toolResult(promptText, { raw: {
+      kind: "bash", command, exitCode, timedOut, truncated, originalLines, reducer,
+      rawBytes: Buffer.byteLength(combined), ...(spillPath ? { spillPath } : {}), ...(detached ? { detached: true } : {}),
+    } })
   },
   {
     name: "bash",

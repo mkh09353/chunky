@@ -26,6 +26,32 @@ echo "→ installing dependencies (this can take a minute)"
 # --ignore-scripts skips the better-sqlite3 native build, which we don't use (bun:sqlite).
 ( cd "$APP" && bun install --ignore-scripts )
 
+# Verify the claude-agent-sdk native binary for this platform actually landed.
+# A stale node_modules can make bun report "no changes" while the optional
+# platform package (which contains the `claude` binary) is missing.
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64) SDK_PLAT="darwin-arm64" ;;
+  Darwin-x86_64) SDK_PLAT="darwin-x64" ;;
+  Linux-aarch64|Linux-arm64) SDK_PLAT="linux-arm64" ;;
+  Linux-x86_64) SDK_PLAT="linux-x64" ;;
+  *) SDK_PLAT="" ;;
+esac
+if [ -n "$SDK_PLAT" ]; then
+  find_sdk_bin() { find "$APP/node_modules" -type f -name claude -path "*claude-agent-sdk-$SDK_PLAT*" 2>/dev/null | head -n1; }
+  BINPATH="$(find_sdk_bin)"
+  if [ -z "$BINPATH" ]; then
+    echo "→ native claude-agent-sdk binary missing; forcing a clean reinstall"
+    ( cd "$APP" && rm -rf node_modules packages/*/node_modules && bun install --ignore-scripts )
+    BINPATH="$(find_sdk_bin)"
+  fi
+  if [ -z "$BINPATH" ]; then
+    echo "error: @anthropic-ai/claude-agent-sdk-$SDK_PLAT did not install (native 'claude' binary not found)." >&2
+    echo "       Check that optional deps aren't disabled (bunfig.toml/.npmrc 'optional = false') and retry." >&2
+    exit 1
+  fi
+  chmod +x "$BINPATH" 2>/dev/null || true
+fi
+
 echo "→ seeding runtime state in $STATE (kept out of your projects)"
 for f in .env auth.json settings.json; do
   if [ -f "$SRC/$f" ] && [ ! -f "$STATE/$f" ]; then

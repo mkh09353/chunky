@@ -27,6 +27,31 @@ tmp="$CHUNKY/app.new"; rm -rf "$tmp"; mkdir -p "$tmp"
 curl -fsSL "$url" -o "$CHUNKY/update.tar.gz"
 tar -xzf "$CHUNKY/update.tar.gz" --strip-components=1 -C "$tmp"
 (cd "$tmp" && "$BUN" install --ignore-scripts)
+
+# Verify the claude-agent-sdk native binary for this platform actually landed;
+# without it the server dies with "Native CLI binary for <plat> not found".
+case "$(uname -s)-$(uname -m)" in
+  Darwin-arm64) SDK_PLAT="darwin-arm64" ;;
+  Darwin-x86_64) SDK_PLAT="darwin-x64" ;;
+  Linux-aarch64|Linux-arm64) SDK_PLAT="linux-arm64" ;;
+  Linux-x86_64) SDK_PLAT="linux-x64" ;;
+  *) SDK_PLAT="" ;;
+esac
+if [ -n "$SDK_PLAT" ]; then
+  find_sdk_bin() { find "$tmp/node_modules" -type f -name claude -path "*claude-agent-sdk-$SDK_PLAT*" 2>/dev/null | head -n1; }
+  BINPATH="$(find_sdk_bin)"
+  if [ -z "$BINPATH" ]; then
+    echo "→ native claude-agent-sdk binary missing; forcing a clean reinstall"
+    (cd "$tmp" && rm -rf node_modules packages/*/node_modules && "$BUN" install --ignore-scripts)
+    BINPATH="$(find_sdk_bin)"
+  fi
+  if [ -z "$BINPATH" ]; then
+    echo "error: @anthropic-ai/claude-agent-sdk-$SDK_PLAT did not install (native 'claude' binary not found)." >&2
+    echo "       Check that optional deps aren't disabled (bunfig.toml/.npmrc 'optional = false') and retry." >&2
+    exit 1
+  fi
+  chmod +x "$BINPATH" 2>/dev/null || true
+fi
 rm -rf "$APP.old"; [ -d "$APP" ] && mv "$APP" "$APP.old"; mv "$tmp" "$APP"; rm -f "$CHUNKY/update.tar.gz"
 cat > "$BIN/chunky" <<SH
 #!/bin/sh

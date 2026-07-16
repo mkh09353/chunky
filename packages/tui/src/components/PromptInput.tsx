@@ -360,7 +360,7 @@ function HintsLine({
   threadsHint: string
 }) {
   if (running) {
-    return <text attributes={DIM}>{"  alt+enter steer · ctrl+c quit"}</text>
+    return <text attributes={DIM}>{"  option+enter steer · ctrl+c quit"}</text>
   }
   if (value.length === 0) {
     return (
@@ -424,7 +424,7 @@ function CursorText({
   if (value.length === 0) {
     return (
       <text attributes={DIM}>
-        {running ? "type to queue · alt+enter to steer" : 'Try "fix lint errors" or @file'}
+        {running ? "type to queue · option+enter to steer" : 'Try "fix lint errors" or @file'}
       </text>
     )
   }

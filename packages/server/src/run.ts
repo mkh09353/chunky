@@ -32,6 +32,7 @@ export interface CacheContext {
 export interface InterjectionBoundary {
   prompts: string[]
   texts: string[]
+  images: (InputImage[] | undefined)[]
 }
 
 // Extract plain text from an AIMessageChunk `content`, which is either a string
@@ -194,7 +195,7 @@ export async function translateStream(
                 output: result.promptText,
                 ...(result.raw !== undefined ? { raw: result.raw } : {}),
               })
-              const interjection = onToolBoundary?.()
+              const interjection = threadId === undefined ? onToolBoundary?.() : undefined
               if (interjection !== undefined) throw Object.assign(new Error(JSON.stringify(interjection)), { name: "InterjectionBoundary" })
             }
           }
@@ -386,7 +387,7 @@ export async function runAgent(
 
   try {
     let prompt = text
-    let pendingInterjections: InterjectionBoundary = { prompts: [], texts: [] }
+    let pendingInterjections: InterjectionBoundary = { prompts: [], texts: [], images: [] }
     let turnImages = images
     // Goal-mode continuation loop. With NO goal this runs exactly once
     // (decideGoalStep → "no-goal" → break) — identical to the pre-goal behavior.
@@ -399,7 +400,7 @@ export async function runAgent(
           const boundary = JSON.parse((err as Error).message) as InterjectionBoundary
           pendingInterjections = boundary
           prompt = pendingInterjections.prompts.shift() ?? prompt
-          turnImages = undefined
+          turnImages = pendingInterjections.images.shift()
           const note = pendingInterjections.texts.shift()
           if (note !== undefined) emit({ type: "message.interjection", sessionId, text: note, injected: true })
           continue
@@ -410,6 +411,7 @@ export async function runAgent(
 
       if (pendingInterjections.prompts.length) {
         prompt = pendingInterjections.prompts.shift()!
+        turnImages = pendingInterjections.images.shift()
         const note = pendingInterjections.texts.shift()!
         emit({ type: "message.interjection", sessionId, text: note, injected: true })
         continue

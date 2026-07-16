@@ -325,7 +325,8 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       if (ev.type === "message.start" && !ev.threadId) lastAssistantRef.current = ""
       if (ev.type === "message.delta" && !ev.threadId) lastAssistantRef.current += ev.text
       if (ev.type === "queue.changed") setAuthoritativeQueueCount(ev.entries.length)
-      if (ev.type === "message.interjection" && ev.injected) setState((s) => pushUser(s, ev.text))
+      // injected:true is a model-continuation marker; the accepted injected:false
+      // event is the sole transcript echo, including during resume replay.
       if (ev.type === "session.status") {
         setStartedAt(ev.status === "running" ? Date.now() : null)
         if (ev.status === "running") {

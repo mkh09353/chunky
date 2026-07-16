@@ -199,6 +199,7 @@ function startRun(
       return notes.length ? {
         prompts: notes.map((note) => formatInterjection(note.text)),
         texts: notes.map((note) => note.text),
+        images: notes.map((note) => note.images?.map((image) => ({ base64: image.base64, mediaType: image.mediaType }))),
       } : undefined
     },
   })

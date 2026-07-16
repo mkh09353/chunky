@@ -2,6 +2,22 @@ import { describe, expect, test } from "bun:test"
 import { translateStream } from "./run.ts"
 
 describe("translateStream", () => {
+  test("main-thread tool boundary emits tool.end then raises controlled boundary", async () => {
+    const events: any[] = []
+    const boundary = { prompts: ["wrapped"], texts: ["raw"], images: [undefined] }
+    async function* stream() { yield ["updates", { tools: { messages: [{ type: "tool", tool_call_id: "x", content: "ok" }] } }] }
+    await expect(translateStream(stream(), undefined, (e) => events.push(e), undefined, () => boundary)).rejects.toMatchObject({ name: "InterjectionBoundary" })
+    expect(events.at(-1)).toMatchObject({ type: "tool.end", id: "x" })
+  })
+
+  test("child-thread tool boundaries never invoke the main boundary callback", async () => {
+    let called = false
+    async function* stream() {
+      yield ["updates", { tools: { messages: [{ type: "tool", tool_call_id: "x", content: "ok" }] } }]
+    }
+    await translateStream(stream(), "child", () => {}, undefined, () => { called = true; return { prompts: ["x"], texts: ["x"], images: [undefined] } })
+    expect(called).toBe(false)
+  })
   test("surfaces output-limit completion distinctly", async () => {
     const events: any[] = []
     async function* limited() {

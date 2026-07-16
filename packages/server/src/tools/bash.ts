@@ -17,6 +17,8 @@ import { workspaceFromConfig } from "../workspace.ts"
 import { MAX_BYTES, MAX_LINES } from "./fs-util.ts"
 import { compressBashOutput } from "./compress.ts"
 import { toolResult } from "./result.ts"
+import { appendTaskOutput, createTask, finishTask, markTaskTimedOut, taskSpillPath } from "../tasks.ts"
+import { terminateProcessTree } from "../process-tree.ts"
 
 // Commands still run under `bash -lc` (the model writes bash, so bash semantics
 // are guaranteed), but PATH is snapshotted once from the user's real login shell
@@ -51,46 +53,8 @@ export function resetLoginPathForTests(): void {
 export const bashInputShape = {
   command: z.string().describe("The bash command."),
   timeout: z.number().optional().describe("Timeout in seconds (optional)."),
-}
-
-/** Return every descendant PID before killing anything, while parent/child
- * links are still intact. Long-lived dev commands commonly add two or three
- * wrapper layers (pnpm -> shell -> vite/tsx). */
-function descendantPids(rootPid: number): number[] {
-  const found: number[] = []
-  const visit = (parentPid: number) => {
-    const result = Bun.spawnSync(["pgrep", "-P", String(parentPid)], { stdout: "pipe", stderr: "ignore" })
-    const children = result.stdout
-      .toString()
-      .split(/\s+/)
-      .map(Number)
-      .filter((pid) => Number.isInteger(pid) && pid > 0)
-    for (const pid of children) {
-      visit(pid)
-      found.push(pid)
-    }
-  }
-  visit(rootPid)
-  return found
-}
-
-function signalPids(pids: number[], signal: NodeJS.Signals): void {
-  for (const pid of pids) {
-    try {
-      process.kill(pid, signal)
-    } catch {
-      // It exited between discovery and signaling.
-    }
-  }
-}
-
-/** Killing only the wrapper shell leaves descendants holding stdout/stderr
- * open, so Response(stream).text() never settles. Snapshot and terminate the
- * complete tree, deepest-first, then force any TERM-resistant processes down. */
-function terminateProcessTree(rootPid: number): void {
-  const pids = [...descendantPids(rootPid), rootPid]
-  signalPids(pids, "SIGTERM")
-  setTimeout(() => signalPids(pids, "SIGKILL"), 250)
+  background: z.boolean().optional().describe("Run asynchronously and return a task ID."),
+  description: z.string().optional().describe("Short label for the background task."),
 }
 
 async function readPipe(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<string> {
@@ -104,7 +68,7 @@ async function readPipe(reader: ReadableStreamDefaultReader<Uint8Array>): Promis
 }
 
 export const bash = tool(
-  async ({ command, timeout }: { command: string; timeout?: number }, config?: unknown) => {
+  async ({ command, timeout, background, description }: { command: string; timeout?: number; background?: boolean; description?: string }, config?: any) => {
     const path = await userLoginPath()
     const proc = Bun.spawn(["bash", "-lc", command], {
       cwd: workspaceFromConfig(config),
@@ -112,6 +76,50 @@ export const bash = tool(
       stdout: "pipe",
       stderr: "pipe",
     })
+
+    if (background) {
+      const threadId = config?.configurable?.thread_id
+      const { sessionForThread } = await import("../thread-context.ts")
+      const sessionId = sessionForThread(threadId) ?? threadId
+      if (!sessionId) return toolResult("Background tasks require an active session.", { ok: false })
+      const spillPath = taskSpillPath(sessionId)
+      const record = createTask(sessionId, { command, description, spillPath, process: proc })
+      const readers = [proc.stdout.getReader(), proc.stderr.getReader()]
+      const read = async (reader: ReadableStreamDefaultReader<Uint8Array>) => {
+        const decoder = new TextDecoder()
+        try {
+          while (true) {
+            const { done, value } = await reader.read()
+            if (done) break
+            appendTaskOutput(record, decoder.decode(value, { stream: true }))
+          }
+          const tail = decoder.decode()
+          if (tail) appendTaskOutput(record, tail)
+        } finally { reader.releaseLock() }
+      }
+      const timeoutTimer = timeout && timeout > 0 ? setTimeout(() => {
+        markTaskTimedOut(record)
+        terminateProcessTree(proc.pid)
+      }, timeout * 1000) : undefined
+      void (async () => {
+        const reads = readers.map(read)
+        const exitCode = await proc.exited
+        let graceTimer: ReturnType<typeof setTimeout> | undefined
+        await Promise.race([Promise.all(reads).then(() => undefined), new Promise<void>((resolve) => {
+          graceTimer = setTimeout(resolve, 1500)
+          graceTimer.unref?.()
+        })])
+        if (graceTimer) clearTimeout(graceTimer)
+        if (graceTimer) { for (const reader of readers) void reader.cancel().catch(() => {}) }
+        await Promise.allSettled(reads)
+        if (timeoutTimer) clearTimeout(timeoutTimer)
+        finishTask(record, exitCode)
+      })().catch(() => finishTask(record, null))
+      return toolResult(`Started background task ${record.taskId}. Use get_task_output to poll it.`, { raw: {
+        kind: "bash", task_id: record.taskId, status: record.status, is_terminal: false, command, description,
+        started_at: record.startedAt, spill_path: record.spillPath, raw_output_bytes: 0,
+      } })
+    }
 
     const stdoutReader = proc.stdout.getReader()
     const stderrReader = proc.stderr.getReader()
@@ -181,7 +189,7 @@ export const bash = tool(
   },
   {
     name: "bash",
-    description: `Run a shell command in the project root; this is how you list, search (grep/rg), and find files. Combines stdout+stderr, compresses noisy tool output (git/gh/npm/tsc/tests), signal-truncates to ~${MAX_LINES} lines / ${MAX_BYTES / 1000}KB (full output spilled to a temp file). Optional timeout in seconds.`,
+    description: `Run a shell command in the project root; this is how you list, search (grep/rg), and find files. Combines stdout+stderr, compresses noisy tool output (git/gh/npm/tsc/tests), signal-truncates to ~${MAX_LINES} lines / ${MAX_BYTES / 1000}KB (full output spilled to a temp file). Optional timeout in seconds. Use background=true for long work, then get_task_output or kill_task.`,
     schema: z.object(bashInputShape),
   },
 )

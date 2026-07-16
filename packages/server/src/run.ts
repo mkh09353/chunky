@@ -17,6 +17,7 @@ import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { classifyGoalError, decideGoalStep, firstLine, goalContinuationPrompt, toSnapshot, type GoalStep } from "./goal.ts"
 import { distilledAgentsMd } from "./agents-md.ts"
 import { asToolRunResult } from "./tools/result.ts"
+import { pendingTaskReminders } from "./tasks.ts"
 
 export type { Emit } from "./event-emitter.ts"
 
@@ -304,6 +305,8 @@ export async function runAgent(
   },
 ): Promise<void> {
   emit({ type: "session.status", sessionId, status: "running" })
+  const reminder = pendingTaskReminders(sessionId)
+  if (reminder) text = `${text}\n\n[Background task reminders]\n${reminder}`
 
   // Freeze the root selection for this run. A later /model change affects the
   // next root turn, never an in-flight root or any of its child threads. A

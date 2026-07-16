@@ -81,6 +81,7 @@ import { loadRelayConfig } from "./relay/config.ts"
 import { startUplink } from "./relay/uplink.ts"
 import { getModelAvailability, manageModelCatalog, setModelAvailability, type ModelCatalogAction } from "./model-catalog.ts"
 import { manageSkillRepos, type SkillRepoMutationAction } from "./skill-repos.ts"
+import { resetTasks } from "./tasks.ts"
 
 type Subscriber = ReadableStreamDefaultController<Uint8Array>
 
@@ -94,6 +95,20 @@ const running = new Map<string, AbortController>()
 // ordering (old idle → message.user → new running) keeps the stream flicker-free.
 const runDone = new Map<string, Promise<void>>()
 const encoder = new TextEncoder()
+
+let shuttingDown = false
+export async function shutdownServer(signal: NodeJS.Signals): Promise<never> {
+  if (shuttingDown) return new Promise(() => {})
+  shuttingDown = true
+  await resetTasks()
+  process.removeAllListeners(signal)
+  process.kill(process.pid, signal)
+  process.exit(128 + (signal === "SIGINT" ? 2 : 15))
+  throw new Error("unreachable")
+}
+
+process.once("SIGTERM", () => { void shutdownServer("SIGTERM") })
+process.once("SIGINT", () => { void shutdownServer("SIGINT") })
 
 function subscribers(sessionId: string): Set<Subscriber> {
   let set = live.get(sessionId)

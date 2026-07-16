@@ -47,6 +47,7 @@ import { manageSkillReposTool } from "./tools/manage-skill-repos.ts"
 import { skillTools } from "./tools/skills.ts"
 import { write } from "./tools/write.ts"
 import { dualTool } from "./tools/result.ts"
+import { getTaskOutput, killTask } from "./tools/task.ts"
 
 // Re-export pure gating/classification helpers for tests and callers.
 export {
@@ -163,6 +164,8 @@ export function executorToolsFor(selection: AgentSelection) {
   const tools = [
     read,
     dualTool(bash),
+    getTaskOutput,
+    killTask,
     fffind,
     ffgrep,
     write,

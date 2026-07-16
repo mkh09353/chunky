@@ -52,12 +52,15 @@ import {
 } from "./tools/skills.ts"
 import { write, writeInputShape } from "./tools/write.ts"
 import { asToolRunResult } from "./tools/result.ts"
+import { getTaskOutput, killTask } from "./tools/task.ts"
 
 const SERVER_NAME = "chunky"
 const ALLOWED_TOOLS = [`mcp__${SERVER_NAME}__*`]
 const CHUNKY_TOOLS = [
   read,
   bash,
+  getTaskOutput,
+  killTask,
   fffind,
   ffgrep,
   write,

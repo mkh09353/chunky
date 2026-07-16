@@ -107,6 +107,102 @@ export function ChatPane({
   const running = state.status === "running"
   const empty = !hasTranscript(state)
 
+  // Scroll re-pin. The message list and the composer share one scroll container
+  // (ChatLayout's self-scrolling root, reachable via this ref). The library's
+  // auto-follow only re-anchors on MESSAGE-content resize, so two moments can
+  // strand a bottom-pinned view above the newest messages: focusing the composer
+  // (sticky-dock reflow / scroll-into-view) and SENDING (the contentEditable
+  // clears → dock shrinks, and a new bubble appends). We re-pin in both, but only
+  // when the user was genuinely at the bottom — never yanking someone who scrolled
+  // up to read back while a response streams.
+  const layoutRef = useRef<HTMLDivElement>(null)
+  const wasAtBottomRef = useRef(true)
+  const repinRafRef = useRef<number | null>(null)
+
+  // Distance (px) from the bottom within which the view counts as "pinned".
+  const AT_BOTTOM_THRESHOLD = 40
+
+  // Snap to the true bottom after layout settles. Two rAFs so the focus/send
+  // reflow (dock resize, scroll-into-view, appended bubble) lands first. Never
+  // touches focus or the caret; guarded so a late frame after unmount no-ops.
+  const repinToBottom = useCallback(() => {
+    if (repinRafRef.current != null) cancelAnimationFrame(repinRafRef.current)
+    repinRafRef.current = requestAnimationFrame(() => {
+      repinRafRef.current = requestAnimationFrame(() => {
+        repinRafRef.current = null
+        const el = layoutRef.current
+        if (el) el.scrollTop = el.scrollHeight
+      })
+    })
+  }, [])
+
+  // Track whether the view is pinned to the bottom, immune to the sticky dock's
+  // own growth: synthetic scrolls from content/composer resize (scrollHeight
+  // changes) are ignored — mirroring the library's resize detection — so typing a
+  // multi-line message never reads as a deliberate scroll-up. Explicit wheel/
+  // touch up-gestures unlatch even mid-stream, when the height is changing and
+  // the scroll handler bails.
+  useEffect(() => {
+    const el = layoutRef.current
+    if (!el) return
+    let lastScrollHeight = el.scrollHeight
+    const measure = () =>
+      el.scrollHeight - el.scrollTop - el.clientHeight <= AT_BOTTOM_THRESHOLD
+    wasAtBottomRef.current = measure()
+
+    const onScroll = () => {
+      const heightChanged = el.scrollHeight !== lastScrollHeight
+      lastScrollHeight = el.scrollHeight
+      if (heightChanged) return
+      wasAtBottomRef.current = measure()
+    }
+    const onWheel = (e: WheelEvent) => {
+      if (e.deltaY < 0) wasAtBottomRef.current = false
+    }
+    const onTouchMove = () => {
+      wasAtBottomRef.current = measure()
+    }
+    el.addEventListener("scroll", onScroll, { passive: true })
+    el.addEventListener("wheel", onWheel, { passive: true })
+    el.addEventListener("touchmove", onTouchMove, { passive: true })
+    return () => {
+      el.removeEventListener("scroll", onScroll)
+      el.removeEventListener("wheel", onWheel)
+      el.removeEventListener("touchmove", onTouchMove)
+    }
+  }, [])
+
+  // Re-pin when focus lands in the composer while pinned (matches "clicks into
+  // the input box"). Scoped to the composer's `.chunky-readable` wrapper so
+  // transcript/nav focus never triggers it.
+  const handleFocusCapture = useCallback(
+    (e: React.FocusEvent) => {
+      if (!wasAtBottomRef.current) return
+      const target = e.target as HTMLElement
+      if (!target.closest?.(".chunky-readable")) return
+      repinToBottom()
+    },
+    [repinToBottom],
+  )
+
+  // Wrap the send so a bottom-pinned view follows the just-sent message (and the
+  // streaming reply). Read the pinned state BEFORE handing off to the parent,
+  // which clears the draft and mutates the DOM.
+  const handleSubmit = useCallback(
+    (text: string) => {
+      const atBottom = wasAtBottomRef.current
+      onSubmit(text)
+      if (atBottom) repinToBottom()
+    },
+    [onSubmit, repinToBottom],
+  )
+
+  useEffect(() => {
+    return () => {
+      if (repinRafRef.current != null) cancelAnimationFrame(repinRafRef.current)
+    }
+  }, [])
+
   // `@`-mention file autocomplete (backed by the current repo's FFF search) plus
   // the `/` slash-command menu. Rebuilt per baseUrl + repo so the mention
   // trigger's AbortController-based SearchSource is scoped to one server and one
@@ -191,7 +287,7 @@ export function ChatPane({
         e.target.isContentEditable
       ) {
         e.preventDefault()
-        if (draft.trim()) onSubmit(draft)
+        if (draft.trim()) handleSubmit(draft)
         return
       }
       // Shift+Enter → newline. The Astryx composer submits on plain Enter and
@@ -209,12 +305,18 @@ export function ChatPane({
         document.execCommand("insertLineBreak")
       }
     },
-    [pendingSkill, draft, running, onClearSkill, onStop, onSubmit],
+    [pendingSkill, draft, running, onClearSkill, onStop, handleSubmit],
   )
 
   return (
-    <div className="chunky-chat-wrap" onPaste={handlePaste} onKeyDown={handleKeyDown}>
+    <div
+      className="chunky-chat-wrap"
+      onPaste={handlePaste}
+      onKeyDown={handleKeyDown}
+      onFocusCapture={handleFocusCapture}
+    >
       <ChatLayout
+        ref={layoutRef}
         density="balanced"
         scrollButton={empty ? null : undefined}
         emptyState={
@@ -235,7 +337,7 @@ export function ChatPane({
             <ChatComposer
               value={draft}
               onChange={onDraftChange}
-              onSubmit={onSubmit}
+              onSubmit={handleSubmit}
               onStop={onStop}
               isStopShown={running}
               placeholder={`Message Chunky about ${workspaceName}…`}

@@ -19,6 +19,13 @@ interface ClaudeAuthStatus {
 export type ClaudeCredentialState = "ready" | "maybe" | "missing"
 export interface ClaudeCredentialDetection { state: ClaudeCredentialState; detail: string }
 
+export const ANTHROPIC_SDK_ISOLATION_OPTIONS = {
+  tools: [],
+  settingSources: [],
+  strictMcpConfig: true,
+  permissionMode: "dontAsk",
+} satisfies Pick<AnthropicOptions, "tools" | "settingSources" | "strictMcpConfig" | "permissionMode">
+
 /** Best effort only: never exposes credential contents or throws. */
 export function detectClaudeCredentials(options: { home?: string } = {}): ClaudeCredentialDetection {
   try {
@@ -131,23 +138,23 @@ function toModelInfo(model: AnthropicModelInfo): ModelInfo {
   }
 }
 
-async function listAnthropicModels(): Promise<ModelInfo[]> {
+export async function listAnthropicModels(
+  dependencies: { query?: typeof import("@anthropic-ai/claude-agent-sdk").query } = {},
+): Promise<ModelInfo[]> {
   if (!anthropicOAuthReady()) {
     throw new Error("anthropic: Claude OAuth is not ready (run `claude auth login --claudeai`)")
   }
 
   // supportedModels() is an SDK control request. It initializes the real
   // bundled Claude runtime but sends no inference request before we close it.
-  const { query } = await import("@anthropic-ai/claude-agent-sdk")
+  const query = dependencies.query ?? (await import("@anthropic-ai/claude-agent-sdk")).query
   async function* noInput(): AsyncGenerator<SDKUserMessage> {}
   const q = query({
     prompt: noInput(),
     options: {
       env: anthropicOAuthEnvironment(),
       systemPrompt: "You are Chunky.",
-      tools: [],
-      settingSources: [],
-      permissionMode: "dontAsk",
+      ...ANTHROPIC_SDK_ISOLATION_OPTIONS,
     } satisfies AnthropicOptions,
   })
   try {

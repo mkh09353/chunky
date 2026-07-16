@@ -83,6 +83,7 @@ import { startUplink } from "./relay/uplink.ts"
 import { getModelAvailability, manageModelCatalog, setModelAvailability, type ModelCatalogAction } from "./model-catalog.ts"
 import { manageSkillRepos, type SkillRepoMutationAction } from "./skill-repos.ts"
 import { resetTasks } from "./tasks.ts"
+import { databaseErrorMessage } from "./sqlite.ts"
 
 type Subscriber = ReadableStreamDefaultController<Uint8Array>
 
@@ -204,7 +205,7 @@ function startRun(
     },
   })
     .catch((err) => {
-      emitTo(sessionId, { type: "error", message: (err as Error)?.message ?? String(err) })
+      emitTo(sessionId, { type: "error", message: databaseErrorMessage(err) })
       emitTo(sessionId, { type: "session.status", sessionId, status: "idle" })
     })
     .finally(() => {

@@ -316,6 +316,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   useEffect(() => {
     if (mode !== "live") return
     let cancelled = false
+    const streamAbort = new AbortController()
     sessionIdRef.current = null
     ;(async () => {
       try {
@@ -330,7 +331,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         resumeReplayRef.current = resumeTargetRef.current != null
         // New conversation: nothing tracked yet, so the cold banner must go.
         setCacheCold(null)
-        const evRes = await fetch(baseUrl + ROUTES.events(sessionId))
+        const evRes = await fetch(baseUrl + ROUTES.events(sessionId), { signal: streamAbort.signal })
         for await (const ev of readSSE(evRes)) {
           if (cancelled) break
           apply(ev)
@@ -341,6 +342,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     })()
     return () => {
       cancelled = true
+      streamAbort.abort()
     }
   }, [mode, baseUrl, apply, sessionKey])
 

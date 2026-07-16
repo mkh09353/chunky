@@ -13,6 +13,7 @@ import { ThreadManager } from "./threads.ts"
 import { usageFromLangChainMessage, promptTokensOf } from "./usage.ts"
 import { checkCacheCold, cacheWarningEvent, noteRequest } from "./cache-watch.ts"
 import { Store } from "./store.ts"
+import { databaseErrorMessage, isSqliteBusy } from "./sqlite.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { classifyGoalError, decideGoalStep, firstLine, goalContinuationPrompt, toSnapshot, type GoalStep } from "./goal.ts"
 import { distilledAgentsMd } from "./agents-md.ts"
@@ -230,7 +231,11 @@ export async function translateStream(
     // iterator at a completed tool node. This is an internal continuation, not
     // an interruption/error visible to the user.
     const name = (error as Error)?.name
-    closeAssistant(name === "AbortError" ? "interrupted" : name === "InterjectionBoundary" ? "complete" : "error")
+    const reason = name === "AbortError" ? "interrupted" : name === "InterjectionBoundary" ? "complete" : "error"
+    if (reason === "error" && isSqliteBusy(error)) {
+      emitT({ type: "error", message: databaseErrorMessage(error) })
+    }
+    closeAssistant(reason)
     throw error
   } finally {
     closeAssistant()

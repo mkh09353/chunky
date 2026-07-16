@@ -168,7 +168,7 @@ function MessageGroups({ groups }: { groups: Group[] }) {
                     <div className="chunky-response-warning">⏹ Response interrupted.</div>
                   ) : null}
                   {item.endReason === "error" ? (
-                    <div className="chunky-callout-error">Response ended unexpectedly.</div>
+                    <div className="chunky-callout-error">Response ended unexpectedly — see the error below for details.</div>
                   ) : null}
                 </ChatMessageBubble>
               </ChatMessage>

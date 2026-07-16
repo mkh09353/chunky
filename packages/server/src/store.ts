@@ -1,7 +1,7 @@
 // Durable session + event store on bun:sqlite (native, no build step).
 // Makes transcripts survive a server restart, so reconnecting to a sessionId
 // replays the full prior run — i.e. "resume". Kept deliberately tiny.
-import { Database } from "bun:sqlite"
+import { openSqlite, retrySqliteTransaction } from "./sqlite.ts"
 import type { AgentEvent, SessionSummary } from "@chunky/protocol"
 import type { Goal } from "./goal.ts"
 import type { AgentSelection } from "./providers/registry.ts"
@@ -12,8 +12,7 @@ import { LAUNCH_WORKSPACE } from "./workspace.ts"
 export type PinnedSelection = AgentSelection
 
 const DB_PATH = process.env.CHUNKY_DB || "chunky.db"
-const db = new Database(DB_PATH)
-db.exec("PRAGMA journal_mode = WAL;")
+const db = openSqlite(DB_PATH)
 db.exec(`
   CREATE TABLE IF NOT EXISTS sessions (
     id            TEXT PRIMARY KEY,
@@ -96,6 +95,11 @@ const stmtUpsertGoal = db.query(
 const stmtClearGoal = db.query("DELETE FROM goals WHERE session_id = ?")
 const stmtSelection = db.query("SELECT selection FROM sessions WHERE id = ?")
 const stmtPinSelection = db.query("UPDATE sessions SET selection = ? WHERE id = ?")
+const appendEventTx = (sessionId: string, ev: AgentEvent, now: number) => {
+  const row = stmtNextSeq.get(sessionId) as { n: number }
+  stmtInsertEvent.run(sessionId, row.n, JSON.stringify(ev))
+  stmtTouch.run(now, sessionId)
+}
 
 interface GoalRow {
   session_id: string
@@ -145,9 +149,7 @@ export const Store = {
 
   /** Persist one event and bump the session's last_activity. */
   appendEvent(sessionId: string, ev: AgentEvent): void {
-    const row = stmtNextSeq.get(sessionId) as { n: number }
-    stmtInsertEvent.run(sessionId, row.n, JSON.stringify(ev))
-    stmtTouch.run(Date.now(), sessionId)
+    retrySqliteTransaction(db, () => appendEventTx(sessionId, ev, Date.now()))
   },
 
   history(sessionId: string): AgentEvent[] {

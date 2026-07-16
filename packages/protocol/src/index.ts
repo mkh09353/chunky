@@ -61,7 +61,7 @@ export type AgentEvent =
   | { type: "queue.changed"; sessionId: string; entries: QueueEntry[]; running: boolean }
   | { type: "message.start"; role: "assistant"; threadId?: string }
   | { type: "message.delta"; text: string; threadId?: string }
-  | { type: "message.end"; reason?: MessageEndReason; threadId?: string }
+  | { type: "message.end"; reason?: MessageEndReason; detail?: string; threadId?: string }
   /** Extended-thinking / reasoning tokens streamed BEFORE the assistant answer.
    *  Providers that expose thinking (e.g. Claude) emit these; clients render them
    *  as a collapsible "thought" block. Absent for providers that don't. */
@@ -395,26 +395,30 @@ export function sse(ev: AgentEvent): string {
 export async function* readSSE(res: Response): AsyncGenerator<AgentEvent> {
   if (!res.body) return
   const reader = res.body.getReader()
-  const dec = new TextDecoder()
-  let buf = ""
-  while (true) {
-    const { done, value } = await reader.read()
-    if (done) break
-    buf += dec.decode(value, { stream: true })
-    let idx: number
-    while ((idx = buf.indexOf("\n\n")) !== -1) {
-      const frame = buf.slice(0, idx)
-      buf = buf.slice(idx + 2)
-      const line = frame.split("\n").find((l) => l.startsWith("data:"))
-      if (!line) continue
-      const json = line.slice(5).trim()
-      if (json) {
-        try {
-          yield JSON.parse(json) as AgentEvent
-        } catch {
-          /* ignore malformed frame */
+  try {
+    const dec = new TextDecoder()
+    let buf = ""
+    while (true) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buf += dec.decode(value, { stream: true })
+      let idx: number
+      while ((idx = buf.indexOf("\n\n")) !== -1) {
+        const frame = buf.slice(0, idx)
+        buf = buf.slice(idx + 2)
+        const line = frame.split("\n").find((l) => l.startsWith("data:"))
+        if (!line) continue
+        const json = line.slice(5).trim()
+        if (json) {
+          try {
+            yield JSON.parse(json) as AgentEvent
+          } catch {
+            /* ignore malformed frame */
+          }
         }
       }
     }
+  } finally {
+    reader.releaseLock()
   }
 }

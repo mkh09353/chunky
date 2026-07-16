@@ -8,6 +8,7 @@
 // `.get()` returns null (not undefined) on no row, and undefined bind values are
 // coerced to null (both drivers reject undefined).
 import { Database } from "bun:sqlite"
+import { openSqlite, retrySqliteBusy, retrySqliteTransaction } from "./sqlite.ts"
 import {
   BaseCheckpointSaver,
   TASKS,
@@ -36,7 +37,7 @@ export function pruneCheckpointHistory(
   limit = CHECKPOINT_HISTORY_LIMIT,
 ): void {
   const boundedLimit = Math.max(1, Math.floor(limit))
-  const tx = db.transaction(() => {
+  const tx = () => {
     db.prepare(
       `DELETE FROM checkpoints
        WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id NOT IN (
@@ -51,8 +52,21 @@ export function pruneCheckpointHistory(
          SELECT checkpoint_id FROM checkpoints WHERE thread_id = ? AND checkpoint_ns = ?
        )`,
     ).run(threadId, checkpointNs, threadId, checkpointNs)
+  }
+  retrySqliteTransaction(db, tx)
+}
+
+// Checkpoint serialization is process-local. The promise is only held around
+// synchronous SQLite work; serialization/serde work remains outside it.
+let graphWriteQueue: Promise<void> = Promise.resolve()
+function serializeGraphWrite<T>(work: () => T): Promise<T> {
+  const previous = graphWriteQueue
+  let release!: () => void
+  graphWriteQueue = new Promise<void>((resolve) => { release = resolve })
+  return previous.then(() => {
+    try { return work() }
+    finally { release() }
   })
-  tx()
 }
 
 function pruneAllCheckpointHistory(db: Database): void {
@@ -93,12 +107,11 @@ export class BunSqliteSaver extends BaseCheckpointSaver {
   }
 
   static fromConnString(path: string): BunSqliteSaver {
-    return new BunSqliteSaver(new Database(path))
+    return new BunSqliteSaver(openSqlite(path))
   }
 
   private setup(): void {
     if (this.isSetup) return
-    this.db.exec("PRAGMA journal_mode = WAL;")
     this.db.exec(`CREATE TABLE IF NOT EXISTS checkpoints (
       thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL,
       parent_checkpoint_id TEXT, type TEXT, checkpoint BLOB, metadata BLOB,
@@ -107,7 +120,7 @@ export class BunSqliteSaver extends BaseCheckpointSaver {
       thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL,
       task_id TEXT NOT NULL, idx INTEGER NOT NULL, channel TEXT NOT NULL, type TEXT, value BLOB,
       PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx));`)
-    pruneAllCheckpointHistory(this.db)
+    retrySqliteBusy(() => pruneAllCheckpointHistory(this.db))
     this.withoutCheckpoint = prepareSql(this.db, false)
     this.withCheckpoint = prepareSql(this.db, true)
     this.isSetup = true
@@ -229,13 +242,14 @@ export class BunSqliteSaver extends BaseCheckpointSaver {
     ])
     if (type1 !== type2) throw new Error("Failed to serialize checkpoint and metadata to the same type.")
 
-    this.db
-      .prepare(
-        `INSERT OR REPLACE INTO checkpoints (thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, type, checkpoint, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)`,
-      )
-      .run(thread_id, checkpoint_ns, checkpoint.id, nn(parent_checkpoint_id), type1, sCheckpoint, sMetadata)
-
-    pruneCheckpointHistory(this.db, thread_id, checkpoint_ns)
+    await serializeGraphWrite(() => retrySqliteBusy(() => {
+      this.db
+        .prepare(
+          `INSERT OR REPLACE INTO checkpoints (thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, type, checkpoint, metadata) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        )
+        .run(thread_id, checkpoint_ns, checkpoint.id, nn(parent_checkpoint_id), type1, sCheckpoint, sMetadata)
+      pruneCheckpointHistory(this.db, thread_id, checkpoint_ns)
+    }))
 
     return { configurable: { thread_id, checkpoint_ns, checkpoint_id: checkpoint.id } }
   }
@@ -264,18 +278,20 @@ export class BunSqliteSaver extends BaseCheckpointSaver {
         ]
       }),
     )
-    const tx = this.db.transaction((batch: any[][]) => {
-      for (const row of batch) stmt.run(...row.map(nn))
-    })
-    tx(rows)
+    await serializeGraphWrite(() => retrySqliteBusy(() => {
+      const tx = (batch: any[][]) => {
+        for (const row of batch) stmt.run(...row.map(nn))
+      }
+      retrySqliteTransaction(this.db, () => tx(rows))
+    }))
   }
 
   async deleteThread(threadId: string): Promise<void> {
-    const tx = this.db.transaction(() => {
+    const tx = () => {
       this.db.prepare(`DELETE FROM checkpoints WHERE thread_id = ?`).run(threadId)
       this.db.prepare(`DELETE FROM writes WHERE thread_id = ?`).run(threadId)
-    })
-    tx()
+    }
+    await serializeGraphWrite(() => retrySqliteTransaction(this.db, tx))
   }
 
   private async migratePendingSends(checkpoint: Checkpoint, threadId: string, parentCheckpointId: string): Promise<void> {

@@ -95,6 +95,8 @@ function requireEnv(name: string): string {
 /** Zen's live model list from its OpenAI-shaped /models endpoint, enriched with
  *  models.dev metadata (its ids live under the "opencode" provider there). */
 async function listZenModels(): Promise<ModelInfo[]> {
+  // Zen is optional; discovery must not fail for users who did not configure it.
+  if (!zenConfigured()) return []
   const base = requireEnv("ZEN_BASE_URL") // already ends in /v1
   const res = await fetch(`${base}/models`, {
     headers: { Authorization: `Bearer ${requireEnv("ZEN_API_KEY")}` },
@@ -103,6 +105,14 @@ async function listZenModels(): Promise<ModelInfo[]> {
   const body = (await res.json()) as { data?: Array<{ id?: string }> }
   const ids = (body.data ?? []).map((m) => m.id).filter((id): id is string => Boolean(id))
   return enrichModels(ids, ["opencode"])
+}
+
+function zenConfigured(): boolean {
+  return Boolean(process.env.ZEN_API_KEY && process.env.ZEN_BASE_URL)
+}
+
+function zenReady(): boolean {
+  return zenConfigured() && Boolean(selectionFor("zen").model || process.env.ZEN_MODEL)
 }
 
 function customProvider(def: CustomProvider): ProviderDef {
@@ -146,7 +156,7 @@ const providers: Record<string, ProviderDef> = {
     id: "zen",
     label: "Zen · OpenAI-compatible (API key)",
     billing: "metered",
-    ready: () => Boolean(process.env.ZEN_API_KEY),
+    ready: zenReady,
     listModels: listZenModels,
     buildModel: (selection) =>
       new ChatOpenAI({
@@ -219,7 +229,19 @@ let activeOverride: string | undefined
 /** The currently selected provider id. */
 export function activeProviderId(): string {
   ensureCustomProviders()
-  return activeOverride || persistedProvider() || process.env.CHUNKY_PROVIDER || "zen"
+  if (activeOverride && providers[activeOverride]) return activeOverride
+  // An explicit persisted choice, including Zen, is always preserved.
+  const persisted = persistedProvider()
+  if (persisted && providers[persisted]) return persisted
+  const requested = process.env.CHUNKY_PROVIDER
+  if (requested && providers[requested]) return requested
+  // Prefer a ready subscription provider. With no credentials, Anthropic is
+  // the deterministic supported auth flow rather than raw ZEN_* errors.
+  const readySubscription = Object.values(providers).find(
+    (provider) => provider.id !== "zen" && provider.billing === "subscription" && provider.ready(),
+  )
+  if (readySubscription) return readySubscription.id
+  return providers.anthropic ? "anthropic" : Object.keys(providers).find((id) => id !== "zen") ?? "anthropic"
 }
 
 /** Select the active provider for subsequently-built models (persisted). */

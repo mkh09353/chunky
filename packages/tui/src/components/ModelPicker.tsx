@@ -37,6 +37,14 @@ interface Props {
   onCancel: () => void
 }
 
+/** Provider-specific setup guidance; OAuth providers use /login, API-key
+ * providers must not be presented as if they have a login flow. */
+export function providerSetupNote(provider: string, ready: boolean): string {
+  if (ready) return ""
+  if (provider === "zen") return "\n(note: zen isn't configured — set ZEN_API_KEY and ZEN_BASE_URL.)"
+  return `\n(note: ${provider} isn't logged in yet — run /login to authorize it.)`
+}
+
 const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"]
 const SPEEDS: Speed[] = ["standard", "fast"]
 const WINDOW = 10 // visible rows in the scrolling list
@@ -163,7 +171,7 @@ export function ModelPicker({ baseUrl, onDone, onCancel }: Props) {
       const bits = [`${row.provider} / ${row.model.id}`]
       if (eff) bits.push(`effort ${eff}`)
       if (spd) bits.push(`speed ${spd}`)
-      const note = row.ready ? "" : `\n(note: ${row.provider} isn't logged in yet — run /login to authorize it.)`
+      const note = providerSetupNote(row.provider, row.ready)
       onDone(payload, `Model → ${bits.join(" · ")}${note}`)
     } catch (err) {
       onDone(payload, `Select request failed: ${String(err)}`)

@@ -37,7 +37,7 @@ import { OnboardingWizard } from "./components/OnboardingWizard.js"
 import { AdvisorPicker, type AdvisorSelectionResult } from "./components/AdvisorPicker.js"
 import { SidekickSeatMenu } from "./components/SidekickSeatMenu.js"
 import { ModeMenu, type ModeApplyPayload } from "./components/ModeMenu.js"
-import { COMMANDS, builtinCommandNames, type Command } from "./components/SlashMenu.js"
+import { COMMANDS, builtinCommandNames, savedModeForCommand, type Command } from "./components/SlashMenu.js"
 import { openBrowser } from "./openBrowser.js"
 import { grabClipboardImage, type ClipboardImage } from "./clipboardImage.js"
 import { writeClipboard } from "./clipboard.js"
@@ -499,13 +499,10 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       // commands via onCommand): `/goal <objective>`, `/cacheguard <tokens|off>`.
       const command = text.trim()
       if (/^\/[^/\s]+$/.test(command)) {
-        const name = command.slice(1).toLowerCase()
-        if (!builtinCommandNames.has(`/${name}`)) {
-          const saved = slashModes.find((m) => m.name.toLowerCase() === `/${name}`)
-          if (saved) {
-            doModeRef.current(name)
-            return
-          }
+        const modeName = savedModeForCommand(command, slashModes)
+        if (modeName) {
+          doModeRef.current(modeName)
+          return
         }
       }
       if (command === "/goal" || command.startsWith("/goal ")) {
@@ -1560,9 +1557,17 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         case "/mode":
           void doMode("")
           break
+        default: {
+          // Saved modes double as slash commands (/fire applies the "fire"
+          // mode). The menu fires them here, not through submit() — without this
+          // a menu-selected saved mode would silently do nothing.
+          const modeName = savedModeForCommand(name, slashModes)
+          if (modeName) doModeRef.current(modeName)
+          break
+        }
       }
     },
-    [printLine, doLogin, doModel, doSkills, doProvider, doWorkers, doAdvisor, doSidekick, doGoal, doShipIt, doCacheGuard, doMode, doResume, exit, mode, baseUrl],
+    [printLine, doLogin, doModel, doSkills, doProvider, doWorkers, doAdvisor, doSidekick, doGoal, doShipIt, doCacheGuard, doMode, doResume, exit, mode, baseUrl, slashModes],
   )
 
   // Mock demo turn so the transcript streams even without a TTY.

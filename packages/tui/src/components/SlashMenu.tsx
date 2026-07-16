@@ -30,6 +30,21 @@ export const COMMANDS: Command[] = [
 export const builtinCommandNames = new Set(COMMANDS.map((c) => c.name.toLowerCase()))
 
 /**
+ * Saved modes double as slash commands: selecting `/fire` applies the "fire"
+ * mode. Both entry points resolve them through here — the menu (App.onCommand,
+ * which only sees built-in cases otherwise) and typed input (App.submit). Given
+ * a bare `/command` and the current saved-mode commands, return the mode name to
+ * hand to the `/mode <name>` apply flow (leading slash stripped), or null when
+ * it's a built-in or unknown. Case-insensitive; never shadows a built-in.
+ */
+export function savedModeForCommand(command: string, slashModes: Command[]): string | null {
+  const lower = command.toLowerCase()
+  if (builtinCommandNames.has(lower)) return null
+  const match = slashModes.find((m) => m.name.toLowerCase() === lower)
+  return match ? match.name.replace(/^\//, "") : null
+}
+
+/**
  * The slash-command popup, styled after kimi's CustomSelect: a rounded box
  * floating above the input, a violet pointer (❯) on the focused row,
  * highlighted label + dim description.

@@ -19,6 +19,7 @@ import { classifyGoalError, decideGoalStep, firstLine, goalContinuationPrompt, t
 import { distilledAgentsMd } from "./agents-md.ts"
 import { asToolRunResult } from "./tools/result.ts"
 import { peekTaskReminders, consumeTaskReminders } from "./tasks.ts"
+import { streamWithCheckpointRecovery } from "./checkpoint-recovery.ts"
 
 export type { Emit } from "./event-emitter.ts"
 
@@ -403,7 +404,8 @@ export async function runAgent(
         onSubmitted: () => consumeTaskReminders(sessionId, pendingReminder.ids),
       })
     } else {
-      const stream = await getAgent(selection, workspace, agentsMd).stream(
+      const stream = await streamWithCheckpointRecovery(
+        getAgent(selection, workspace, agentsMd),
         { messages: [{ role: "user", content: userMessageContent(prompt, turnImages) }] } as any,
         {
           configurable: { thread_id: sessionId, workspace },

@@ -30,6 +30,7 @@ import { registerThread, unregisterThread, type ThreadSpawner } from "./thread-c
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { runWorkflowScript, workflowConcurrency, type WorkflowHost, type WorkflowTier } from "./workflow/engine.ts"
 import { workflowRouteResolver } from "./workflow/router.ts"
+import { streamWithCheckpointRecovery } from "./checkpoint-recovery.ts"
 
 /** Reasoning-effort cap for `big`-tier workflow agents: keep a lower configured
  *  effort, clamp anything at/above medium (or unset) to medium. */
@@ -353,7 +354,8 @@ export class ThreadManager implements ThreadSpawner {
         // tokens stream only through its OWN iterator, tagged with its threadId,
         // instead of leaking (untagged) into the caller's messages stream.
         const stream = await AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () =>
-          this.advisorAgentFor(advisorSel, this.workspace).stream(
+          streamWithCheckpointRecovery(
+            this.advisorAgentFor(advisorSel, this.workspace),
             { messages: [{ role: "user", content }] },
             {
               configurable: { thread_id: advisorThreadId, workspace: this.workspace },
@@ -464,7 +466,8 @@ export class ThreadManager implements ThreadSpawner {
         // Same async-local isolation as spawn(): a cleared store so the sidekick's
         // tokens stream only through its OWN iterator, tagged with its threadId.
         const stream = await AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () =>
-          this.sidekickAgentFor(sidekickSel, this.workspace, agentsMd).stream(
+          streamWithCheckpointRecovery(
+            this.sidekickAgentFor(sidekickSel, this.workspace, agentsMd),
             { messages: [{ role: "user", content: opts.brief }] },
             {
               configurable: { thread_id: sidekickThreadId, workspace: this.workspace },

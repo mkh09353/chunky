@@ -17,7 +17,7 @@ import type { MessageEndReason } from "@chunky/protocol"
 import { taggedEmitter, type Emit } from "./event-emitter.ts"
 import { buildSystemPrompt } from "./prompt.ts"
 import { listSidekickSeats, sidekickFor, type AgentSelection } from "./providers/registry.ts"
-import { anthropicOAuthEnvironment } from "./providers/anthropic-sdk.ts"
+import { ANTHROPIC_SDK_ISOLATION_OPTIONS, anthropicOAuthEnvironment } from "./providers/anthropic-sdk.ts"
 import { usageFromAnthropicResult } from "./usage.ts"
 import { noteRequest } from "./cache-watch.ts"
 import type { CacheContext, InputImage } from "./run.ts"
@@ -376,11 +376,9 @@ export async function buildAnthropicOptions(
         sidekickSeats: listSidekickSeats(),
         agentsMd: request.agentsMd,
       }),
-    tools: [],
-    settingSources: [],
+    ...ANTHROPIC_SDK_ISOLATION_OPTIONS,
     mcpServers: { [SERVER_NAME]: createChunkySdkMcpServer(threadId, emit, eventThreadId, workspace) },
     allowedTools: request.allowedTools ?? ALLOWED_TOOLS,
-    permissionMode: "dontAsk",
     includePartialMessages: true,
     persistSession: true,
     ...(shouldResume ? { resume: sessionId } : { sessionId }),

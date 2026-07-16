@@ -51,6 +51,7 @@ async function main() {
   assert(fresh.systemPrompt === buildSystemPrompt("edit"), "SDK must receive Chunky's exact edit prompt")
   assert(Array.isArray(fresh.tools) && fresh.tools.length === 0, "all Claude built-in tools must be disabled")
   assert(Array.isArray(fresh.settingSources) && fresh.settingSources.length === 0, "filesystem settings must be disabled")
+  assert(fresh.strictMcpConfig === true, "only Chunky's explicitly configured MCP server may be loaded")
   assert(fresh.permissionMode === "dontAsk", "only pre-approved Chunky MCP tools should run")
   assert(fresh.allowedTools?.length === 1 && fresh.allowedTools[0] === "mcp__chunky__*", "only Chunky MCP is allowed")
   assert(fresh.sessionId === "11111111-1111-4111-8111-111111111111", "fresh sessions use Chunky's UUID")

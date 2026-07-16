@@ -24,10 +24,11 @@ import {
 } from "./providers/registry.ts"
 import { threadContextFor } from "./thread-context.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
-import { HumanMessage } from "@langchain/core/messages"
+import { SystemMessage } from "@langchain/core/messages"
 import { Store } from "./store.ts"
 import { snapshotSessionTasks } from "./tasks.ts"
 import { formatSystemReminder } from "./system-reminder.ts"
+import { activeSidekickSummaries, runningChildSummaries } from "./threads.ts"
 import { ADVISOR_SYSTEM_PROMPT, sidekickSystemPrompt, buildSystemPrompt, type EditToolName } from "./prompt.ts"
 import {
   buildToolSearchMiddleware,
@@ -60,7 +61,9 @@ export async function postCompactionReminder(
     const goal = Store.getGoal(sessionId)
     return {
       goal: goal ? { objective: goal.objective, status: goal.status, mode: goal.mode ?? "direct", turns: goal.turns, maxTurns: goal.maxTurns } : undefined,
-      tasks: snapshotSessionTasks(sessionId).filter((task) => task.status === "running").map((task) => ({ taskId: task.taskId, status: task.status, command: task.command })),
+      sidekicks: activeSidekickSummaries(sessionId),
+      children: runningChildSummaries(sessionId),
+      tasks: snapshotSessionTasks(sessionId).map((task) => ({ taskId: task.taskId, status: task.status, command: task.command.split(/\r?\n/, 1)[0] })),
     }
   },
 ) {
@@ -68,9 +71,9 @@ export async function postCompactionReminder(
   const sessionId = runtime.configurable?.thread_id
   if (typeof sessionId !== "string") return
   const messages = state.messages.filter((message) => message?.additional_kwargs?.lc_source !== "chunky-system-reminder")
-  const summaryIndex = messages.findIndex((message) => message?.additional_kwargs?.lc_source === "summarization")
+  const summaryIndex = messages.findLastIndex((message) => message?.additional_kwargs?.lc_source === "summarization")
   const reminder = formatSystemReminder(collect(sessionId))
-  if (reminder) messages.splice(summaryIndex + 1, 0, new HumanMessage({ content: reminder, additional_kwargs: { lc_source: "chunky-system-reminder" } }))
+  if (reminder) messages.splice(summaryIndex + 1, 0, new SystemMessage({ content: reminder, additional_kwargs: { lc_source: "chunky-system-reminder" } }))
   return { messages }
 }
 

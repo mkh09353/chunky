@@ -30,7 +30,7 @@ export function formatSystemReminder(state: LiveSessionState): string | null {
   }
   if (state.sidekicks?.length) lines.push("## Active Sidekicks", ...state.sidekicks.map((s) => `- ${safe(s.seat)} — ${safe(s.brief)}`))
   if (state.children?.length) lines.push("## Running Child Threads", ...state.children.map((c) => `- ${safe(c.threadId, 80)} — ${safe(c.title)}`))
-  if (state.tasks?.length) lines.push("## Running Background Tasks", ...state.tasks.map((t) => `- ${safe(t.taskId, 80)} (${safe(t.status)}) — ${safe(t.command)}`))
+  if (state.tasks?.length) lines.push("## Background Tasks", ...state.tasks.map((t) => `- ${safe(t.taskId, 80)} (${safe(t.status)}) — ${safe(t.command)}`))
   if (!lines.length) return null
   return `<system-reminder>\n${lines.slice(0, 38).join("\n")}\n</system-reminder>`
 }

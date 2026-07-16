@@ -65,14 +65,18 @@ export function advisorConsultCount(sessionId: string): number {
  *  delegating the hands-on loop (the Fusion management-style metric) or doing
  *  everything itself. */
 const sidekickHandoffsBySession = new Map<string, number>()
-const activeSidekicks = new Map<string, { seat: string; brief: string }>()
+const activeSidekicks = new Map<string, Map<string, { seat: string; brief: string }>>()
+const runningChildrenBySession = new Map<string, Map<string, { threadId: string; title: string }>>()
 
 /** How many briefs the sidekick has been handed in this session so far. */
 export function sidekickHandoffCount(sessionId: string): number {
   return sidekickHandoffsBySession.get(sessionId) ?? 0
 }
 export function activeSidekickSummaries(sessionId: string): { seat: string; brief: string }[] {
-  return [...activeSidekicks.entries()].filter(([key]) => key.startsWith(`${sessionId}:`)).map(([, value]) => ({ ...value }))
+  return [...(activeSidekicks.get(sessionId)?.values() ?? [])].map((value) => ({ ...value }))
+}
+export function runningChildSummaries(sessionId: string): { threadId: string; title: string }[] {
+  return [...(runningChildrenBySession.get(sessionId)?.values() ?? [])].map((value) => ({ ...value }))
 }
 
 export class ThreadManager implements ThreadSpawner {
@@ -175,6 +179,9 @@ export class ThreadManager implements ThreadSpawner {
     this.emit({ type: "thread.spawn", threadId: childThreadId, parentThreadId, title: opts.title, model: selection.model })
     this.emit({ type: "thread.status", threadId: childThreadId, status: "running", title: opts.title })
     this.runningChildren.set(childThreadId, { threadId: childThreadId, title: opts.title })
+    let sessionChildren = runningChildrenBySession.get(this.rootId)
+    if (!sessionChildren) { sessionChildren = new Map(); runningChildrenBySession.set(this.rootId, sessionChildren) }
+    sessionChildren.set(childThreadId, { threadId: childThreadId, title: opts.title })
 
     try {
       if (providerRuntime(selection.provider) === "anthropic-sdk") {
@@ -217,6 +224,9 @@ export class ThreadManager implements ThreadSpawner {
       unregisterThread(childThreadId)
       this.selections.delete(childThreadId)
       this.runningChildren.delete(childThreadId)
+      const sessionChildren = runningChildrenBySession.get(this.rootId)
+      sessionChildren?.delete(childThreadId)
+      if (sessionChildren?.size === 0) runningChildrenBySession.delete(this.rootId)
     }
 
   }
@@ -415,8 +425,10 @@ export class ThreadManager implements ThreadSpawner {
     const isNamedSeat = seat !== undefined && seat !== "default"
     const sidekickThreadId = isNamedSeat ? `${this.rootId}:sidekick:${seat}` : `${this.rootId}:sidekick`
     const title = isNamedSeat ? `Sidekick (${seat})` : "Sidekick"
-    const sidekickKey = `${this.rootId}:${isNamedSeat ? seat : "default"}`
-    activeSidekicks.set(sidekickKey, { seat: isNamedSeat ? seat! : "default", brief: opts.brief })
+    const sidekickKey = isNamedSeat ? seat! : "default"
+    let sessionSidekicks = activeSidekicks.get(this.rootId)
+    if (!sessionSidekicks) { sessionSidekicks = new Map(); activeSidekicks.set(this.rootId, sessionSidekicks) }
+    sessionSidekicks.set(sidekickKey, { seat: sidekickKey, brief: opts.brief })
 
     this.emit({ type: "thread.spawn", threadId: sidekickThreadId, parentThreadId: null, title, model: sidekickSel.model })
     this.emit({ type: "thread.status", threadId: sidekickThreadId, status: "running", title })
@@ -470,7 +482,8 @@ export class ThreadManager implements ThreadSpawner {
       finalText = `error: ${message}`
     } finally {
       this.emit({ type: "thread.status", threadId: sidekickThreadId, status: "idle", title })
-      activeSidekicks.delete(sidekickKey)
+      sessionSidekicks.delete(sidekickKey)
+      if (sessionSidekicks.size === 0) activeSidekicks.delete(this.rootId)
     }
 
     return finalText

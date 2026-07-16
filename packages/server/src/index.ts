@@ -195,8 +195,11 @@ function startRun(
   const done = runAgent(sessionId, text, (ev) => emitTo(sessionId, ev), images, ac, {
     ...options,
     onToolBoundary: (): InterjectionBoundary | undefined => {
-      const note = interjections.get(sessionId)?.shift()
-      return note ? { prompt: formatInterjection(note.text), text: note.text } : undefined
+      const notes = interjections.get(sessionId)?.drainAll() ?? []
+      return notes.length ? {
+        prompts: notes.map((note) => formatInterjection(note.text)),
+        texts: notes.map((note) => note.text),
+      } : undefined
     },
   })
     .catch((err) => {
@@ -211,7 +214,10 @@ function startRun(
       const leftovers = interjections.get(sessionId)?.drainAll() ?? []
       if (leftovers.length) {
         const queue = promptQueues.get(sessionId) ?? new PromptQueue()
-        for (const note of leftovers) queue.enqueue({ prompt: formatInterjection(note.text), shown: note.text, images: note.images, kind: "interject" })
+        for (const note of leftovers) {
+          try { queue.enqueue({ prompt: formatInterjection(note.text), shown: note.text, images: note.images, kind: "interject" }) }
+          catch { emitTo(sessionId, { type: "error", message: "interjection queue is full; message discarded" }); break }
+        }
         promptQueues.set(sessionId, queue)
       }
       if (!running.has(sessionId)) {
@@ -988,7 +994,8 @@ const server = Bun.serve({
         // echo). Emitted before the run so it lands ahead of the assistant reply.
         if (running.has(sessionId) || queueBusy.has(sessionId)) {
           const queue = promptQueues.get(sessionId) ?? new PromptQueue()
-          queue.enqueue({ prompt: text, shown: visibleText, images, kind: "prompt" })
+          try { queue.enqueue({ prompt: text, shown: visibleText, images, kind: "prompt" }) }
+          catch { return json({ error: "prompt queue is full" }, 429) }
           promptQueues.set(sessionId, queue)
           emitTo(sessionId, { type: "queue.changed", sessionId, entries: queue.snapshot(), running: running.has(sessionId) })
           return new Response(null, { status: 202, headers: CORS })

@@ -248,6 +248,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   // idle. Refs mirror the state so the stable `apply` callback reads the latest.
   const [queue, setQueue] = useState<Outgoing[]>([])
   const [steerQueue, setSteerQueue] = useState<Outgoing[]>([])
+  const [authoritativeQueueCount, setAuthoritativeQueueCount] = useState(0)
   const queueRef = useRef<Outgoing[]>([])
   queueRef.current = queue
   const steerRef = useRef<Outgoing[]>([])
@@ -323,6 +324,8 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       setState((s) => reduce(s, ev))
       if (ev.type === "message.start" && !ev.threadId) lastAssistantRef.current = ""
       if (ev.type === "message.delta" && !ev.threadId) lastAssistantRef.current += ev.text
+      if (ev.type === "queue.changed") setAuthoritativeQueueCount(ev.entries.length)
+      if (ev.type === "message.interjection" && ev.injected) setState((s) => pushUser(s, ev.text))
       if (ev.type === "session.status") {
         setStartedAt(ev.status === "running" ? Date.now() : null)
         if (ev.status === "running") {
@@ -554,8 +557,6 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       // so they ride with the buffered message.
       if (mode === "live" && runningRef.current) {
         const item: Outgoing = { text, shown, images }
-        // The server is authoritative for both paths; retain local buffers only
-        // for the legacy boundary delivery callbacks during migration.
         void postMessage(text, shown, images, false, false, undefined, opts?.delivery === "interject" ? "interject" : "queue")
         return
       }
@@ -1755,8 +1756,9 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
             </text>
           )
         )}
-        {/* Buffered type-ahead: steer messages (fire at the next tool result)
-            then queued messages (fire when the turn ends), oldest first. */}
+        {/* Server-authoritative queued prompt count. */}
+        {authoritativeQueueCount > 0 && <text attributes={TextAttributes.DIM}>{`  ⏎ queued: ${authoritativeQueueCount}`}</text>}
+        {/* Legacy local displays retained only for explicit steer compatibility. */}
         {steerQueue.map((m, i) => (
           <text key={`steer-${i}`} fg={ACCENT}>
             {"  ↪ steer · next tool result: "}

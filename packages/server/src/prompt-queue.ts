@@ -8,6 +8,7 @@ export interface PendingPrompt {
 }
 
 export class PromptQueue {
+  // Version is intentionally fixed at 1 until edit/reorder routes exist.
   private entries: PendingPrompt[] = []
   constructor(private readonly cap = 20) {}
   enqueue(input: Omit<PendingPrompt, "id" | "version" | "createdAt"> & Partial<Pick<PendingPrompt, "id" | "version" | "createdAt">>): PendingPrompt {

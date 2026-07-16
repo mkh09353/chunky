@@ -30,8 +30,8 @@ export interface CacheContext {
   model: string
 }
 export interface InterjectionBoundary {
-  prompt: string
-  text: string
+  prompts: string[]
+  texts: string[]
 }
 
 // Extract plain text from an AIMessageChunk `content`, which is either a string
@@ -386,6 +386,7 @@ export async function runAgent(
 
   try {
     let prompt = text
+    let pendingInterjections: InterjectionBoundary = { prompts: [], texts: [] }
     let turnImages = images
     // Goal-mode continuation loop. With NO goal this runs exactly once
     // (decideGoalStep → "no-goal" → break) — identical to the pre-goal behavior.
@@ -396,14 +397,23 @@ export async function runAgent(
       try { await runTurn(prompt, turnImages) } catch (err) {
         if ((err as Error)?.name === "InterjectionBoundary") {
           const boundary = JSON.parse((err as Error).message) as InterjectionBoundary
-          prompt = boundary.prompt
+          pendingInterjections = boundary
+          prompt = pendingInterjections.prompts.shift() ?? prompt
           turnImages = undefined
-          emit({ type: "message.interjection", sessionId, text: boundary.text, injected: true })
+          const note = pendingInterjections.texts.shift()
+          if (note !== undefined) emit({ type: "message.interjection", sessionId, text: note, injected: true })
           continue
         }
         throw err
       }
       turnImages = undefined // pasted images ride only the first turn
+
+      if (pendingInterjections.prompts.length) {
+        prompt = pendingInterjections.prompts.shift()!
+        const note = pendingInterjections.texts.shift()!
+        emit({ type: "message.interjection", sessionId, text: note, injected: true })
+        continue
+      }
 
       const step = decideGoalStep(Store.getGoal(sessionId), abort?.signal.aborted ?? false)
       if (step.kind === "stop") {

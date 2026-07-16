@@ -24,7 +24,7 @@ import {
 } from "./providers/registry.ts"
 import { threadContextFor } from "./thread-context.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
-import { SystemMessage } from "@langchain/core/messages"
+import { RemoveMessage, SystemMessage } from "@langchain/core/messages"
 import { Store } from "./store.ts"
 import { snapshotSessionTasks } from "./tasks.ts"
 import { formatSystemReminder } from "./system-reminder.ts"
@@ -56,28 +56,36 @@ import { getTaskOutput, killTask } from "./tools/task.ts"
 import { resolveFileToolProfile } from "./settings.ts"
 import { hashlineRead, hashlineEdit } from "./tools/hashline/index.ts"
 
-export async function postCompactionReminder(
-  state: { messages: any[] },
-  runtime: { configurable?: { thread_id?: unknown } },
-  collect: (sessionId: string) => Parameters<typeof formatSystemReminder>[0] = (sessionId) => {
-    const goal = Store.getGoal(sessionId)
-    return {
-      goal: goal ? { objective: goal.objective, status: goal.status, mode: goal.mode ?? "direct", turns: goal.turns, maxTurns: goal.maxTurns } : undefined,
-      sidekicks: activeSidekickSummaries(sessionId),
-      children: runningChildSummaries(sessionId),
-      tasks: snapshotSessionTasks(sessionId).map((task) => ({ taskId: task.taskId, status: task.status, command: task.command.split(/\r?\n/, 1)[0] })),
-    }
-  },
-) {
-  if (!state.messages.some((message) => message?.additional_kwargs?.lc_source === "summarization")) return
-  const sessionId = runtime.configurable?.thread_id
-  if (typeof sessionId !== "string") return
-  const messages = state.messages.filter((message) => message?.additional_kwargs?.lc_source !== "chunky-system-reminder")
-  const summaryIndex = messages.findLastIndex((message) => message?.additional_kwargs?.lc_source === "summarization")
-  const reminder = formatSystemReminder(collect(sessionId))
-  if (reminder) messages.splice(summaryIndex + 1, 0, new SystemMessage({ content: reminder, additional_kwargs: { lc_source: "chunky-system-reminder" } }))
-  return { messages }
+export function makePostCompactionReminder() {
+  let handledSummaryId: string | undefined
+  return async function postCompactionReminder(
+    state: { messages: any[] },
+    runtime: { configurable?: { thread_id?: unknown } },
+    collect: (sessionId: string) => Parameters<typeof formatSystemReminder>[0] = (sessionId) => {
+      const goal = Store.getGoal(sessionId)
+      return {
+        goal: goal ? { objective: goal.objective, status: goal.status, mode: goal.mode ?? "direct", turns: goal.turns, maxTurns: goal.maxTurns } : undefined,
+        sidekicks: activeSidekickSummaries(sessionId),
+        children: runningChildSummaries(sessionId),
+        tasks: snapshotSessionTasks(sessionId).map((task) => ({ taskId: task.taskId, status: task.status, command: task.command.split(/\r?\n/, 1)[0] })),
+      }
+    },
+  ) {
+    const summary = state.messages.findLast((message) => message?.additional_kwargs?.lc_source === "summarization")
+    const summaryId = summary?.id
+    if (!summaryId || summaryId === handledSummaryId) return
+    const sessionId = runtime.configurable?.thread_id
+    if (typeof sessionId !== "string") return
+    handledSummaryId = summaryId
+    const removals = state.messages
+      .filter((message) => message?.additional_kwargs?.lc_source === "chunky-system-reminder" && message.id)
+      .map((message) => new RemoveMessage({ id: message.id }))
+    const reminder = formatSystemReminder(collect(sessionId))
+    if (reminder) return { messages: [...removals, new SystemMessage({ content: reminder, additional_kwargs: { lc_source: "chunky-system-reminder" } })] }
+    return removals.length ? { messages: removals } : undefined
+  }
 }
+export const postCompactionReminder = makePostCompactionReminder()
 
 // Re-export pure gating/classification helpers for tests and callers.
 export {
@@ -180,8 +188,8 @@ function fileToolsFor(modelId: string | undefined, providerId: string) {
   return isGptCodexFamily(modelId, providerId) ? [hashlineRead, applyPatch] : [hashlineRead, dualTool(hashlineEdit)]
 }
 
-function sidekickFileToolsFor(modelId: string | undefined, providerId: string) {
-  if (resolveFileToolProfile() === "hashline") return [hashlineRead, dualTool(hashlineEdit)] as const
+export function sidekickFileToolsFor(modelId: string | undefined, providerId: string) {
+  if (resolveFileToolProfile() === "hashline") return isGptCodexFamily(modelId, providerId) ? [hashlineRead, applyPatch] as const : [hashlineRead, dualTool(hashlineEdit)] as const
   return [read, editToolsForModel(modelId, providerId)[0]] as const
 }
 
@@ -312,7 +320,7 @@ export function buildAgent(
       // only stable point, immediately after the generated summary.
       {
         name: "postCompactionReminder",
-        beforeModel: postCompactionReminder,
+        beforeModel: makePostCompactionReminder(),
       },
       ...(toolSearchMw ? [toolSearchMw] : []),
     ],

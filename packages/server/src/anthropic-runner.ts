@@ -52,8 +52,9 @@ import {
 } from "./tools/skills.ts"
 import { write, writeInputShape } from "./tools/write.ts"
 import { asToolRunResult } from "./tools/result.ts"
-import { getTaskOutput, killTask } from "./tools/task.ts"
+import { getTaskOutput, getTaskOutputInputShape, killTask, killTaskInputShape } from "./tools/task.ts"
 import { hashlineEdit, hashlineRead } from "./tools/hashline/index.ts"
+import { hashlineEditInputShape } from "./tools/hashline/types.ts"
 import { resolveFileToolProfile, type FileToolProfile } from "./settings.ts"
 
 const SERVER_NAME = "chunky"
@@ -85,7 +86,9 @@ const knownSessions = new Set<string>()
 
 /** File tools used by the SDK MCP server. Names intentionally remain read/edit. */
 export function anthropicFileTools(profile: FileToolProfile = resolveFileToolProfile()) {
-  return profile === "hashline" ? { read: hashlineRead, edit: hashlineEdit } : { read, edit: editTool }
+  return profile === "hashline"
+    ? { read: hashlineRead, edit: hashlineEdit, editInputShape: hashlineEditInputShape }
+    : { read, edit: editTool, editInputShape }
 }
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
@@ -131,7 +134,7 @@ export async function runChunkyToolForSdk(
       output: result.promptText,
       ...(result.raw !== undefined ? { raw: result.raw } : {}),
     })
-    return { content: [{ type: "text" as const, text: result.promptText }] }
+    return { content: [{ type: "text" as const, text: result.promptText }], ...(result.ok ? {} : { isError: true }) }
   } catch (err) {
     const output = (err as Error)?.message ?? String(err)
     emit({ type: "tool.end", id, ok: false, output })
@@ -190,6 +193,10 @@ export function createChunkySdkMcpServer(
         (args) => bash.invoke(args, runConfig),
         emit,
       ),
+      wrapChunkyTool(getTaskOutput.name, getTaskOutput.description, getTaskOutputInputShape,
+        (args) => getTaskOutput.invoke(args, runConfig), emit, readOnly),
+      wrapChunkyTool(killTask.name, killTask.description, killTaskInputShape,
+        (args) => killTask.invoke(args, runConfig), emit),
       wrapChunkyTool(
         fffind.name,
         fffind.description,
@@ -216,7 +223,7 @@ export function createChunkySdkMcpServer(
       wrapChunkyTool(
         fileTools.edit.name,
         fileTools.edit.description,
-        editInputShape,
+        fileTools.editInputShape,
         (args) => fileTools.edit.invoke(args, runConfig),
         emit,
       ),
@@ -338,6 +345,8 @@ export interface AnthropicRunRequest {
   /** The session's workspace (cwd + tool jail). Defaults to the launch dir. */
   workspace?: string
   agentsMd?: string | null
+  /** Called once the SDK query has been constructed and provider submission has begun. */
+  onSubmitted?: () => void
 }
 
 export async function buildAnthropicOptions(
@@ -359,6 +368,7 @@ export async function buildAnthropicOptions(
     systemPrompt:
       request.systemPrompt ??
       buildSystemPrompt("edit", false, workspace, {
+        fileToolProfile: resolveFileToolProfile(),
         hasSidekick: sidekickFor(selection) != null,
         sidekickSeats: listSidekickSeats(),
         agentsMd: request.agentsMd,
@@ -511,6 +521,7 @@ export async function runAnthropicAgent(
 ): Promise<string> {
   const options = await buildAnthropicOptions(request, dependencies)
   const q: Query = dependencies.query({ prompt: request.prompt, options })
+  request.onSubmitted?.()
   try {
     const account = await q.accountInfo()
     if (!account.subscriptionType || account.apiProvider !== "firstParty") {

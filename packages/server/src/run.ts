@@ -17,9 +17,31 @@ import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { classifyGoalError, decideGoalStep, firstLine, goalContinuationPrompt, toSnapshot, type GoalStep } from "./goal.ts"
 import { distilledAgentsMd } from "./agents-md.ts"
 import { asToolRunResult } from "./tools/result.ts"
-import { pendingTaskReminders } from "./tasks.ts"
+import { peekTaskReminders, consumeTaskReminders } from "./tasks.ts"
 
 export type { Emit } from "./event-emitter.ts"
+
+export function mergeInterjectionBoundaries(
+  pending: InterjectionBoundary,
+  next: InterjectionBoundary,
+): InterjectionBoundary {
+  return {
+    prompts: [...pending.prompts, ...next.prompts],
+    texts: [...pending.texts, ...next.texts],
+    images: [...pending.images, ...next.images],
+  }
+}
+
+export async function* onFirstStreamChunk<T>(stream: AsyncIterable<T>, submitted: () => void): AsyncGenerator<T> {
+  let first = true
+  for await (const chunk of stream) {
+    if (first) {
+      first = false
+      submitted()
+    }
+    yield chunk
+  }
+}
 
 /** Tells a stream which conversation's prompt cache to keep warm. Only the main
  *  user-driven session carries one (child/advisor threads don't warn). */
@@ -318,7 +340,8 @@ export async function runAgent(
   },
 ): Promise<void> {
   emit({ type: "session.status", sessionId, status: "running" })
-  const reminder = pendingTaskReminders(sessionId)
+  const pendingReminder = peekTaskReminders(sessionId)
+  const reminder = pendingReminder.text
   if (reminder) text = `${text}\n\n[Background task reminders]\n${reminder}`
 
   // Freeze the root selection for this run. A later /model change affects the
@@ -369,7 +392,10 @@ export async function runAgent(
   const runTurn = async (prompt: string, turnImages?: InputImage[]): Promise<void> => {
     if (providerRuntime(selection.provider) === "anthropic-sdk") {
       const { runAnthropicAgent } = await import("./anthropic-runner.ts")
-      await runAnthropicAgent({ selection, threadId: sessionId, prompt, emit, cache, abort, workspace, agentsMd })
+      await runAnthropicAgent({
+        selection, threadId: sessionId, prompt, emit, cache, abort, workspace, agentsMd,
+        onSubmitted: () => consumeTaskReminders(sessionId, pendingReminder.ids),
+      })
     } else {
       const stream = await getAgent(selection, workspace, agentsMd).stream(
         { messages: [{ role: "user", content: userMessageContent(prompt, turnImages) }] } as any,
@@ -381,7 +407,13 @@ export async function runAgent(
         } as any,
       )
 
-      await translateStream(stream, undefined, emit, cache, options?.onToolBoundary)
+      await translateStream(
+        onFirstStreamChunk(stream, () => consumeTaskReminders(sessionId, pendingReminder.ids)),
+        undefined,
+        emit,
+        cache,
+        options?.onToolBoundary,
+      )
     }
   }
 
@@ -398,7 +430,7 @@ export async function runAgent(
       try { await runTurn(prompt, turnImages) } catch (err) {
         if ((err as Error)?.name === "InterjectionBoundary") {
           const boundary = JSON.parse((err as Error).message) as InterjectionBoundary
-          pendingInterjections = boundary
+          pendingInterjections = mergeInterjectionBoundaries(pendingInterjections, boundary)
           prompt = pendingInterjections.prompts.shift() ?? prompt
           turnImages = pendingInterjections.images.shift()
           const note = pendingInterjections.texts.shift()

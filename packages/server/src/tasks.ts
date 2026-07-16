@@ -132,6 +132,14 @@ export function pendingTaskReminders(sessionId: string): string {
     return record ? `Background task ${id} (${record.description ?? record.command}) is ${record.status}. Use get_task_output with task_ids=["${id}"] for output.` : ""
   }).filter(Boolean).join("\n")
 }
+export function peekTaskReminders(sessionId: string): { text: string; ids: string[] } {
+  const ids = [...(pendingReminders.get(sessionId) ?? [])]
+  return { ids, text: ids.map((id) => {
+    const record = getTaskRecord(sessionId, id)
+    return record ? `Background task ${id} (${record.description ?? record.command}) is ${record.status}. Use get_task_output with task_ids=["${id}"] for output.` : ""
+  }).filter(Boolean).join("\n") }
+}
+export function consumeTaskReminders(sessionId: string, ids: string[]): void { for (const id of ids) consumeTaskReminder(sessionId, id) }
 export async function cleanupSession(sessionId: string): Promise<void> {
   const map = tasks.get(sessionId)
   if (map) for (const record of map.values()) {

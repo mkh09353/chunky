@@ -1,28 +1,36 @@
 import { describe, expect, test } from "bun:test"
-import { postCompactionReminder } from "./agent.ts"
-import { HumanMessage } from "@langchain/core/messages"
-import { SystemMessage } from "@langchain/core/messages"
-const summary = () => new HumanMessage({ content: "summary", additional_kwargs: { lc_source: "summarization" } })
-const stale = () => new HumanMessage({ content: "stale", additional_kwargs: { lc_source: "chunky-system-reminder" } })
+import { makePostCompactionReminder } from "./agent.ts"
+import { HumanMessage, SystemMessage } from "@langchain/core/messages"
+import { messagesStateReducer } from "@langchain/langgraph"
+
+const summary = (id: string) => new HumanMessage({ id, content: "summary", additional_kwargs: { lc_source: "summarization" } })
+const stale = (id: string) => new SystemMessage({ id, content: "stale", additional_kwargs: { lc_source: "chunky-system-reminder" } })
+const live = () => ({ goal: { objective: "live", status: "active", mode: "direct", turns: 1, maxTurns: 2 } })
 
 describe("post-compaction reminder", () => {
-  test("requires summary and replaces stale reminder immediately after it", async () => {
-    const result = await postCompactionReminder({ messages: [new HumanMessage("old"), summary(), stale()] }, { configurable: { thread_id: "s" } }, () => ({ goal: { objective: "live", status: "active", mode: "direct", turns: 1, maxTurns: 2 } }))
-    expect(result?.messages[1].additional_kwargs.lc_source).toBe("summarization")
-    expect(result?.messages[2]).toBeInstanceOf(SystemMessage)
-    expect(result?.messages[2].content).toContain("live")
+  test("emits reducer removals and one reminder, then ignores the same summary", async () => {
+    const middleware = makePostCompactionReminder()
+    const result = await middleware({ messages: [new HumanMessage("old"), summary("sum-1"), stale("old-reminder")] }, { configurable: { thread_id: "s" } }, live)
+    expect(result?.messages).toHaveLength(2)
+    expect(result?.messages[0]).toMatchObject({ type: "remove", id: "old-reminder" })
+    expect(result?.messages[1]).toBeInstanceOf(SystemMessage)
+    expect((result?.messages[1] as SystemMessage).content).toContain("live")
+    expect(await middleware({ messages: [summary("sum-1")] }, { configurable: { thread_id: "s" } }, () => ({}))).toBeUndefined()
+  })
+  test("new summary removes every prior reminder and inserts one fresh reminder", async () => {
+    const middleware = makePostCompactionReminder()
+    await middleware({ messages: [summary("sum-1")] }, { configurable: { thread_id: "s" } }, live)
+    const result = await middleware({ messages: [summary("sum-2"), stale("r1"), stale("r2")] }, { configurable: { thread_id: "s" } }, live)
+    expect(result?.messages.filter((m: any) => m.type === "remove")).toHaveLength(2)
     expect(result?.messages.filter((m: any) => m.additional_kwargs?.lc_source === "chunky-system-reminder")).toHaveLength(1)
-    expect(await postCompactionReminder({ messages: [new HumanMessage("x")] }, { configurable: { thread_id: "s" } }, () => ({ goal: { objective: "no", status: "active", mode: "direct", turns: 1, maxTurns: 2 } }))).toBeUndefined()
+    const reduced = messagesStateReducer([summary("sum-2"), stale("r1"), stale("r2")], result!.messages)
+    expect(reduced.filter((m) => m.additional_kwargs?.lc_source === "chunky-system-reminder")).toHaveLength(1)
+    expect(reduced.some((m) => m.id === "r1" || m.id === "r2")).toBe(false)
   })
-  test("restores after the latest summary", async () => {
-    const first = summary(); const second = summary()
-    const result = await postCompactionReminder({ messages: [first, new HumanMessage("tail"), second] }, { configurable: { thread_id: "s" } }, () => ({ goal: { objective: "latest", status: "active", mode: "direct", turns: 1, maxTurns: 2 } }))
-    expect(result?.messages.indexOf(second)).toBe(2)
-    expect(result?.messages[3].content).toContain("latest")
-  })
-  test("does not inject when live state is empty", async () => {
-    const result = await postCompactionReminder({ messages: [summary(), stale()] }, { configurable: { thread_id: "s" } }, () => ({}))
+  test("removes stale reminders without injecting when live state is empty", async () => {
+    const middleware = makePostCompactionReminder()
+    const result = await middleware({ messages: [summary("sum-empty"), stale("r-empty")] }, { configurable: { thread_id: "s" } }, () => ({}))
     expect(result?.messages).toHaveLength(1)
-    expect(result?.messages[0].additional_kwargs.lc_source).toBe("summarization")
+    expect(result?.messages[0]).toMatchObject({ type: "remove", id: "r-empty" })
   })
 })

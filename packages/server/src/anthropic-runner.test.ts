@@ -61,6 +61,26 @@ async function main() {
   assert(fresh.env?.ANTHROPIC_PROFILE === undefined, "alternate Anthropic auth profiles must be removed")
   assert(fresh.env?.CLAUDE_CODE_USE_GATEWAY === undefined, "enterprise gateway auth must be removed")
   assert(fresh.mcpServers?.chunky?.type === "sdk", "Chunky tools must be an in-process SDK MCP server")
+  const registeredTools = Object.keys((fresh.mcpServers?.chunky as any).instance._registeredTools).sort()
+  assert(
+    JSON.stringify(registeredTools) === JSON.stringify([
+      "bash", "create_goal", "edit", "fffind", "ffgrep", "get_goal", "get_task_output", "goal_blocked",
+      "goal_complete", "kill_task", "load_skill", "manage_models", "manage_skill_repos", "read", "search_skills",
+      "ship_goal", "sidekick", "spawn_thread", "workflow", "write",
+    ]),
+    `SDK MCP registered tool set mismatch: ${registeredTools.join(", ")}`,
+  )
+
+  process.env.CHUNKY_FILE_TOOL_PROFILE = "hashline"
+  const hashline = await buildAnthropicOptions(
+    { selection, threadId: "33333333-3333-4333-8333-333333333333", emit },
+    { query: fakeQuery, getSessionInfo: (async () => undefined) as AnthropicRunnerDependencies["getSessionInfo"] },
+  )
+  assert(hashline.systemPrompt === buildSystemPrompt("edit", false, process.cwd(), { fileToolProfile: "hashline" }), "hashline SDK prompt must match its bound file tools")
+  const hashlineEditSchema = (hashline.mcpServers?.chunky as any).instance._registeredTools.edit.inputSchema
+  assert(hashlineEditSchema.safeParse({ path: "a.ts", edits: [{ op: "write", content: "x" }] }).success, "hashline edit schema must accept hashline operations")
+  assert(!hashlineEditSchema.safeParse({ path: "a.ts", edits: [{ oldText: "a", newText: "b" }] }).success, "hashline edit schema must reject standard edits")
+  delete process.env.CHUNKY_FILE_TOOL_PROFILE
 
   const resumed = await buildAnthropicOptions(
     {
@@ -129,6 +149,7 @@ async function main() {
     (event) => toolEvents.push(event),
   )
   assert(toolResponse.content[0]?.text === "model-only text", "Anthropic tool content must contain only promptText")
+  assert(toolResponse.isError !== true, "successful Anthropic tool result must not be marked as an error")
   assert(
     toolEvents.some((event) =>
       event.type === "tool.end" &&
@@ -137,6 +158,20 @@ async function main() {
     ),
     "Anthropic tool.end must carry raw separately from output",
   )
+  const failedToolResponse = await runChunkyToolForSdk(
+    "test_tool",
+    {},
+    async () => toolResult("rejected", { ok: false }),
+    () => {},
+  )
+  assert(failedToolResponse.isError === true, "ok:false Anthropic tool result must be marked as an error")
+  const thrownToolResponse = await runChunkyToolForSdk(
+    "test_tool",
+    {},
+    async () => { throw new Error("boom") },
+    () => {},
+  )
+  assert(thrownToolResponse.isError === true && thrownToolResponse.content[0]?.text === "boom", "thrown Anthropic tool error must remain an MCP error")
 
   const env = anthropicOAuthEnvironment()
   assert(env.CLAUDE_AGENT_SDK_CLIENT_APP === "chunky-cli/0.0.0", "SDK client app must be identified")

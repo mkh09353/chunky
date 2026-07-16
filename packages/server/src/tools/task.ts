@@ -5,6 +5,9 @@ import { toolResult } from "./result.ts"
 import { sessionForThread } from "../thread-context.ts"
 import { terminateProcessTree } from "../process-tree.ts"
 
+export const getTaskOutputInputShape = { task_ids: z.array(z.string()).min(1), timeout_ms: z.number().nonnegative().optional() }
+export const killTaskInputShape = { task_id: z.string() }
+
 function session(config: any): string {
   const threadId = config?.configurable?.thread_id
   return sessionForThread(threadId) ?? threadId ?? "unknown"
@@ -17,7 +20,7 @@ function display(snapshot: ReturnType<typeof snapshotTask>) {
     exit_code: snapshot.exitCode, signal: snapshot.signal, output: snapshot.output,
     raw_output_bytes: snapshot.rawOutputBytes, truncated: snapshot.truncated,
     ...(snapshot.timedOut ? { timed_out: true } : {}),
-    ...(snapshot.spillPath ? { spill_path: snapshot.spillPath, reread_hint: `Use read on ${snapshot.spillPath} for full output.` } : {}),
+    ...(snapshot.spillPath ? { spill_path: snapshot.spillPath, reread_hint: `Use bash with \`cat ${snapshot.spillPath}\` for full output.` } : {}),
   }
 }
 
@@ -33,7 +36,7 @@ export const getTaskOutput = tool(
     })
     return toolResult(results.map((r) => `${r.task_id}: ${r.status}${r.output ? ` — ${r.output.slice(0, 500)}` : ""}`).join("\n"), { raw: { kind: "task-output", results } })
   },
-  { name: "get_task_output", description: "Poll background bash tasks; omitted or 0 timeout is nonblocking, positive timeout waits for all known tasks (capped at 600000ms).", schema: z.object({ task_ids: z.array(z.string()).min(1), timeout_ms: z.number().nonnegative().optional() }) },
+  { name: "get_task_output", description: "Poll background bash tasks; omitted or 0 timeout is nonblocking, positive timeout waits for all known tasks (capped at 600000ms).", schema: z.object(getTaskOutputInputShape) },
 )
 
 export const killTask = tool(
@@ -49,5 +52,5 @@ export const killTask = tool(
     await record.done
     return toolResult(`Task ${task_id} killed.`, { raw: { task_id, outcome: "killed", status: record.status } })
   },
-  { name: "kill_task", description: "Kill a running background bash task by task ID.", schema: z.object({ task_id: z.string() }) },
+  { name: "kill_task", description: "Kill a running background bash task by task ID.", schema: z.object(killTaskInputShape) },
 )

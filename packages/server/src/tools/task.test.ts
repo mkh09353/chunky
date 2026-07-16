@@ -62,6 +62,8 @@ describe("background task tools", () => {
       const spill = String(item?.spill_path)
       expect(existsSync(spill)).toBe(true)
       expect(readFileSync(spill).length).toBe(40000)
+      expect(item?.reread_hint).toContain(`cat ${spill}`)
+      expect(item?.reread_hint).not.toContain("Use read")
     } finally { await resetTasks() }
   })
 })

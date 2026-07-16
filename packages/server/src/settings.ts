@@ -76,6 +76,7 @@ export interface ModeSpec {
 }
 
 export interface Settings {
+  fileToolProfile?: "standard" | "hashline"
   /** User/project skill names disabled globally. */
   disabledSkills?: string[]
   customProviders?: CustomProvider[]
@@ -107,6 +108,13 @@ export interface Settings {
   skillRepos?: SkillRepoRecord[]
   /** Optional user exceptions to Chunky's zero-config workflow routing. Keys are provider/model. */
   workflowTargets?: Record<string, WorkflowTargetOverride>
+}
+export type FileToolProfile = "standard" | "hashline"
+export function resolveFileToolProfile(): FileToolProfile {
+  const env = process.env.CHUNKY_FILE_TOOL_PROFILE
+  if (env === "hashline" || env === "standard") return env
+  const setting = loadSettings().fileToolProfile
+  return setting === "hashline" || setting === "standard" ? setting : "standard"
 }
 export interface CustomProvider {
   id: string

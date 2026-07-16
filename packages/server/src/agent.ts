@@ -53,6 +53,8 @@ import { skillTools } from "./tools/skills.ts"
 import { write } from "./tools/write.ts"
 import { dualTool } from "./tools/result.ts"
 import { getTaskOutput, killTask } from "./tools/task.ts"
+import { resolveFileToolProfile } from "./settings.ts"
+import { hashlineRead, hashlineEdit } from "./tools/hashline/index.ts"
 
 export async function postCompactionReminder(
   state: { messages: any[] },
@@ -173,6 +175,16 @@ export function editToolsForModel(modelId: string | undefined, providerId: strin
   return isGptCodexFamily(modelId, providerId) ? [applyPatch] : [dualTool(editTool)]
 }
 
+function fileToolsFor(modelId: string | undefined, providerId: string) {
+  if (resolveFileToolProfile() !== "hashline") return [read, ...editToolsForModel(modelId, providerId)]
+  return isGptCodexFamily(modelId, providerId) ? [hashlineRead, applyPatch] : [hashlineRead, dualTool(hashlineEdit)]
+}
+
+function sidekickFileToolsFor(modelId: string | undefined, providerId: string) {
+  if (resolveFileToolProfile() === "hashline") return [hashlineRead, dualTool(hashlineEdit)] as const
+  return [read, editToolsForModel(modelId, providerId)[0]] as const
+}
+
 /** The name of the edit tool bound for the active model — used to adapt the
  *  system prompt's edit guidance to whichever tool the model actually has. */
 export function editToolNameForModel(modelId: string | undefined, providerId: string): EditToolName {
@@ -190,7 +202,7 @@ export function executorToolsFor(selection: AgentSelection) {
   const advisorSel = advisorFor(selection)
   const sidekickSel = sidekickFor(selection)
   const tools = [
-    read,
+    ...fileToolsFor(selection.model, selection.provider),
     dualTool(bash),
     getTaskOutput,
     killTask,
@@ -206,7 +218,6 @@ export function executorToolsFor(selection: AgentSelection) {
     manageModels,
     manageSkillReposTool,
     ...skillTools,
-    ...editToolsForModel(selection.model, selection.provider),
     ...(advisorSel ? [advisor] : []),
   ]
   return { tools, hasAdvisor: advisorSel != null, hasSidekick: sidekickSel != null }
@@ -273,6 +284,7 @@ export function buildAgent(
     model,
     tools: boundTools,
     systemPrompt: buildSystemPrompt(plan.editToolName, plan.hasAdvisor, workspace, {
+      fileToolProfile: resolveFileToolProfile(),
       nativeToolSearch: plan.nativeToolSearch,
       portableToolSearch: providerId === "grok",
       hasSidekick: plan.hasSidekick,
@@ -323,7 +335,7 @@ export function getAgent(
   workspace: string = LAUNCH_WORKSPACE,
   agentsMd?: string | null,
 ): ReturnType<typeof buildAgent> {
-  const sig = `${selectionSignature(selection)}@@${workspace}@@${agentsMd ?? ""}`
+  const sig = `${selectionSignature(selection)}@@${workspace}@@${agentsMd ?? ""}@@${resolveFileToolProfile()}`
   let a = agentCache.get(sig)
   if (!a) {
     a = buildAgent(selection, workspace, {}, agentsMd)
@@ -350,7 +362,7 @@ export function buildAdvisorAgent(selection: AgentSelection) {
   const model = resolveModel(selection)
   return createAgent({
     model,
-    tools: [read, bash, fffind, ffgrep],
+    tools: [resolveFileToolProfile() === "hashline" ? hashlineRead : read, bash, fffind, ffgrep],
     systemPrompt: ADVISOR_SYSTEM_PROMPT,
     checkpointer: makeCheckpointer(),
     middleware: [
@@ -369,7 +381,7 @@ export function buildAdvisorAgent(selection: AgentSelection) {
  *  instance per selection serves every repo. ThreadManager's default
  *  advisorAgentFor injectable. */
 export function getAdvisorAgent(selection: AgentSelection = activeSelection()): ReturnType<typeof buildAgent> {
-  const sig = "advisor::" + selectionSignature(selection)
+  const sig = "advisor::" + selectionSignature(selection) + "@@" + resolveFileToolProfile()
   let a = agentCache.get(sig)
   if (!a) {
     a = buildAdvisorAgent(selection) as unknown as ReturnType<typeof buildAgent>
@@ -388,10 +400,11 @@ export function getAdvisorAgent(selection: AgentSelection = activeSelection()): 
  */
 export function buildSidekickAgent(selection: AgentSelection, agentsMd?: string | null) {
   const model = resolveModel(selection)
+  const [fileRead, fileEdit] = sidekickFileToolsFor(selection.model, selection.provider)
   return createAgent({
     model,
-    tools: [read, bash, fffind, ffgrep, write, ...editToolsForModel(selection.model, selection.provider)],
-    systemPrompt: sidekickSystemPrompt(agentsMd),
+    tools: [fileRead, fileEdit, bash, fffind, ffgrep, write],
+    systemPrompt: sidekickSystemPrompt(agentsMd, resolveFileToolProfile()),
     checkpointer: makeCheckpointer(),
     middleware: [
       summarizationMiddleware({
@@ -407,7 +420,7 @@ export function buildSidekickAgent(selection: AgentSelection, agentsMd?: string 
  *  "sidekick::<sig>") so invalidateAgent() clears it too. ThreadManager's default
  *  sidekickAgentFor injectable. */
 export function getSidekickAgent(selection: AgentSelection = activeSelection(), _workspace?: string, agentsMd?: string | null): ReturnType<typeof buildAgent> {
-  const sig = "sidekick::" + selectionSignature(selection) + "@@" + (agentsMd ?? "")
+  const sig = "sidekick::" + selectionSignature(selection) + "@@" + resolveFileToolProfile() + "@@" + (agentsMd ?? "")
   let a = agentCache.get(sig)
   if (!a) {
     a = buildSidekickAgent(selection, agentsMd) as unknown as ReturnType<typeof buildAgent>

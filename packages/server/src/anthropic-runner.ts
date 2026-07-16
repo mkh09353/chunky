@@ -53,6 +53,8 @@ import {
 import { write, writeInputShape } from "./tools/write.ts"
 import { asToolRunResult } from "./tools/result.ts"
 import { getTaskOutput, killTask } from "./tools/task.ts"
+import { hashlineEdit, hashlineRead } from "./tools/hashline/index.ts"
+import { resolveFileToolProfile, type FileToolProfile } from "./settings.ts"
 
 const SERVER_NAME = "chunky"
 const ALLOWED_TOOLS = [`mcp__${SERVER_NAME}__*`]
@@ -80,6 +82,11 @@ const CHUNKY_TOOLS = [
 ]
 const SDK_TOOL_NAMES = new Set(CHUNKY_TOOLS.map((chunkyTool) => `mcp__${SERVER_NAME}__${chunkyTool.name}`))
 const knownSessions = new Set<string>()
+
+/** File tools used by the SDK MCP server. Names intentionally remain read/edit. */
+export function anthropicFileTools(profile: FileToolProfile = resolveFileToolProfile()) {
+  return profile === "hashline" ? { read: hashlineRead, edit: hashlineEdit } : { read, edit: editTool }
+}
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
 
@@ -158,6 +165,7 @@ export function createChunkySdkMcpServer(
   workspace: string = LAUNCH_WORKSPACE,
 ) {
   const emit = taggedEmitter(emitRoot, displayThreadId)
+  const fileTools = anthropicFileTools()
   const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   // The same RunnableConfig the LangChain runtime would pass: thread identity for
   // session-scoped tools (spawn/goal) plus the run's workspace for fs/search tools.
@@ -168,10 +176,10 @@ export function createChunkySdkMcpServer(
     alwaysLoad: true,
     tools: [
       wrapChunkyTool(
-        read.name,
-        read.description,
+        fileTools.read.name,
+        fileTools.read.description,
         readInputShape,
-        (args) => read.invoke(args, runConfig),
+        (args) => fileTools.read.invoke(args, runConfig),
         emit,
         readOnly,
       ),
@@ -206,10 +214,10 @@ export function createChunkySdkMcpServer(
         emit,
       ),
       wrapChunkyTool(
-        editTool.name,
-        editTool.description,
+        fileTools.edit.name,
+        fileTools.edit.description,
         editInputShape,
-        (args) => editTool.invoke(args, runConfig),
+        (args) => fileTools.edit.invoke(args, runConfig),
         emit,
       ),
       // sidekick resolves its ThreadManager from the caller thread exactly like

@@ -6,6 +6,7 @@
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
 
 export type EditToolName = "edit" | "apply_patch"
+export type FileToolProfile = "standard" | "hashline"
 
 /** The advisor's own system prompt: a stronger model, read-only, consulted as a
  *  persistent side thread. Terse on purpose. */
@@ -18,6 +19,7 @@ export const ADVISOR_SYSTEM_PROMPT = `You are an expert software-engineering adv
 export const SIDEKICK_SYSTEM_PROMPT = `You are the hands-on engineer for a lead coding agent working in this repository. The lead hands you briefs; you do the hands-on work and report back. Briefs come in two shapes: RECONNAISSANCE (explore the code and map it) and IMPLEMENTATION (goal, constraints, definition of done — edit, build, test). Honor every stated constraint literally; they are requirements, not suggestions. If a brief conflicts with what you find in the code, say so in your report instead of guessing. This is a persistent conversation: later briefs may reference your earlier work ("fix the bug in the diff you just wrote"), so keep track of what you did. Verify before reporting done — run the tests/build the brief names, or say plainly that you didn't. Reports are how the lead works without reading the repo itself, so make them load-bearing. For a recon brief: the relevant file paths (with line hints), the few key snippets that matter, how the pieces connect, and existing patterns/conventions the implementation should follow — a map the lead can write a spec from. For an implementation brief: what you changed (files), how you verified it, and anything the lead should review or decide. Do not expand scope beyond the brief.`
 
 export interface SystemPromptOpts {
+  fileToolProfile?: FileToolProfile
   agentsMd?: string | null
   /** When true, only list core (always-bound) tools; deferred tools are found via native tool search. */
   nativeToolSearch?: boolean
@@ -38,16 +40,21 @@ export function buildSystemPrompt(
 ): string {
   const date = new Date().toISOString().slice(0, 10)
   const isEdit = activeEditToolName === "edit"
+  const hashline = opts.fileToolProfile === "hashline"
   const nativeToolSearch = opts.nativeToolSearch === true
   const portableToolSearch = opts.portableToolSearch === true
   const deferredToolSearch = nativeToolSearch || portableToolSearch
   const hasSidekick = opts.hasSidekick !== false
 
-  const editListLine = isEdit
+  const editListLine = hashline
+    ? "- edit: edit using LINE:LOCAL:CHUNK anchors; use replace, insert_after, or write"
+    : isEdit
     ? "- edit: edit a file with exact text replacement (one or more disjoint edits per call)"
     : "- apply_patch: add/update/delete files via the V4A patch envelope"
 
-  const editGuideline = isEdit
+  const editGuideline = hashline
+    ? "- hashline: read returns ANCHOR→CONTENT; pass only the prefix before →, never fabricate anchors, strip anchors from content, use inclusive ranges, atomic batches, and fresh anchors after edits; prefer insert_after for insertions and write for large rewrites."
+    : isEdit
     ? "- edit: each oldText must match the file exactly and be unique; keep it minimal; batch multiple changes to one file into a single call."
     : "- apply_patch uses the V4A envelope (*** Begin Patch / *** Update File / *** End Patch)."
 
@@ -153,6 +160,7 @@ Current date: ${date}
 Working directory: ${workspace}${repoNotes}`
 }
 
-export function sidekickSystemPrompt(agentsMd?: string | null): string {
-  return agentsMd?.trim() ? `${SIDEKICK_SYSTEM_PROMPT}\n\nRepo notes (distilled from AGENTS.md — follow these):\n${agentsMd.trim()}` : SIDEKICK_SYSTEM_PROMPT
+export function sidekickSystemPrompt(agentsMd?: string | null, profile: FileToolProfile = "standard"): string {
+  const guidance = profile === "hashline" ? "\n\nFile profile: hashline. Read output includes LINE:LOCAL:CHUNK→content anchors; use fresh anchor prefixes, inclusive ranges, atomic batches, and strip anchors from replacement content." : ""
+  return agentsMd?.trim() ? `${SIDEKICK_SYSTEM_PROMPT}${guidance}\n\nRepo notes (distilled from AGENTS.md — follow these):\n${agentsMd.trim()}` : `${SIDEKICK_SYSTEM_PROMPT}${guidance}`
 }

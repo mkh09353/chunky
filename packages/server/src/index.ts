@@ -117,6 +117,50 @@ function emitTo(sessionId: string, ev: AgentEvent): void {
   }
 }
 
+/** Reconcile status markers left behind when the process died during a run.
+ * The run registry is deliberately in-memory, so a persisted `running` marker
+ * is stale whenever this process has no live run for the session.  `history`,
+ * when supplied, is also updated so an attach can replay the corrective events
+ * without reading the (potentially large) transcript a second time. */
+function reconcileStaleRun(sessionId: string, history = Store.history(sessionId)): void {
+  if (running.has(sessionId)) return
+
+  let rootStatus: "idle" | "running" | undefined
+  const threadStatus = new Map<string, { status: "idle" | "running"; title?: string }>()
+  for (const ev of history) {
+    if (ev.type === "session.status") {
+      rootStatus = ev.status
+    } else if (ev.type === "thread.spawn") {
+      // A spawn is itself the start marker for child threads.  This also covers
+      // older histories (and sidekick handoffs) that have no thread.status yet.
+      threadStatus.set(ev.threadId, { status: "running", title: ev.title })
+    } else if (ev.type === "thread.status") {
+      const current = threadStatus.get(ev.threadId)
+      threadStatus.set(ev.threadId, { status: ev.status, title: ev.title ?? current?.title })
+    }
+  }
+
+  // Check immediately before each append as well as at entry.  These operations
+  // are synchronous today, but this preserves the invariant if the persistence
+  // path or run dispatching changes later.
+  if (rootStatus === "running" && !running.has(sessionId)) {
+    const correction: AgentEvent = { type: "session.status", sessionId, status: "idle" }
+    emitTo(sessionId, correction)
+    history.push(correction)
+  }
+  for (const [threadId, state] of threadStatus) {
+    if (state.status !== "running" || running.has(sessionId)) continue
+    const correction: AgentEvent = {
+      type: "thread.status",
+      threadId,
+      status: "idle",
+      ...(state.title ? { title: state.title } : {}),
+    }
+    emitTo(sessionId, correction)
+    history.push(correction)
+  }
+}
+
 /** Start an agent run for `text` WITHOUT touching any in-flight turn, tracking
  *  the AbortController so /interrupt can cancel it. Resolves when the run fully
  *  completes (the session bus awaits this for wait_for_reply). When the run
@@ -777,12 +821,14 @@ const server = Bun.serve({
 
       // GET .../events -> SSE. Replays persisted history first (== resume), then live.
       if (kind === "events" && req.method === "GET") {
+        const history = Store.history(sessionId)
+        reconcileStaleRun(sessionId, history)
         let selfController: Subscriber
         let heartbeat: ReturnType<typeof setInterval> | undefined
         const stream = new ReadableStream<Uint8Array>({
           start(controller) {
             selfController = controller
-            for (const ev of Store.history(sessionId)) {
+            for (const ev of history) {
               controller.enqueue(encoder.encode(sse(ev)))
             }
             subscribers(sessionId).add(controller)
@@ -899,7 +945,9 @@ const server = Bun.serve({
 
       // POST .../interrupt -> abort the session's in-flight turn (Esc).
       if (kind === "interrupt" && req.method === "POST") {
-        running.get(sessionId)?.abort()
+        const ac = running.get(sessionId)
+        if (ac) ac.abort()
+        else reconcileStaleRun(sessionId)
         return new Response(null, { status: 202, headers: CORS })
       }
 

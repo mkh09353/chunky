@@ -1,5 +1,36 @@
 // Verbatim queries from xai-org/grok-build xai-codebase-graph (Apache-2.0).
 export const QUERIES = {
+  "ruby": `
+        ; Definitions
+        (method name: (identifier) @name.definition.method) @definition.method
+        (singleton_method name: (identifier) @name.definition.method) @definition.method
+        (class name: (constant) @name.definition.class) @definition.class
+        (module name: (constant) @name.definition.module) @definition.module
+        (assignment left: (constant) @name.definition.constant) @definition.constant
+        (assignment left: (instance_variable) @name.definition.variable) @definition.variable
+        (assignment left: (class_variable) @name.definition.variable) @definition.variable
+        (assignment left: (global_variable) @name.definition.variable) @definition.variable
+        (call method: (identifier) arguments: (argument_list (simple_symbol) @name.definition.method)) @definition.method
+
+        ; References
+        (call method: (identifier) @name.reference.call) @reference.call
+        (constant) @name.reference.constant
+        (class superclass: (superclass (constant) @name.reference.class)) @reference.class
+        (call method: (identifier) @name.reference.include
+          arguments: (argument_list (constant) @name.reference.include)) @reference.include
+
+        ; require/require_relative strings are import references. Ruby's grammar
+        ; has no import node; string content is deliberately captured here.
+        (call method: (identifier) @name.reference.import
+          arguments: (argument_list (string (string_content) @name.reference.import))) @reference.import
+
+        ; Ruby alias and alias_method forms have different symbol node shapes;
+        ; simple_symbol is supported for alias_method, while bare alias names
+        ; are identifiers. Both patterns compile against tree-sitter-ruby.
+        (alias (identifier) @alias.name (identifier) @alias.original)
+        (call method: (identifier) arguments: (argument_list
+          (simple_symbol) @alias.name (simple_symbol) @alias.original))
+      `,
   "golang": "\n        ; Function definitions\n        (function_declaration\n            name: (identifier) @name.definition.function) @definition.function\n        \n        ; Method definitions\n        (method_declaration\n            name: (field_identifier) @name.definition.method) @definition.method\n        \n        ; Type definitions (struct, interface, etc.)\n        (type_declaration\n            (type_spec\n                name: (type_identifier) @name.definition.type)) @definition.type\n        \n        ; Const declarations\n        (const_declaration\n            (const_spec\n                name: (identifier) @name.definition.const)) @definition.const\n        \n        ; Var declarations\n        (var_declaration\n            (var_spec\n                name: (identifier) @name.definition.var)) @definition.var\n        \n        ; ============ REFERENCES ============\n        \n        ; Function calls\n        (call_expression\n            function: (identifier) @name.reference.call) @reference.call\n        \n        ; Method calls\n        (call_expression\n            function: (selector_expression\n                field: (field_identifier) @name.reference.call)) @reference.call\n        \n        ; Type references\n        (type_identifier) @name.reference.type\n        \n        ; Package references in qualified names\n        (qualified_type\n            package: (package_identifier) @name.reference.package\n            name: (type_identifier) @name.reference.type)\n        \n        ; ============ IMPORTS ============\n        \n        ; import \"package\"\n        (import_spec\n            path: (interpreted_string_literal) @name.reference.import)\n        \n        ; import alias \"package\"\n        (import_spec\n            name: (package_identifier) @alias.name\n            path: (interpreted_string_literal) @alias.original)\n        ",
   "javascript": "\n        ; Class definitions\n        (class_declaration\n            name: (identifier) @name.definition.class) @definition.class\n        \n        ; Function definitions\n        (function_declaration\n            name: (identifier) @name.definition.function) @definition.function\n        \n        ; Arrow function with variable\n        (lexical_declaration\n            (variable_declarator\n                name: (identifier) @name.definition.function\n                value: (arrow_function))) @definition.function\n        \n        ; Method definitions\n        (method_definition\n            name: (property_identifier) @name.definition.method) @definition.method\n        \n        ; Variable declarations\n        (lexical_declaration\n            (variable_declarator\n                name: (identifier) @name.definition.variable)) @definition.variable\n        \n        ; Var declarations\n        (variable_declaration\n            (variable_declarator\n                name: (identifier) @name.definition.variable)) @definition.variable\n        \n        ; ============ REFERENCES ============\n        \n        ; Function calls\n        (call_expression\n            function: (identifier) @name.reference.call) @reference.call\n        \n        ; Method calls\n        (call_expression\n            function: (member_expression\n                property: (property_identifier) @name.reference.call)) @reference.call\n        \n        ; JSX element names\n        (jsx_opening_element\n            name: (identifier) @name.reference.jsx)\n        \n        (jsx_self_closing_element\n            name: (identifier) @name.reference.jsx)\n        \n        ; ============ IMPORTS ============\n        \n        ; Named imports: import { Foo } from 'bar'\n        (import_specifier\n            name: (identifier) @name.reference.import)\n        \n        ; Default import: import Foo from 'bar'\n        (import_clause\n            (identifier) @name.reference.import)\n        \n        ; Import alias: import { Foo as Bar } from 'bar'\n        (import_specifier\n            name: (identifier) @alias.original\n            alias: (identifier) @alias.name)\n        \n        ; Named exports: export { Foo }\n        (export_specifier\n            name: (identifier) @name.reference.export)\n        \n        ; Array element identifiers: [foo, bar] (e.g., React useCallback/useEffect dependency arrays)\n        (array\n            (identifier) @name.reference.variable)\n        ",
   "python": "\n        ; Class definitions\n        (class_definition\n            name: (identifier) @name.definition.class) @definition.class\n        \n        ; Function definitions\n        (function_definition\n            name: (identifier) @name.definition.function) @definition.function\n        \n        ; ============ REFERENCES ============\n        \n        ; Function calls (direct and method calls)\n        (call\n            function: [\n                (identifier) @name.reference.call\n                (attribute\n                    attribute: (identifier) @name.reference.call)\n            ]) @reference.call\n        ",

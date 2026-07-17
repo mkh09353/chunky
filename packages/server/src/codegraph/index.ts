@@ -14,7 +14,7 @@ const MAX_FILE_SIZE = 5 * 1024 * 1024
 const BINARY_SAMPLE_SIZE = 1024
 const CACHE_SCHEMA = "codegraph-records-v2"
 
-type Lang = "golang" | "javascript" | "python" | "rust" | "ts"
+type Lang = "golang" | "javascript" | "python" | "rust" | "ts" | "ruby"
 type Config = { ext: string; lang: Lang; wasm: string }
 const configs: Config[] = [
   { ext: ".go", lang: "golang", wasm: "go" },
@@ -24,6 +24,9 @@ const configs: Config[] = [
   { ext: ".rs", lang: "rust", wasm: "rust" },
   { ext: ".ts", lang: "ts", wasm: "typescript" },
   { ext: ".tsx", lang: "ts", wasm: "tsx" },
+  { ext: ".rb", lang: "ruby", wasm: "ruby" },
+  { ext: ".rake", lang: "ruby", wasm: "ruby" },
+  { ext: ".gemspec", lang: "ruby", wasm: "ruby" },
 ]
 const configFor = (file: string) => configs.find((x) => x.ext === extname(file).toLowerCase())
 const ignored = (file: string) => /(^|[\\/])(?:\.git|node_modules|\.research|dist|build)(?:[\\/]|$)/.test(file)
@@ -69,7 +72,7 @@ async function runtime(name: string) {
   }
   return value
 }
-export async function compileCodegraphQueries() { for (const name of ["go", "javascript", "python", "rust", "typescript", "tsx"]) await runtime(name) }
+export async function compileCodegraphQueries() { for (const name of ["go", "javascript", "python", "rust", "typescript", "tsx", "ruby"]) await runtime(name) }
 
 function parseRecord(file: string, source: string, tree: Tree, query: Query) {
   const defs: Hit[] = [], refs: Hit[] = [], aliases: [string, string][] = []

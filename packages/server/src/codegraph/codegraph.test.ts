@@ -31,6 +31,7 @@ describe("language fixtures", () => {
     ["python", "main.py", `from lib import target as alias\ndef target(): pass\ndef use(): alias(); target()\n`, "target"],
     ["rust", "main.rs", `use crate::lib::target as alias;\nfn target() {}\nfn use_it(){ alias(); target(); }\n`, "target"],
     ["ts", "main.ts", `import { target as alias } from './lib'\nfunction target() {}\nfunction useIt(){ alias(); target() }\n`, "target"],
+    ["ruby", "main.rb", `require_relative './support'\nmodule Auditable\nend\nclass User < Base\n  include Auditable\n  ID = 1\n  def save; validate; end\n  def validate; end\nend\n`, "validate"],
   ]
   for (const [label,file,body,symbol] of cases) test(label, async () => {
     const root=await workspace({[file]:body,[file.replace(/main\./,"lib.")]:body})
@@ -39,6 +40,13 @@ describe("language fixtures", () => {
     expect(refs.some(x=>x.file===resolve(root,file))).toBe(true)
     m.dispose()
   })
+})
+
+test("Ruby .rb and .rake share ranking language", async () => {
+  const root = await workspace({"model.rb": "def build; end\n", "tasks.rake": "def build; end\n"})
+  const m = getCodegraph(root)
+  expect((await m.query("build", false, "tasks.rake"))[0]?.file).toBe(resolve(root, "model.rb"))
+  m.dispose()
 })
 
 test("incremental update reindexes changed files", async () => {

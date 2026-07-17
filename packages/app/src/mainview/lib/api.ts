@@ -278,14 +278,23 @@ export async function searchFiles(
   return data.items ?? []
 }
 
+/** Open a session's SSE stream. Resolves when the server closes it; rejects if it
+ *  can't be opened or drops mid-flight (callers reconnect on that).
+ *
+ *  `onOpen` fires once the response is accepted — the only "we're connected"
+ *  signal there is. It can't be inferred from the first event: the server replays
+ *  history and then goes live, so a session with no history sends nothing at all
+ *  (heartbeats are SSE comments, which readSSE drops). */
 export async function openEventStream(
   baseUrl: string,
   sessionId: string,
   onEvent: (ev: AgentEvent) => void,
   signal?: AbortSignal,
+  onOpen?: () => void,
 ): Promise<void> {
   const res = await fetch(baseUrl + ROUTES.events(sessionId), { signal })
   if (!res.ok) throw new Error(`events stream failed (${res.status})`)
+  onOpen?.()
   for await (const ev of readSSE(res)) {
     if (signal?.aborted) break
     onEvent(ev)

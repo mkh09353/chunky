@@ -15,10 +15,27 @@ const SUGGESTIONS = [
 export function EmptyChat({
   workspaceName,
   onPick,
+  loading,
 }: {
   workspaceName: string
   onPick: (text: string) => void
+  /** Boot / thread-attach in flight: the transcript is empty because nothing has
+   *  loaded YET, not because the thread is new. Showing the real empty state here
+   *  flashes "What are we building in <fallback name>?" over a conversation that
+   *  is about to render — so hold a placeholder until the stream is attached. */
+  loading?: boolean
 }) {
+  if (loading) {
+    return (
+      <div className="chunky-empty" aria-busy="true">
+        <div className="chunky-empty-loading" role="status">
+          <span className="chunky-empty-loading-dot" aria-hidden="true" />
+          Loading…
+        </div>
+      </div>
+    )
+  }
+
   return (
     <div className="chunky-empty">
       <img className="chunky-empty-art" src="/chunky-thinker.png" alt="" />

@@ -17,16 +17,12 @@ export function nativePickerAvailable(): boolean {
  */
 export async function pickFolder(): Promise<string | null> {
   try {
-    console.log("[chunky] pickFolder: native available?", nativePickerAvailable())
     const rpc = await getRpc()
-    console.log("[chunky] pickFolder: rpc ready?", !!rpc, "has openFolderDialog?", !!rpc?.request?.openFolderDialog)
     const fn = rpc?.request?.openFolderDialog
     if (!fn) return null
     const path = await fn()
-    console.log("[chunky] pickFolder: dialog returned", path)
     return typeof path === "string" && path.trim() ? path.trim() : null
   } catch (err) {
-    console.log("[chunky] pickFolder: error", (err as Error)?.message)
     return null
   }
 }

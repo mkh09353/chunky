@@ -3,11 +3,7 @@ import type { CacheCold, GoalSnapshot, ModeInfo, ModeSpec, SessionSummary } from
 import { AppShell } from "@astryxdesign/core/AppShell"
 import { SideNav, SideNavItem, SideNavSection } from "@astryxdesign/core/SideNav"
 import { TopNav, TopNavHeading } from "@astryxdesign/core/TopNav"
-import {
-  ChatBubbleLeftRightIcon,
-  MagnifyingGlassIcon,
-  PlusIcon,
-} from "@heroicons/react/24/outline"
+import { ChatBubbleLeftRightIcon, PlusIcon } from "@heroicons/react/24/outline"
 import { ChatPane } from "./components/ChatPane"
 import { RepoTabs } from "./components/RepoTabs"
 import {
@@ -49,16 +45,30 @@ import {
   type Repo,
 } from "./lib/api"
 import { openExternal } from "./lib/rpc"
+import { sleep } from "./lib/sleep"
 import { parseGoalArgs, parseSlashCommand, SLASH_COMMANDS } from "./lib/commands"
 import { fmtTokens } from "./lib/format"
 import { OnboardingWizard } from "./components/OnboardingWizard"
+import { ConfirmModal, WaitModal } from "./components/Modals"
+
+import { groupSessions, relativeTime, threadLabel } from "./lib/format"
+import { MIN_NOTIFY_MS, notifyTurnEnd } from "./lib/notify"
+import { initialState, pushNotice, reduce, type TranscriptState } from "./lib/transcript"
 
 // Which repo tab is open is THIS CLIENT's UI state (the server has no global
 // active workspace anymore) — remembered locally so a relaunch restores it.
 const ACTIVE_REPO_KEY = "chunky.activeRepoId"
-import { groupSessions, relativeTime, threadLabel } from "./lib/format"
-import { MIN_NOTIFY_MS, notifyTurnEnd } from "./lib/notify"
-import { initialState, pushNotice, reduce, type TranscriptState } from "./lib/transcript"
+
+// Backoff ladder for reattaching a dropped SSE stream (capped at the last entry).
+// A server restart or a sleep/wake used to strand the thread behind a dead error
+// bar until the user switched threads by hand.
+const RECONNECT_DELAYS = [1_000, 2_000, 5_000]
+
+// Grace period after the stream opens before the empty state is allowed to show.
+// The server replays history immediately on attach but never marks the end of it,
+// so we let the replayed events land first; a genuinely empty thread just shows
+// its empty state this much later.
+const REPLAY_SETTLE_MS = 150
 
 export default function App() {
   const [config, setConfig] = useState<AppConfig | null>(null)
@@ -72,6 +82,19 @@ export default function App() {
   const [agentsMdEnabled, setAgentsMdEnabled] = useState(true)
   const [connError, setConnError] = useState<string | null>(null)
   const [booting, setBooting] = useState(true)
+  // True from an attach until its stream is open and history has settled. Gates
+  // the empty state so it can't flash over a conversation that's still loading.
+  const [transcriptLoading, setTranscriptLoading] = useState(true)
+  // The cache-guard confirmation (M1): handleSubmit parks a resolver here and
+  // awaits the user's answer, so the async send reads like the old `confirm()`.
+  const [confirmPrompt, setConfirmPrompt] = useState<{
+    title: string
+    body: string
+    confirmLabel: string
+    resolve: (ok: boolean) => void
+  } | null>(null)
+  // Provider id whose browser sign-in we're polling for (drives the WaitModal).
+  const [loginWait, setLoginWait] = useState<string | null>(null)
   // The always-on advisor config (composer trigger label + /advisor).
   const [advisor, setAdvisorState] = useState<AdvisorState | null>(null)
   // The session's current goal (composer pill; tracked from goal.update events).
@@ -107,8 +130,35 @@ export default function App() {
   const sessionIdRef = useRef<string | null>(null)
   const streamAbort = useRef<AbortController | null>(null)
   const activeRepoIdRef = useRef<string | null>(null)
+  // Aborts the /login poll loop (Cancel button, or App unmount).
+  const loginAbort = useRef<AbortController | null>(null)
+  const settleTimer = useRef<number | null>(null)
   sessionIdRef.current = sessionId
   activeRepoIdRef.current = activeRepoId
+
+  // Ask the user a yes/no question in-app and await the answer.
+  const askConfirm = useCallback(
+    (opts: { title: string; body: string; confirmLabel: string }) =>
+      new Promise<boolean>((resolve) => {
+        setConfirmPrompt({
+          ...opts,
+          resolve: (ok) => {
+            setConfirmPrompt(null)
+            resolve(ok)
+          },
+        })
+      }),
+    [],
+  )
+
+  // Never leave a poll loop or a settle timer running past unmount.
+  useEffect(
+    () => () => {
+      loginAbort.current?.abort()
+      if (settleTimer.current != null) clearTimeout(settleTimer.current)
+    },
+    [],
+  )
 
   useEffect(() => {
     if (!config || !activeRepoId) { setAgentsMdEnabled(true); return }
@@ -173,6 +223,7 @@ export default function App() {
       setSessionId(id)
       if (reset) setTranscript(initialState)
       setConnError(null)
+      setTranscriptLoading(true)
       // Per-session UI state must not leak across threads. goal.update events
       // replay over SSE, but a session with no goal never emits one — so seed
       // from the REST snapshot rather than trusting replay alone.
@@ -182,11 +233,35 @@ export default function App() {
       setPendingSkill(null)
       void fetchGoal(baseUrl, id).then(setGoal).catch(() => {})
 
-      try {
-        await openEventStream(baseUrl, id, applyEvent, ac.signal)
-      } catch (err) {
-        if (ac.signal.aborted) return
-        setConnError(`SSE disconnected: ${(err as Error).message}`)
+      // The stream is live: drop any "reconnecting…" bar and let the replayed
+      // history land before the empty state is allowed to render.
+      const onOpen = () => {
+        setConnError(null)
+        if (settleTimer.current != null) clearTimeout(settleTimer.current)
+        settleTimer.current = window.setTimeout(() => {
+          settleTimer.current = null
+          if (!ac.signal.aborted) setTranscriptLoading(false)
+        }, REPLAY_SETTLE_MS)
+      }
+
+      // Reconnect ladder. Every reattach replays the session's history from the
+      // top, so the transcript is reset before each retry — otherwise the replay
+      // would render on top of what we already have and double every message.
+      for (let attempt = 0; ; attempt++) {
+        try {
+          await openEventStream(baseUrl, id, applyEvent, ac.signal, onOpen)
+          return // the server closed the stream cleanly
+        } catch (err) {
+          if (ac.signal.aborted) return
+          setTranscriptLoading(false)
+          const delay = RECONNECT_DELAYS[Math.min(attempt, RECONNECT_DELAYS.length - 1)]!
+          setConnError(
+            `Lost the connection to Chunky (${(err as Error).message}). Reconnecting in ${Math.round(delay / 1000)}s…`,
+          )
+          await sleep(delay, ac.signal)
+          if (ac.signal.aborted) return
+          setTranscript(initialState)
+        }
       }
     },
     [applyEvent],
@@ -207,6 +282,7 @@ export default function App() {
         await refreshSessions(baseUrl, repoId)
         void attachSession(baseUrl, id, true)
       } catch (err) {
+        setTranscriptLoading(false)
         setConnError(
           `Can't create a session — is the server running at ${baseUrl}? (${(err as Error).message})`,
         )
@@ -214,6 +290,20 @@ export default function App() {
     },
     [attachSession, refreshSessions],
   )
+
+  // Retry from the connection-error bar: reattach the open thread if there is
+  // one (its own reconnect ladder takes over from there), else redo the repo's
+  // thread bootstrap — which is what failed if we never got a session at all.
+  const handleRetry = useCallback(async () => {
+    if (!config) return
+    setConnError(null)
+    const id = sessionIdRef.current
+    if (id) {
+      void attachSession(config.baseUrl, id, true)
+      return
+    }
+    await openRepoThreads(config.baseUrl, activeRepoIdRef.current)
+  }, [config, attachSession, openRepoThreads])
 
   // Boot: load config + repos, then open the active repo's threads.
   useEffect(() => {
@@ -427,15 +517,30 @@ export default function App() {
           notice(init.instructions)
         }
         // Poll until the server has stored a token (loopback callback fired).
-        const deadline = Date.now() + 150_000
-        while (Date.now() < deadline) {
-          await new Promise((r) => setTimeout(r, 2000))
-          if (await loginStatus(config.baseUrl, p.id)) {
-            notice(`✓ Logged in to ${p.id}. Pick one of its models with /model.`)
-            return
+        // Cancellable: the WaitModal's Cancel aborts this, as does unmount —
+        // otherwise the loop ran its full 150s with no way to call it off.
+        loginAbort.current?.abort()
+        const ac = new AbortController()
+        loginAbort.current = ac
+        setLoginWait(p.id)
+        try {
+          const deadline = Date.now() + 150_000
+          while (Date.now() < deadline) {
+            await sleep(2000, ac.signal)
+            if (ac.signal.aborted) {
+              notice(`Stopped waiting on the ${p.id} sign-in. \`/login ${p.id}\` picks it back up.`)
+              return
+            }
+            if (await loginStatus(config.baseUrl, p.id)) {
+              notice(`✓ Logged in to ${p.id}. Pick one of its models with /model.`)
+              return
+            }
           }
+          notice(`Still waiting on ${p.id} login. Finish in the browser, then pick a model with /model.`)
+        } finally {
+          setLoginWait(null)
+          if (loginAbort.current === ac) loginAbort.current = null
         }
-        notice(`Still waiting on ${p.id} login. Finish in the browser, then pick a model with /model.`)
       } catch (err) {
         notice(`Login for ${p.id} failed: ${(err as Error).message}`)
       }
@@ -759,6 +864,13 @@ export default function App() {
       const skill = pendingSkillRef.current
       setAttachments([]) // consume the pasted images with this message
       setPendingSkill(null) // the queued skill is applied to this turn only
+      // Hand the whole message back to the composer — text, pasted images and
+      // the queued skill — whenever the turn did NOT run.
+      const restoreDraft = () => {
+        setDraft(text)
+        setAttachments(images)
+        setPendingSkill(skill)
+      }
       try {
         const blocked = await sendMessage(config.baseUrl, sessionId, trimmed, { images, skill })
         if (blocked) {
@@ -769,13 +881,13 @@ export default function App() {
             w.reason === "model-switch"
               ? "a model switch"
               : `~${Math.round((w.idleMs ?? 0) / 60_000)}m idle`
-          const ok = window.confirm(
-            `Prompt cache went cold after ${why} — sending will re-send ~${w.approxTokens.toLocaleString()} tokens. Send anyway?`,
-          )
+          const ok = await askConfirm({
+            title: "Prompt cache went cold",
+            body: `The cache went cold after ${why} — sending this will re-send ~${w.approxTokens.toLocaleString()} tokens. Send anyway?`,
+            confirmLabel: "Send anyway",
+          })
           if (!ok) {
-            setDraft(text)
-            setAttachments(images)
-            setPendingSkill(skill)
+            restoreDraft()
             return
           }
           await sendMessage(config.baseUrl, sessionId, trimmed, { images, skill, force: true })
@@ -783,10 +895,13 @@ export default function App() {
         setCacheCold(null)
         void refreshSessions(config.baseUrl)
       } catch (err) {
-        setConnError((err as Error).message)
+        // The send failed, so the turn never ran: give the draft back instead of
+        // eating it. Losing a long prompt to a dropped server is unforgivable.
+        restoreDraft()
+        setConnError(`Couldn't send that message: ${(err as Error).message}`)
       }
     },
-    [config, doMode, refreshSessions, runCommand, sessionId],
+    [askConfirm, config, doMode, refreshSessions, runCommand, sessionId],
   )
 
   const handleStop = useCallback(() => {
@@ -833,22 +948,17 @@ export default function App() {
         sideNav={
           <SideNav
             collapsible
-            // Codex-style anchored actions: "New thread" and "Search" live in the
-            // SideNav's pinned `topContent` zone, so they stay put while only the
-            // thread groups below scroll. This keeps the scrollbar short and makes
-            // it start *below* these rows instead of running the full sidebar
-            // height right next to the chat pane's rounded top corner.
+            // Codex-style anchored actions: "New thread" lives in the SideNav's
+            // pinned `topContent` zone, so it stays put while only the thread
+            // groups below scroll. This keeps the scrollbar short and makes it
+            // start *below* this row instead of running the full sidebar height
+            // right next to the chat pane's rounded top corner.
             topContent={
               <SideNavSection title="Quick actions" isHeaderHidden>
                 <SideNavItem
                   label="New thread"
                   icon={PlusIcon}
                   onClick={() => void handleNewThread()}
-                />
-                <SideNavItem
-                  label="Search"
-                  icon={MagnifyingGlassIcon}
-                  onClick={() => {}}
                 />
               </SideNavSection>
             }
@@ -884,8 +994,49 @@ export default function App() {
           </SideNav>
         }
       >
+        {/* onClose is the ONLY place onboarding is marked complete — the wizard's
+            own Finish button routes through it too, so it can't double-post. */}
         {onboardingOpen && config && <OnboardingWizard baseUrl={config.baseUrl} onClose={() => { setOnboardingOpen(false); void completeOnboarding(config.baseUrl).catch(() => {}) }} onApplied={() => { void fetchModel(config.baseUrl).then(setModel); void fetchAdvisor(config.baseUrl).then(setAdvisorState) }} />}
-        {connError ? <div className="chunky-conn-error">{connError}</div> : null}
+        {confirmPrompt ? (
+          <ConfirmModal
+            title={confirmPrompt.title}
+            body={confirmPrompt.body}
+            confirmLabel={confirmPrompt.confirmLabel}
+            onConfirm={() => confirmPrompt.resolve(true)}
+            onCancel={() => confirmPrompt.resolve(false)}
+          />
+        ) : null}
+        {loginWait ? (
+          <WaitModal
+            title={`Signing in to ${loginWait}`}
+            body="Finish the sign-in in your browser — this window updates on its own once it lands."
+            cancelLabel="Stop waiting"
+            onCancel={() => loginAbort.current?.abort()}
+          />
+        ) : null}
+        {connError ? (
+          <div className="chunky-conn-error" role="alert">
+            <div className="chunky-conn-error-row">
+              <span className="chunky-conn-error-text">{connError}</span>
+              <button
+                type="button"
+                className="chunky-conn-error-btn"
+                onClick={() => void handleRetry()}
+              >
+                Retry
+              </button>
+              <button
+                type="button"
+                className="chunky-conn-error-close"
+                aria-label="Dismiss this error"
+                title="Dismiss"
+                onClick={() => setConnError(null)}
+              >
+                ×
+              </button>
+            </div>
+          </div>
+        ) : null}
         <ChatPane
           state={transcript}
           workspaceName={workspaceName}
@@ -910,11 +1061,15 @@ export default function App() {
           modelOpenSignal={modelOpenSignal}
           advisorOpenSignal={advisorOpenSignal}
           skillsOpenSignal={skillsOpenSignal}
+          transcriptLoading={transcriptLoading}
           draft={draft}
           onDraftChange={setDraft}
           onSubmit={(t) => void handleSubmit(t)}
           onStop={handleStop}
-          onSuggestion={(t) => void handleSubmit(t)}
+          // Suggestion chips PREFILL the composer rather than firing the canned
+          // string at the model as a real turn — they're a starting point to edit,
+          // not a prompt anyone meant to send verbatim.
+          onSuggestion={setDraft}
         />
       </AppShell>
     </div>

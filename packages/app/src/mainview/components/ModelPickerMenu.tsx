@@ -306,6 +306,11 @@ export function ModelPickerMenu({
         const row = navRows[listSel]
         if (row) selectRow(row)
       }
+      if (e.key === "f" || e.key === "F") {
+        e.preventDefault()
+        const row = navRows[listSel]
+        if (row) toggleFavorite(row)
+      }
     },
     [busy, close, navRows, listSel, selectRow],
   )
@@ -326,6 +331,13 @@ export function ModelPickerMenu({
         data-active={idx === listSel || undefined}
         title={`${prettyModel(row.model.id)}${row.model.reasoning ? " · reasoning" : ""}`}
         onMouseEnter={() => setListSel(idx)}
+        id={`chunky-model-option-${idx}`}
+        onKeyDown={(e) => {
+          if ((e.key === "f" || e.key === "F") && !e.defaultPrevented) {
+            e.preventDefault()
+            toggleFavorite(row)
+          }
+        }}
         onClick={() => selectRow(row)}
         disabled={busy}
       >
@@ -434,7 +446,7 @@ export function ModelPickerMenu({
             }}
           />
 
-          <div className="chunky-model-list" ref={listRef} role="listbox">
+          <div className="chunky-model-list" ref={listRef} role="listbox" aria-activedescendant={`chunky-model-option-${listSel}`}>
             {rows === null && !loadError ? (
               <div className="chunky-model-note">Loading models…</div>
             ) : loadError ? (

@@ -70,6 +70,7 @@ export function ChatPane({
   onSubmit,
   onStop,
   onSuggestion,
+  transcriptLoading,
 }: {
   state: TranscriptState
   workspaceName: string
@@ -103,9 +104,11 @@ export function ChatPane({
   onSubmit: (text: string) => void
   onStop: () => void
   onSuggestion: (text: string) => void
+  transcriptLoading?: boolean
 }) {
   const running = state.status === "running"
   const empty = !hasTranscript(state)
+  const [imageNotice, setImageNotice] = useState(false)
 
   // Scroll re-pin. The message list and the composer share one scroll container
   // (ChatLayout's self-scrolling root, reachable via this ref). The library's
@@ -243,7 +246,11 @@ export function ChatPane({
           const comma = url.indexOf(",")
           if (comma === -1) return
           const base64 = url.slice(comma + 1)
-          if (!base64 || base64.length > MAX_IMAGE_BASE64_LENGTH) return
+          if (!base64 || base64.length > MAX_IMAGE_BASE64_LENGTH) {
+            setImageNotice(true)
+            window.setTimeout(() => setImageNotice(false), 3000)
+            return
+          }
           onAttachImage({ base64, mediaType: f.type || "image/png" })
         }
         reader.readAsDataURL(f)
@@ -302,7 +309,7 @@ export function ChatPane({
         e.target.isContentEditable
       ) {
         e.preventDefault()
-        document.execCommand("insertLineBreak")
+        if (!document.execCommand("insertLineBreak")) document.execCommand("insertHTML", false, "<br>")
       }
     },
     [pendingSkill, draft, running, onClearSkill, onStop, handleSubmit],
@@ -321,11 +328,12 @@ export function ChatPane({
         scrollButton={empty ? null : undefined}
         emptyState={
           empty ? (
-            <EmptyChat workspaceName={workspaceName} onPick={onSuggestion} />
+            <EmptyChat workspaceName={workspaceName} onPick={onSuggestion} loading={transcriptLoading} />
           ) : undefined
         }
         composer={
           <div className="chunky-readable">
+            {imageNotice ? <div role="status">Image too large — 7MB max</div> : null}
             {cacheCold && !running ? (
               // Early heads-up while idle (TUI parity): the next send would
               // rebuild a cold cache — warn BEFORE the tokens are spent.

@@ -281,11 +281,18 @@ export function SkillsBrowserMenu({
         role="option"
         aria-selected={idx === listSel}
         className="chunky-model-row chunky-skill-row"
+        id={`chunky-skill-option-${idx}`}
         data-active={idx === listSel || undefined}
         data-disabled={!skill.enabled || undefined}
         title={desc || skill.name}
         onMouseEnter={() => setListSel(idx)}
         onClick={() => selectSkill(skill.name)}
+        onKeyDown={(e) => {
+          if ((e.key === "t" || e.key === "T") && !e.defaultPrevented) {
+            e.preventDefault()
+            toggle(skill)
+          }
+        }}
       >
         <span
           role="button"
@@ -345,7 +352,7 @@ export function SkillsBrowserMenu({
             }}
           />
 
-          <div className="chunky-model-list" ref={listRef} role="listbox">
+          <div className="chunky-model-list" ref={listRef} role="listbox" aria-activedescendant={`chunky-skill-option-${listSel}`}>
             {skills === null && !loadError ? (
               <div className="chunky-model-note">Loading skills…</div>
             ) : loadError ? (
@@ -356,7 +363,11 @@ export function SkillsBrowserMenu({
               </div>
             ) : (
               navItems.map((item, i) =>
-                item.kind === "group" ? renderGroup(item, i) : renderSkill(item, i),
+                item.kind === "group" ? (
+                  <div key={item.key} role="group" aria-label={item.label}>
+                    {renderGroup(item, i)}
+                  </div>
+                ) : renderSkill(item, i),
               )
             )}
           </div>

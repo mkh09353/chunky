@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useEffect, useState } from "react"
+import { Fragment, useCallback, useEffect, useRef, useState } from "react"
 import {
   ChatMessage,
   ChatMessageBubble,
@@ -341,6 +341,8 @@ function ThreadBlock({
 }
 
 export function TranscriptView({ state }: { state: TranscriptState }) {
+  const stateRef = useRef(state)
+  stateRef.current = state
   // Per-thread expand state so a fan-out of spawned threads can't flood the view:
   // every child renders as a one-line preview by default and expands on click.
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
@@ -358,7 +360,7 @@ export function TranscriptView({ state }: { state: TranscriptState }) {
   useEffect(() => {
     const onCopy = (e: KeyboardEvent) => {
       if (!e.ctrlKey || !e.shiftKey || e.metaKey || e.altKey || e.key.toLowerCase() !== "c") return
-      const latest = [...(state.threads[MAIN]?.items ?? [])]
+      const latest = [...(stateRef.current.threads[MAIN]?.items ?? [])]
         .reverse()
         .find((item) => item.kind === "assistant" && item.text.trim())
       if (latest?.kind !== "assistant") return
@@ -367,12 +369,14 @@ export function TranscriptView({ state }: { state: TranscriptState }) {
     }
     document.addEventListener("keydown", onCopy)
     return () => document.removeEventListener("keydown", onCopy)
-  }, [state])
+  }, [])
 
   // Ctrl+T folds every expanded thread back to its preview line (TUI parity).
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.ctrlKey && !e.metaKey && !e.altKey && (e.key === "t" || e.key === "T")) {
+        const target = e.target
+        if (target instanceof HTMLElement && (target.isContentEditable || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))) return
         e.preventDefault()
         setExpanded(new Set())
       }

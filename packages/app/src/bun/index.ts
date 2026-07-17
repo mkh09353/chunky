@@ -109,7 +109,6 @@ const rpc = createRPC({
       }
     },
     openFolderDialog: async () => {
-      console.log("[@chunky/app] openFolderDialog RPC received — opening native dialog")
       const paths = await Utils.openFileDialog({
         startingFolder: workspace,
         canChooseFiles: false,
@@ -117,7 +116,6 @@ const rpc = createRPC({
         allowsMultipleSelection: false,
       })
       const picked = paths.find((p) => p && p.trim()) ?? ""
-      console.log(`[@chunky/app] openFolderDialog returning: ${picked || "(cancelled)"}`)
       return picked
     },
   },
@@ -141,6 +139,8 @@ new BrowserWindow({
     x: 80,
     y: 60,
   },
+  minWidth: 720,
+  minHeight: 520,
 })
 
 console.log(`[@chunky/app] window ready — harness ${baseUrl}`)

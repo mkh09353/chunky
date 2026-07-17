@@ -273,7 +273,7 @@ export function AdvisorPickerMenu({
             }}
           />
 
-          <div className="chunky-model-list" ref={listRef} role="listbox">
+          <div className="chunky-model-list" ref={listRef} role="listbox" aria-activedescendant={`chunky-advisor-option-${listSel}`}>
             {rows === null && !loadError ? (
               <div className="chunky-model-note">Loading models…</div>
             ) : loadError ? (
@@ -311,6 +311,7 @@ export function AdvisorPickerMenu({
                         role="option"
                         aria-selected={isCurrent}
                         className="chunky-model-row"
+                        id={`chunky-advisor-option-${idx}`}
                         data-active={idx === listSel || undefined}
                         title={`${prettyModel(row.model.id)}${row.model.reasoning ? " · reasoning" : ""}`}
                         onMouseEnter={() => setListSel(idx)}

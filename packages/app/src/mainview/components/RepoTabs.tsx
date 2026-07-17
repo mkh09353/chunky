@@ -153,12 +153,19 @@ export function RepoTabs({
                 <span
                   className="chunky-repotab-close"
                   role="button"
-                  tabIndex={-1}
+                  tabIndex={0}
                   aria-label={`Remove ${r.name}`}
                   title={`Remove ${r.name} from the list`}
                   onClick={(e) => {
                     e.stopPropagation()
                     onRemove(r.id)
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter" || e.key === " ") {
+                      e.preventDefault()
+                      e.stopPropagation()
+                      onRemove(r.id)
+                    }
                   }}
                 >
                   <XMarkIcon style={{ width: 12, height: 12 }} />
@@ -173,7 +180,7 @@ export function RepoTabs({
         {activeId && onToggleAgentsMd && (
           <button
             type="button"
-            className="chunky-repotab-add"
+            className="chunky-repotab-add chunky-repotab-agents"
             aria-label={`${agentsMdEnabled === false ? "Enable" : "Disable"} AGENTS.md instructions`}
             title={`${agentsMdEnabled === false ? "Enable" : "Disable"} AGENTS.md instructions for this repository`}
             onClick={() => void onToggleAgentsMd(agentsMdEnabled === false)}

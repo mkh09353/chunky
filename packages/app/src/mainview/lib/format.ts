@@ -57,9 +57,16 @@ export function groupSessions(sessions: SessionSummary[], now = Date.now()): Thr
   }))
 }
 
+/** True when a thread has no title the user actually chose — either blank or the
+ *  server's "New session" default. Rename starts such a thread from an EMPTY box
+ *  rather than making you delete a placeholder you never wrote. */
+export function isPlaceholderTitle(title: string | undefined): boolean {
+  const t = (title ?? "").trim()
+  return !t || t.toLowerCase() === "new session"
+}
+
 /** A resume-friendly label — falls back to "Untitled thread" for placeholder titles. */
 export function threadLabel(title: string | undefined): string {
-  const t = (title ?? "").trim()
-  if (!t || t.toLowerCase() === "new session") return "Untitled thread"
-  return t
+  if (isPlaceholderTitle(title)) return "Untitled thread"
+  return (title ?? "").trim()
 }

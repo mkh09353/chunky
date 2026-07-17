@@ -305,6 +305,7 @@ export const ROUTES = {
   // workspace; the default repo when omitted).
   createSession: `/api/sessions`,
   listSessions: `/api/sessions`, // GET ?repo=<id> -> ListSessionsResponse (that repo's threads)
+  renameSession: (id: string) => `/api/sessions/${id}`,
   // GET  -> ReposResponse. POST AddRepoRequest -> ReposResponse (add a folder;
   // it also becomes the default repo).
   repos: `/api/repos`,

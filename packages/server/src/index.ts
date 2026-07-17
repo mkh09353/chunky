@@ -299,7 +299,7 @@ installSessionBus({
 
 const CORS = {
   "Access-Control-Allow-Origin": "*",
-  "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
+  "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
   "Access-Control-Allow-Headers": "Content-Type",
 }
 
@@ -905,6 +905,25 @@ const server = Bun.serve({
       Store.createSession(sessionId, undefined, repo?.path)
       subscribers(sessionId) // pre-create the fan-out set
       return json({ sessionId })
+    }
+
+    // PATCH /api/sessions/:id { title } -> rename a session. Session deletion
+    // is intentionally not supported.
+    const renameMatch = pathname.match(/^\/api\/sessions\/([^/]+)$/)
+    if (renameMatch && req.method === "PATCH") {
+      const sessionId = renameMatch[1]
+      if (!Store.exists(sessionId)) return json({ error: "unknown session" }, 404)
+      let body: { title?: unknown }
+      try {
+        body = (await req.json()) as typeof body
+      } catch {
+        return json({ error: "invalid JSON body" }, 400)
+      }
+      if (typeof body.title !== "string" || !body.title.trim()) {
+        return json({ error: "title must not be empty" }, 400)
+      }
+      Store.setTitle(sessionId, body.title.trim().slice(0, 200))
+      return json({ ok: true })
     }
 
     // Match /api/sessions/:id/(events|messages|interrupt|goal|ship|cache)

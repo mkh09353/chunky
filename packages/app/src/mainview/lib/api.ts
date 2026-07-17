@@ -251,6 +251,27 @@ export async function sendMessage(
   return null
 }
 
+/** Server-side cap on a thread title (it trims + slices to this). Mirrored here
+ *  so the optimistic update shows exactly what will be stored. */
+export const THREAD_TITLE_MAX = 200
+
+/** Rename a thread. The server trims and caps at THREAD_TITLE_MAX, rejects an
+ *  empty title (400), and 404s an unknown session. Deletion is deliberately not
+ *  offered — there is no delete route by design. */
+export async function renameSession(
+  baseUrl: string,
+  sessionId: string,
+  title: string,
+): Promise<void> {
+  const res = await fetch(baseUrl + ROUTES.renameSession(sessionId), {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title }),
+  })
+  const body = (await res.json().catch(() => ({}))) as { error?: string }
+  if (!res.ok || body.error) throw new Error(body.error || `rename failed (${res.status})`)
+}
+
 export async function interruptSession(baseUrl: string, sessionId: string): Promise<void> {
   await fetch(baseUrl + ROUTES.interrupt(sessionId), { method: "POST" }).catch(() => {})
 }

@@ -189,6 +189,11 @@ export const Store = {
     if (trimmed) stmtTitle.run(trimmed, sessionId)
   },
 
+  /** Replace a session title unconditionally. */
+  setTitle(sessionId: string, title: string): void {
+    retrySqliteTransaction(db, () => stmtTitle.run(title, sessionId))
+  },
+
   /** List sessions, optionally scoped to one workspace (repo). Omit `workspace`
    *  to list across all repos. */
   list(workspace?: string): SessionSummary[] {

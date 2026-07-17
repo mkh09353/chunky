@@ -35,7 +35,9 @@ import {
   prettyModel,
   QueueFullError,
   removeRepo,
+  renameSession,
   saveMode,
+  THREAD_TITLE_MAX,
   sendMessage,
   setCacheGuard,
   shipSession,
@@ -54,7 +56,8 @@ import { fmtTokens } from "./lib/format"
 import { OnboardingWizard } from "./components/OnboardingWizard"
 import { ConfirmModal, WaitModal } from "./components/Modals"
 
-import { groupSessions, relativeTime, threadLabel } from "./lib/format"
+import { groupSessions, isPlaceholderTitle, relativeTime, threadLabel } from "./lib/format"
+import { ThreadRenameInput } from "./components/ThreadRenameInput"
 import { MIN_NOTIFY_MS, notifyTurnEnd } from "./lib/notify"
 import { initialState, pushNotice, reduce, type TranscriptState } from "./lib/transcript"
 
@@ -84,6 +87,8 @@ export default function App() {
   const [addingRepo, setAddingRepo] = useState(false)
   // Bumped to ask ChatPane to focus the composer and put the caret at the end.
   const [composerFocusSignal, setComposerFocusSignal] = useState(0)
+  // Thread whose sidebar row is currently an inline rename box (null = none).
+  const [renamingId, setRenamingId] = useState<string | null>(null)
   const [connError, setConnError] = useState<string | null>(null)
   // Health of the event stream, tracked SEPARATELY from connError: connError is
   // for actionable, dismissible failures (a send that didn't land, a session that
@@ -429,6 +434,37 @@ export default function App() {
       void attachSession(config.baseUrl, id, true)
     },
     [attachSession, config, sessionId],
+  )
+
+  // Commit an inline thread rename. Optimistic: the sidebar updates immediately
+  // and rolls back if the server refuses, so a rename feels instant but can't
+  // leave the list lying about what's stored.
+  const commitRename = useCallback(
+    async (id: string, next: string) => {
+      setRenamingId(null)
+      if (!config) return
+      const previous = sessions.find((s) => s.sessionId === id)
+      if (!previous) return
+      // Match the server's normalization so the optimistic row shows exactly what
+      // will be stored.
+      const title = next.trim().slice(0, THREAD_TITLE_MAX)
+      // Nothing to do: cleared, or identical to what's already there. The server
+      // rejects an empty title outright (400), so don't even ask.
+      if (!title || title === previous.title) return
+
+      setSessions((list) =>
+        list.map((s) => (s.sessionId === id ? { ...s, title } : s)),
+      )
+      try {
+        await renameSession(config.baseUrl, id, title)
+      } catch (err) {
+        setSessions((list) =>
+          list.map((s) => (s.sessionId === id ? { ...s, title: previous.title } : s)),
+        )
+        setConnError(`Couldn't rename that thread: ${(err as Error).message}`)
+      }
+    },
+    [config, sessions],
   )
 
   // Switching tabs is a pure client-side view change: sessions are pinned to
@@ -1052,20 +1088,51 @@ export default function App() {
             ) : (
               groups.map((group) => (
                 <SideNavSection key={group.band} title={group.band}>
-                  {group.sessions.map((s) => (
-                    <SideNavItem
-                      key={s.sessionId}
-                      label={threadLabel(s.title)}
-                      icon={ChatBubbleLeftRightIcon}
-                      isSelected={s.sessionId === sessionId}
-                      onClick={() => handleSelectSession(s.sessionId)}
-                      endContent={
-                        <span className="chunky-thread-time">
-                          {relativeTime(s.lastActivity)}
-                        </span>
-                      }
-                    />
-                  ))}
+                  {group.sessions.map((s) =>
+                    s.sessionId === renamingId ? (
+                      <ThreadRenameInput
+                        key={s.sessionId}
+                        // Placeholder titles start from an empty box — nobody wants
+                        // to delete "New session" before typing their own name.
+                        initial={isPlaceholderTitle(s.title) ? "" : s.title}
+                        onCommit={(next) => void commitRename(s.sessionId, next)}
+                        onCancel={() => setRenamingId(null)}
+                      />
+                    ) : (
+                      // Rename lives on a `display: contents` wrapper, NOT inside
+                      // the row. SideNavItem renders a <button> and puts
+                      // endContent INSIDE it, so a pencil button there would nest
+                      // interactive content — the mouse-only trap this codebase
+                      // already hit once. The wrapper adds no box of its own, and
+                      // dblclick/F2 bubble up from the row's own button.
+                      <div
+                        key={s.sessionId}
+                        className="chunky-thread-row"
+                        onDoubleClick={() => setRenamingId(s.sessionId)}
+                        onKeyDown={(e) => {
+                          // F2 is the platform-standard rename key (Finder, VS
+                          // Code, Explorer) and works on the natively-focusable
+                          // row button — no extra tab stop needed.
+                          if (e.key === "F2") {
+                            e.preventDefault()
+                            setRenamingId(s.sessionId)
+                          }
+                        }}
+                      >
+                        <SideNavItem
+                          label={threadLabel(s.title)}
+                          icon={ChatBubbleLeftRightIcon}
+                          isSelected={s.sessionId === sessionId}
+                          onClick={() => handleSelectSession(s.sessionId)}
+                          endContent={
+                            <span className="chunky-thread-time">
+                              {relativeTime(s.lastActivity)}
+                            </span>
+                          }
+                        />
+                      </div>
+                    ),
+                  )}
                 </SideNavSection>
               ))
             )}

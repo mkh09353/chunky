@@ -1359,3 +1359,28 @@ body,
     animation: none;
   }
 }
+
+/* ---- Thread rename ---------------------------------------------------------
+
+   The row wrapper exists only to catch dblclick / F2 and generates no box of its
+   own — SideNavItem's button stays the direct flex child of the section, so the
+   sidebar lays out exactly as before. (endContent renders INSIDE that button, so
+   a rename control can't live there without nesting interactive content.) */
+
+.chunky-thread-row {
+  display: contents;
+}
+
+/* Sits in place of a thread row while editing — sized to match the row it
+   replaces so the list doesn't jump. */
+.chunky-thread-rename {
+  width: 100%;
+  font: inherit;
+  font-size: var(--font-size-sm);
+  color: var(--color-text-primary);
+  background: var(--color-background-body);
+  border: 1px solid var(--chunky-purple);
+  border-radius: var(--radius-element);
+  padding: var(--spacing-1-5) var(--spacing-2);
+  outline: none;
+}

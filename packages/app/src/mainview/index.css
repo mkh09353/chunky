@@ -1148,6 +1148,37 @@ body,
   background: var(--color-overlay-hover);
 }
 
+.chunky-attach-thumbnails {
+  display: inline-flex;
+  gap: var(--spacing-1);
+}
+
+.chunky-attach-thumb {
+  position: relative;
+  display: inline-flex;
+}
+
+.chunky-attach-thumb img {
+  width: 2rem;
+  height: 2rem;
+  object-fit: cover;
+  border-radius: var(--radius-element);
+}
+
+.chunky-attach-thumb-remove {
+  position: absolute;
+  top: -0.35rem;
+  right: -0.35rem;
+  width: 1rem;
+  height: 1rem;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--color-background-surface);
+  color: var(--color-text-secondary);
+  cursor: pointer;
+}
+
 .chunky-onboarding-backdrop { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; padding: var(--spacing-6); background: rgba(0,0,0,.62); animation: chunky-onboarding-in 160ms ease-out; }
 .chunky-onboarding { position: relative; width: min(100%, 40rem); max-height: calc(100vh - 3rem); overflow: auto; padding: var(--spacing-8); border: 1px solid var(--color-border); border-radius: var(--radius-container); background: var(--color-background-surface); box-shadow: 0 1.5rem 4rem rgba(0,0,0,.45); }
 .chunky-onboarding h2 { margin: 0 0 var(--spacing-2); font-size: var(--font-size-2xl); }
@@ -1298,4 +1329,33 @@ body,
 .chunky-onboarding-cancel:hover {
   color: var(--color-text-primary) !important;
   border-color: var(--chunky-purple-soft) !important;
+}
+
+/* ---- Add-repo progress ------------------------------------------------------
+
+   Shown in the "+" button while a picked folder is being registered (a server
+   round-trip that otherwise looks like a dead click). The paste-a-path form has
+   its own "Adding…" label, so this covers the native-picker path only. */
+
+.chunky-repotab-spinner {
+  width: 0.85rem;
+  height: 0.85rem;
+  flex-shrink: 0;
+  border-radius: var(--radius-full);
+  border: 2px solid var(--color-border-emphasized);
+  border-top-color: var(--chunky-purple-soft);
+  animation: chunky-spin 700ms linear infinite;
+}
+
+@keyframes chunky-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Motion-sensitive users get a static ring; the disabled state still reads. */
+@media (prefers-reduced-motion: reduce) {
+  .chunky-repotab-spinner {
+    animation: none;
+  }
 }

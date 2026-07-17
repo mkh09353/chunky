@@ -73,6 +73,9 @@ export function ChatPane({
   transcriptLoading,
   queueCount,
   connectionState,
+  attachments,
+  onRemoveAttachment,
+  focusSignal,
 }: {
   state: TranscriptState
   workspaceName: string
@@ -109,10 +112,29 @@ export function ChatPane({
   transcriptLoading?: boolean
   queueCount?: number
   connectionState?: "connecting" | "connected" | "reconnecting"
+  attachments?: InputImage[]
+  onRemoveAttachment?: (index: number) => void
+  focusSignal?: number
 }) {
   const running = state.status === "running"
   const empty = !hasTranscript(state)
   const [imageNotice, setImageNotice] = useState(false)
+  const composerRootRef = useRef<HTMLDivElement>(null)
+
+  useEffect(() => {
+    if (focusSignal == null) return
+    const input = composerRootRef.current?.querySelector<HTMLElement>("[contenteditable='true']")
+    if (!input) return
+    input.focus()
+    const selection = window.getSelection()
+    if (selection) {
+      const range = document.createRange()
+      range.selectNodeContents(input)
+      range.collapse(false)
+      selection.removeAllRanges()
+      selection.addRange(range)
+    }
+  }, [focusSignal])
 
   // Scroll re-pin. The message list and the composer share one scroll container
   // (ChatLayout's self-scrolling root, reachable via this ref). The library's
@@ -352,7 +374,7 @@ export function ChatPane({
           ) : undefined
         }
         composer={
-          <div className="chunky-readable">
+          <div className="chunky-readable" ref={composerRootRef}>
             {imageNotice ? <div className="chunky-image-notice" role="status">Image too large — 7MB max</div> : null}
             {cacheCold && !running ? (
               // Early heads-up while idle (TUI parity): the next send would
@@ -395,16 +417,43 @@ export function ChatPane({
                   ) : null}
                   {attachmentCount > 0 ? (
                     <span className="chunky-attach-chip">
-                      📎 {attachmentCount} image{attachmentCount === 1 ? "" : "s"}
-                      <button
-                        type="button"
-                        className="chunky-attach-clear"
-                        aria-label="Remove attached images"
-                        title="Remove attached images"
-                        onClick={onClearAttachments}
-                      >
-                        ×
-                      </button>
+                      {attachments?.length ? (
+                        <span className="chunky-attach-thumbnails">
+                          {attachments.map((image, index) => (
+                            <span className="chunky-attach-thumb" key={`${image.mediaType}-${index}`}>
+                              <img src={`data:${image.mediaType};base64,${image.base64}`} alt={`Attached image ${index + 1}`} />
+                              {onRemoveAttachment ? (
+                                <button
+                                  type="button"
+                                  className="chunky-attach-thumb-remove"
+                                  aria-label={`Remove attached image ${index + 1}`}
+                                  onClick={() => onRemoveAttachment(index)}
+                                >
+                                  ×
+                                </button>
+                              ) : null}
+                            </span>
+                          ))}
+                        </span>
+                      ) : (
+                        <>📎 {attachmentCount} image{attachmentCount === 1 ? "" : "s"}</>
+                      )}
+                      {/* Clear-all. Beside a LONE thumbnail this is a second × that
+                          looks identical to the thumbnail's own and sits a few px
+                          away, doing the same thing — so only offer it once there's
+                          more than one image to clear (or when we're showing the
+                          plain count, which has no per-image × of its own). */}
+                      {attachmentCount > 1 || !attachments?.length ? (
+                        <button
+                          type="button"
+                          className="chunky-attach-clear"
+                          aria-label={`Remove all ${attachmentCount} attached image${attachmentCount === 1 ? "" : "s"}`}
+                          title="Remove all attached images"
+                          onClick={onClearAttachments}
+                        >
+                          ×
+                        </button>
+                      ) : null}
                     </span>
                   ) : null}
                   {pendingSkill ? (

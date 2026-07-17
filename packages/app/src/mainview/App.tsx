@@ -78,6 +78,12 @@ export default function App() {
   const [repos, setRepos] = useState<Repo[]>([])
   const [activeRepoId, setActiveRepoId] = useState<string | null>(null)
   const [agentsMdEnabled, setAgentsMdEnabled] = useState(true)
+  // True across the whole add-a-repo round-trip (server validation + opening the
+  // new repo's threads). Drives RepoTabs' disabled/spinner state — the native
+  // picker hands back instantly, but registering can take a beat.
+  const [addingRepo, setAddingRepo] = useState(false)
+  // Bumped to ask ChatPane to focus the composer and put the caret at the end.
+  const [composerFocusSignal, setComposerFocusSignal] = useState(0)
   const [connError, setConnError] = useState<string | null>(null)
   // Health of the event stream, tracked SEPARATELY from connError: connError is
   // for actionable, dismissible failures (a send that didn't land, a session that
@@ -146,16 +152,22 @@ export default function App() {
   activeRepoIdRef.current = activeRepoId
 
   // Ask the user a yes/no question in-app and await the answer.
+  const pendingConfirmRef = useRef<((ok: boolean) => void) | null>(null)
   const askConfirm = useCallback(
     (opts: { title: string; body: string; confirmLabel: string }) =>
       new Promise<boolean>((resolve) => {
-        setConfirmPrompt({
-          ...opts,
-          resolve: (ok) => {
-            setConfirmPrompt(null)
-            resolve(ok)
-          },
-        })
+        // Only one question fits on screen. If a second is asked while one is
+        // pending, decline the first rather than leaving its caller awaiting a
+        // promise that can never settle — handleSubmit holds the user's draft in
+        // that await, so a hang there loses the message.
+        pendingConfirmRef.current?.(false)
+        const settle = (ok: boolean) => {
+          pendingConfirmRef.current = null
+          setConfirmPrompt(null)
+          resolve(ok)
+        }
+        pendingConfirmRef.current = settle
+        setConfirmPrompt({ ...opts, resolve: settle })
       }),
     [],
   )
@@ -434,19 +446,24 @@ export default function App() {
   )
 
   // Adds a folder (server validates it). Throws propagate to the RepoTabs form
-  // so it can show "not a directory" inline. The new repo becomes this client's
-  // open tab.
+  // so it can show "not a directory" inline — hence try/finally, not try/catch.
+  // The new repo becomes this client's open tab.
   const handleAddRepo = useCallback(
     async (path: string) => {
       if (!config) return
-      const reg = await addRepo(config.baseUrl, path)
-      setRepos(reg.repos)
-      // The server makes a freshly added repo its default (activeId) — open it here too.
-      const openId = reg.activeId
-      setActiveRepoId(openId)
-      activeRepoIdRef.current = openId
-      if (openId) localStorage.setItem(ACTIVE_REPO_KEY, openId)
-      await openRepoThreads(config.baseUrl, openId)
+      setAddingRepo(true)
+      try {
+        const reg = await addRepo(config.baseUrl, path)
+        setRepos(reg.repos)
+        // The server makes a freshly added repo its default (activeId) — open it here too.
+        const openId = reg.activeId
+        setActiveRepoId(openId)
+        activeRepoIdRef.current = openId
+        if (openId) localStorage.setItem(ACTIVE_REPO_KEY, openId)
+        await openRepoThreads(config.baseUrl, openId)
+      } finally {
+        setAddingRepo(false)
+      }
     },
     [config, openRepoThreads],
   )
@@ -454,6 +471,16 @@ export default function App() {
   const handleRemoveRepo = useCallback(
     async (id: string) => {
       if (!config) return
+      // Confirm first: the tab's × is a small target sitting on a tab you click
+      // all day, and there's no undo. Spell out that it's list-only — people
+      // reasonably fear a × next to a folder name deletes the folder.
+      const repo = repos.find((r) => r.id === id)
+      const ok = await askConfirm({
+        title: `Remove ${repo?.name ?? "this repo"}?`,
+        body: "This only takes it off your repo list — the folder, its files, and its threads all stay exactly where they are. You can add it back any time.",
+        confirmLabel: "Remove",
+      })
+      if (!ok) return
       try {
         const wasOpen = id === activeRepoIdRef.current
         const reg = await removeRepo(config.baseUrl, id)
@@ -470,7 +497,7 @@ export default function App() {
         setConnError((err as Error).message)
       }
     },
-    [config, openRepoThreads],
+    [askConfirm, config, repos, openRepoThreads],
   )
 
   // Client-local status line for slash-command feedback (never persisted —
@@ -991,6 +1018,7 @@ export default function App() {
                 onRemove={(id) => void handleRemoveRepo(id)}
                 agentsMdEnabled={agentsMdEnabled}
                 onToggleAgentsMd={toggleAgentsMd}
+                busy={addingRepo}
               />
             }
           />
@@ -1102,7 +1130,17 @@ export default function App() {
           cacheCold={cacheCold}
           runningSince={runningSince}
           attachmentCount={attachments.length}
+          // The images themselves, for the composer's thumbnail strip. App owns
+          // this state (handleSubmit consumes it via attachmentsRef and hands it
+          // back on a failed send), so ChatPane stays a pure presenter.
+          attachments={attachments}
           onAttachImage={(img) => setAttachments((a) => [...a, img])}
+          // Drop ONE image by position. Rebuilds the array rather than mutating:
+          // a send in flight captured the previous array by reference, and must
+          // keep the exact set it posted for restore-on-failure.
+          onRemoveAttachment={(index) =>
+            setAttachments((a) => a.filter((_, i) => i !== index))
+          }
           onClearAttachments={() => setAttachments([])}
           sessionId={sessionId}
           pendingSkill={pendingSkill}
@@ -1126,8 +1164,13 @@ export default function App() {
           connectionState={connectionState}
           // Suggestion chips PREFILL the composer rather than firing the canned
           // string at the model as a real turn — they're a starting point to edit,
-          // not a prompt anyone meant to send verbatim.
-          onSuggestion={setDraft}
+          // not a prompt anyone meant to send verbatim. Focus follows the text in,
+          // so it lands ready to type rather than needing a click.
+          onSuggestion={(t) => {
+            setDraft(t)
+            setComposerFocusSignal((n) => n + 1)
+          }}
+          focusSignal={composerFocusSignal}
         />
       </AppShell>
     </div>

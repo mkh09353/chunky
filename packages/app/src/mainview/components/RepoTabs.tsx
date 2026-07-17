@@ -9,6 +9,11 @@ import { nativePickerAvailable, pickFolder } from "../lib/pickFolder"
  * opens an inline add form using the native OS folder picker when available
  * (packaged app) or a paste-a-path field otherwise. Each tab has a hover close
  * to remove it from the list (never deletes the folder).
+ *
+ * `busy` covers the NATIVE picker path: once a folder comes back from the OS
+ * dialog, registering it is a server round-trip with no form to host a progress
+ * hint (the paste-a-path form has its own `submitting` — "Adding…"). Without it
+ * the "+" just sits there looking clickable while nothing appears to happen.
  */
 export function RepoTabs({
   repos,
@@ -192,12 +197,17 @@ export function RepoTabs({
         <button
           type="button"
           className="chunky-repotab-add"
-          aria-label="Add a repo"
-          title="Add a repo"
+          aria-label={busy ? "Adding a repo…" : "Add a repo"}
+          title={busy ? "Adding a repo…" : "Add a repo"}
           onClick={() => void openAdd()}
           disabled={busy}
+          aria-busy={busy || undefined}
         >
-          <PlusIcon style={{ width: 16, height: 16 }} />
+          {busy ? (
+            <span className="chunky-repotab-spinner" aria-hidden="true" />
+          ) : (
+            <PlusIcon style={{ width: 16, height: 16 }} />
+          )}
         </button>
 
         {adding ? (

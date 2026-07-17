@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
+import { realpathSync } from "node:fs"
 import { TextAttributes } from "@opentui/core"
 import { useRenderer } from "@opentui/react"
 import { rawModeSupported, useInput } from "./useInput.js"
@@ -10,6 +11,7 @@ import {
   type CacheGuardResponse,
   type CacheStatusResponse,
   type CreateSessionResponse,
+  type ServerInfoResponse,
   type GoalRequest,
   type GoalSnapshot,
   type GoalStateResponse,
@@ -211,6 +213,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   // session (fresh prompt cache + empty transcript) instead of only wiping UI.
   const [sessionKey, setSessionKey] = useState(0)
   const sessionIdRef = useRef<string | null>(null)
+  const workspaceWarningShownRef = useRef(false)
   // Set by /resume before bumping sessionKey: the live effect ATTACHES to this
   // existing session (SSE replays its history) instead of creating a new one.
   // /clear resets it so the next attach is a fresh session again.
@@ -324,10 +327,20 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       try {
         let sessionId = resumeTargetRef.current
         if (!sessionId) {
-          const res = await fetch(baseUrl + ROUTES.createSession, { method: "POST" })
+          const res = await fetch(baseUrl + ROUTES.createSession, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cwd: process.cwd() }) })
           ;({ sessionId } = (await res.json()) as CreateSessionResponse)
         }
         if (cancelled) return
+        if (!resumeTargetRef.current) {
+          try {
+            const info = (await (await fetch(baseUrl + ROUTES.serverInfo)).json()) as ServerInfoResponse
+            const real = (() => { try { return realpathSync(process.cwd()) } catch { return process.cwd() } })()
+            if (!workspaceWarningShownRef.current && info.workspace !== real) {
+              workspaceWarningShownRef.current = true
+              printLine(`Connected to server for ${info.workspace} — sessions here belong to that worktree; launch via chunky in this directory for an isolated server`)
+            }
+          } catch { /* handshake is advisory */ }
+        }
         sessionIdRef.current = sessionId
         // Only a resumed thread has history: render its replayed user turns.
         resumeReplayRef.current = resumeTargetRef.current != null
@@ -750,7 +763,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       return
     }
     try {
-      const res = await fetch(baseUrl + ROUTES.listSessions)
+      const res = await fetch(`${baseUrl + ROUTES.listSessions}?cwd=${encodeURIComponent(process.cwd())}`)
       const body = (await res.json()) as ListSessionsResponse
       // Hide the thread we're already on, and never-used ones (no events means
       // last_activity never moved past creation — every TUI launch leaves one).

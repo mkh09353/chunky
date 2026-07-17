@@ -1,4 +1,6 @@
 import { TextAttributes } from "@opentui/core"
+import { basename, relative } from "node:path"
+import { realpathSync } from "node:fs"
 import type { SessionSummary } from "@chunky/protocol"
 import { ACCENT, BORDER } from "../theme.js"
 
@@ -29,6 +31,8 @@ export function ResumePicker({ sessions, selected }: { sessions: SessionSummary[
   const start = windowStart(selected, sessions.length)
   const visible = sessions.slice(start, start + RESUME_WINDOW)
   const older = sessions.length - start - visible.length
+  const cwd = (() => { try { return realpathSync(process.cwd()) } catch { return process.cwd() } })()
+  const showWorkspace = sessions.some((s) => s.workspace !== cwd)
   return (
     <box flexDirection="column" border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
       <text attributes={TextAttributes.DIM}>Resume a thread — ↑/↓ move · enter resume · esc cancel</text>
@@ -42,6 +46,7 @@ export function ResumePicker({ sessions, selected }: { sessions: SessionSummary[
               {s.title}
             </text>
             <text attributes={TextAttributes.DIM}>{"  — " + ago(s.lastActivity)}</text>
+            {showWorkspace && <text attributes={TextAttributes.DIM}>{`  [${basename(s.workspace) || relative(cwd, s.workspace) || "."}]`}</text>}
           </box>
         )
       })}

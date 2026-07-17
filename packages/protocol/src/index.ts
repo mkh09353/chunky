@@ -122,10 +122,12 @@ export interface GoalSnapshot {
  *  concurrently on one server. */
 export interface CreateSessionRequest {
   repoId?: string
+  cwd?: string
 }
 export interface CreateSessionResponse {
   sessionId: string
 }
+export interface ServerInfoResponse { workspace: string }
 export interface SendMessageRequest {
   text: string
   /** Send even if the cache guard would block (the user confirmed the re-send). */
@@ -181,6 +183,7 @@ export interface SessionSummary {
   title: string
   createdAt: number
   lastActivity: number
+  workspace: string
 }
 export interface ListSessionsResponse {
   sessions: SessionSummary[]
@@ -297,6 +300,7 @@ export type LoginInitiation =
 
 // ---- Endpoints (relative to http://localhost:<port>) ----
 export const ROUTES = {
+  serverInfo: `/api/info`,
   updateStatus: `/api/update`,
   onboarding: `/api/onboarding`,
   onboardingComplete: `/api/onboarding/complete`,
@@ -305,7 +309,7 @@ export const ROUTES = {
   // POST CreateSessionRequest -> CreateSessionResponse (pinned to repoId's
   // workspace; the default repo when omitted).
   createSession: `/api/sessions`,
-  listSessions: `/api/sessions`, // GET ?repo=<id> -> ListSessionsResponse (that repo's threads)
+  listSessions: `/api/sessions`, // GET ?repo=<id>&cwd=<path> -> ListSessionsResponse
   renameSession: (id: string) => `/api/sessions/${id}`,
   // GET  -> ReposResponse. POST AddRepoRequest -> ReposResponse (add a folder;
   // it also becomes the default repo).

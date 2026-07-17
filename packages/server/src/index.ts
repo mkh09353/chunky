@@ -87,11 +87,13 @@ import { manageSkillRepos, type SkillRepoMutationAction } from "./skill-repos.ts
 import { resetTasks } from "./tasks.ts"
 import { databaseErrorMessage } from "./sqlite.ts"
 import {
+  canonicalWorkspace,
   removeDiscoveryRecordIfOwned,
   SERVER_IDENTITY_PATH,
   SERVER_LEASES_PATH,
   ServerLeaseTracker,
 } from "./launcher-discovery.ts"
+import { LAUNCH_WORKSPACE } from "./workspace.ts"
 
 type Subscriber = ReadableStreamDefaultController<Uint8Array>
 
@@ -884,7 +886,12 @@ const server = Bun.serve({
     if (req.method === "GET" && pathname === ROUTES.listSessions) {
       const repoId = url.searchParams.get("repo")
       const repo = repoId ? repoById(repoId) : activeRepo()
-      return json({ sessions: Store.list(repo?.path) })
+      const cwd = url.searchParams.get("cwd")
+      return json({ sessions: Store.list(cwd ? canonicalWorkspace(cwd) : repo?.path) })
+    }
+
+    if (req.method === "GET" && pathname === ROUTES.serverInfo) {
+      return json({ workspace: canonicalWorkspace(process.env.CHUNKY_WORKSPACE || LAUNCH_WORKSPACE) })
     }
 
     // POST /api/sessions { repoId? } -> { sessionId }. The session is PINNED to
@@ -894,15 +901,16 @@ const server = Bun.serve({
     if (req.method === "POST" && pathname === ROUTES.createSession) {
       let repoId: string | undefined
       try {
-        const body = (await req.json().catch(() => ({}))) as { repoId?: unknown }
+        const body = (await req.json().catch(() => ({}))) as { repoId?: unknown; cwd?: unknown }
         if (typeof body?.repoId === "string" && body.repoId) repoId = body.repoId
+        var clientCwd = typeof body?.cwd === "string" && body.cwd ? canonicalWorkspace(body.cwd) : undefined
       } catch {
         // no/invalid body -> default repo
       }
       const repo = repoId ? repoById(repoId) : activeRepo()
       if (repoId && !repo) return json({ error: `unknown repo "${repoId}"` }, 404)
       const sessionId = randomUUID()
-      Store.createSession(sessionId, undefined, repo?.path)
+      Store.createSession(sessionId, undefined, clientCwd ?? repo?.path)
       // Warm FFF without delaying session creation; FileFinder's native watcher
       // keeps the index incrementally current. Its public API has no manual
       // update/rescan hook, so do not add a redundant JS watcher.

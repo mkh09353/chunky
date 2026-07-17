@@ -74,10 +74,10 @@ const stmtTouch = db.query("UPDATE sessions SET last_activity = ? WHERE id = ?")
 const stmtTitle = db.query("UPDATE sessions SET title = ? WHERE id = ?")
 const stmtExists = db.query("SELECT 1 FROM sessions WHERE id = ?")
 const stmtListAll = db.query(
-  "SELECT id, title, created_at, last_activity FROM sessions ORDER BY last_activity DESC LIMIT 100",
+  "SELECT id, title, created_at, last_activity, workspace FROM sessions ORDER BY last_activity DESC LIMIT 100",
 )
 const stmtListByWorkspace = db.query(
-  "SELECT id, title, created_at, last_activity FROM sessions WHERE workspace = ? ORDER BY last_activity DESC LIMIT 100",
+  "SELECT id, title, created_at, last_activity, workspace FROM sessions WHERE workspace = ? ORDER BY last_activity DESC LIMIT 100",
 )
 const stmtWorkspace = db.query("SELECT workspace FROM sessions WHERE id = ?")
 const stmtTitleOf = db.query("SELECT title FROM sessions WHERE id = ?")
@@ -202,12 +202,14 @@ export const Store = {
       title: string
       created_at: number
       last_activity: number
+      workspace: string
     }[]
     return rows.map((r) => ({
       sessionId: r.id,
       title: r.title,
       createdAt: r.created_at,
       lastActivity: r.last_activity,
+      workspace: r.workspace,
     }))
   },
 

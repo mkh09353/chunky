@@ -40,6 +40,7 @@ import { applyPatch } from "./tools/apply-patch.ts"
 import { bash } from "./tools/bash.ts"
 import { editTool } from "./tools/edit.ts"
 import { fffind, ffgrep } from "./tools/fff.ts"
+import { goto_definition, find_references } from "./tools/codegraph.ts"
 import { goalTools } from "./tools/goal.ts"
 import { read } from "./tools/read.ts"
 import { sessionTools } from "./tools/sessions.ts"
@@ -216,6 +217,8 @@ export function executorToolsFor(selection: AgentSelection) {
     killTask,
     fffind,
     ffgrep,
+    goto_definition,
+    find_references,
     write,
     ...(sidekickSel ? [sidekick] : []),
     spawnThread,
@@ -370,7 +373,7 @@ export function buildAdvisorAgent(selection: AgentSelection) {
   const model = resolveModel(selection)
   return createAgent({
     model,
-    tools: [resolveFileToolProfile() === "hashline" ? hashlineRead : read, bash, fffind, ffgrep],
+    tools: [resolveFileToolProfile() === "hashline" ? hashlineRead : read, bash, fffind, ffgrep, goto_definition, find_references],
     systemPrompt: ADVISOR_SYSTEM_PROMPT,
     checkpointer: makeCheckpointer(),
     middleware: [
@@ -411,7 +414,7 @@ export function buildSidekickAgent(selection: AgentSelection, agentsMd?: string 
   const [fileRead, fileEdit] = sidekickFileToolsFor(selection.model, selection.provider)
   return createAgent({
     model,
-    tools: [fileRead, fileEdit, bash, fffind, ffgrep, write],
+    tools: [fileRead, fileEdit, bash, fffind, ffgrep, goto_definition, find_references, write],
     systemPrompt: sidekickSystemPrompt(agentsMd, resolveFileToolProfile()),
     checkpointer: makeCheckpointer(),
     middleware: [

@@ -92,6 +92,8 @@ export function buildSystemPrompt(
 - bash: run shell commands; for anything long-running (dev servers, builds, watch modes, slow test suites) pass background=true and keep working — poll with get_task_output instead of blocking the turn
 - fffind: fuzzy path/filename search (default file finder; frecency-ranked)
 - ffgrep: content search (prefer over bash rg/grep)
+- goto_definition: symbol definition lookup (prefer over ffgrep for symbol lookup)
+- find_references: symbol reference lookup (prefer over ffgrep for symbol lookup)
 ${editListLine}
 - write: create or overwrite a file${sidekickListLine}
 - search_skills / load_skill: discover and on-demand load Agent Skills (SKILL.md packages under ~/.chunky|agents|claude|codex/skills, managed skill-repos, and project .agents|.claude|.chunky|.codex/skills). Bodies are never in the prompt — search first, load only when a description matches
@@ -103,6 +105,8 @@ Additional tools (threads, workflows, goals, sessions, model catalog, skill repo
 - bash: run shell commands; for anything long-running (dev servers, builds, watch modes, slow test suites) pass background=true and keep working — poll with get_task_output instead of blocking the turn
 - fffind: fuzzy path/filename search (default file finder; frecency-ranked)
 - ffgrep: content search (prefer over bash rg/grep)
+- goto_definition: symbol definition lookup (prefer over ffgrep for symbol lookup)
+- find_references: symbol reference lookup (prefer over ffgrep for symbol lookup)
 ${editListLine}
 - write: create or overwrite a file${sidekickListLine}
 - spawn_thread: delegate a focused ONE-SHOT subtask to a fresh child agent (no memory between calls); omit model fields to inherit, or choose another configured provider/model when it better fits the subtask

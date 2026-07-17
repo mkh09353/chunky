@@ -14,6 +14,8 @@ export const CORE_TOOL_NAMES = Object.freeze([
   "bash",
   "fffind",
   "ffgrep",
+  "goto_definition",
+  "find_references",
   "write",
   "edit",
   "apply_patch",

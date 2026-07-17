@@ -21,6 +21,8 @@
     "langchain": "^1.5.3",
     "langsmith": "^0.8.0",
     "qrcode-terminal": "^0.12.0",
+    "tree-sitter-wasms": "^0.1.13",
+    "web-tree-sitter": "0.25.10",
     "zod": "^4.4.3"
   },
   "devDependencies": {

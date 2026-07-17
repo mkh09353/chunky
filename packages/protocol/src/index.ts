@@ -184,6 +184,8 @@ export interface SessionSummary {
   createdAt: number
   lastActivity: number
   workspace: string
+  /** True while at least one live SSE client is attached to this session. */
+  attached?: boolean
 }
 export interface ListSessionsResponse {
   sessions: SessionSummary[]

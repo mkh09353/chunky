@@ -887,7 +887,11 @@ const server = Bun.serve({
       const repoId = url.searchParams.get("repo")
       const repo = repoId ? repoById(repoId) : activeRepo()
       const cwd = url.searchParams.get("cwd")
-      return json({ sessions: Store.list(cwd ? canonicalWorkspace(cwd) : repo?.path) })
+      const sessions = Store.list(cwd ? canonicalWorkspace(cwd) : repo?.path).map((session) => ({
+        ...session,
+        attached: (live.get(session.sessionId)?.size ?? 0) > 0,
+      }))
+      return json({ sessions })
     }
 
     if (req.method === "GET" && pathname === ROUTES.serverInfo) {

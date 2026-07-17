@@ -46,6 +46,7 @@ export function ResumePicker({ sessions, selected }: { sessions: SessionSummary[
               {s.title}
             </text>
             <text attributes={TextAttributes.DIM}>{"  — " + ago(s.lastActivity)}</text>
+            {s.attached && <text attributes={TextAttributes.DIM}>{"  · attached"}</text>}
             {showWorkspace && <text attributes={TextAttributes.DIM}>{`  [${basename(s.workspace) || relative(cwd, s.workspace) || "."}]`}</text>}
           </box>
         )

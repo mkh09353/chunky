@@ -774,7 +774,8 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         printLine("No previous threads in this repo yet.")
         return
       }
-      setResumePicker({ sessions, selected: 0 })
+      const firstDetached = sessions.findIndex((s) => !s.attached)
+      setResumePicker({ sessions, selected: firstDetached >= 0 ? firstDetached : 0 })
     } catch (err) {
       printLine(`Resume failed: ${String(err)}`)
     }

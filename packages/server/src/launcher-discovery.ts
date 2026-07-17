@@ -21,10 +21,13 @@ export interface LauncherServerIdentity {
   buildId: string
   nonce: string
   port: number
+  /** Launcher ownership uuid, present for managed servers. */
+  id?: string
 }
 
 export interface LauncherServerRecord extends LauncherServerIdentity {
   schema: 1
+  id: string
   pid: number
   startedAt: number
 }
@@ -42,6 +45,7 @@ export interface LauncherServerConfig {
 export interface LauncherServerStartDependencies {
   allocatePort(): Promise<number>
   startServer(identity: LauncherServerIdentity): Promise<{ pid: number; stop(): void }>
+  stopPid?(pid: number): void
 }
 
 interface LauncherServerRuntimeDependencies {
@@ -56,7 +60,7 @@ const defaultDependencies: LauncherServerRuntimeDependencies = {
   async fetchIdentity(port) {
     try {
       const response = await fetch(`http://127.0.0.1:${port}${SERVER_IDENTITY_PATH}`, {
-        signal: AbortSignal.timeout(500),
+        signal: AbortSignal.timeout(2_000),
       })
       if (!response.ok) return null
       return await response.json() as LauncherServerIdentity
@@ -137,9 +141,25 @@ export async function updateServerLease(port: number, token: string, action: "at
 
 export function removeDiscoveryRecordIfOwned(path: string, nonce: string): boolean {
   const record = readRecord(path)
-  if (!record || record.nonce !== nonce) return false
+  if (!record || record.id !== nonce) return false
   rmSync(path, { force: true })
   return true
+}
+
+/** Watch the registration so a superseded server retires itself. */
+export function startOwnershipPoller(path: string, id: string, onLost: () => void, intervalMs = 10_000): () => void {
+  let stopped = false
+  const timer = setInterval(() => {
+    if (stopped) return
+    const record = readRecord(path)
+    if (!record || record.id !== id) {
+      stopped = true
+      clearInterval(timer)
+      onLost()
+    }
+  }, intervalMs)
+  timer.unref?.()
+  return () => { stopped = true; clearInterval(timer) }
 }
 
 /** Resolve symlinks and path aliases so two shells naming one directory share a server. */
@@ -200,6 +220,7 @@ function isRecord(value: unknown): value is LauncherServerRecord {
   if (!value || typeof value !== "object") return false
   const record = value as Partial<LauncherServerRecord>
   return record.schema === 1
+    && typeof record.id === "string" && record.id.length > 0
     && typeof record.workspace === "string"
     && typeof record.version === "string"
     && typeof record.buildId === "string"
@@ -230,6 +251,7 @@ function sameIdentity(record: LauncherServerRecord, identity: LauncherServerIden
     && identity.buildId === record.buildId
     && identity.nonce === record.nonce
     && identity.port === record.port
+    && identity.id === record.id
 }
 
 async function healthyRecord(
@@ -254,7 +276,16 @@ async function pruneStaleRecords(
     if (!entry.isFile() || !entry.name.endsWith(".json")) continue
     const path = join(serversDir, entry.name)
     const record = readRecord(path)
-    if (!record || record.workspace !== workspace) continue
+    if (!record) {
+      // Legacy/malformed records are stale. Remove only records that advertise
+      // this workspace; records for other workspaces are not ours to touch.
+      try {
+        const raw = JSON.parse(readFileSync(path, "utf8")) as { workspace?: unknown }
+        if (raw.workspace === workspace) rmSync(path, { force: true })
+      } catch {}
+      continue
+    }
+    if (record.workspace !== workspace) continue
     const identity = await fetchIdentity(record.port)
     if (!identity || !sameIdentity(record, identity)) rmSync(path, { force: true })
   }
@@ -398,17 +429,27 @@ export async function ensureWorkspaceServer(
       if (raced) return { record: raced, started: false }
       if (!ownsLock(lockPath, lockToken)) continue
 
+      // A matching record that failed health/version checks owns a process we
+      // should retire before replacing. Missing/legacy records are simply stale.
+      const stale = readRecord(recordPath)
+      if (stale) {
+        deps.stopPid?.(stale.pid)
+        rmSync(recordPath, { force: true })
+      }
+
       const identity: LauncherServerIdentity = {
         workspace,
         version: config.version,
         buildId: config.buildId,
         nonce: randomUUID(),
         port: await deps.allocatePort(),
+        id: randomUUID(),
       }
       if (!ownsLock(lockPath, lockToken)) continue
       const child = await deps.startServer(identity)
       const record: LauncherServerRecord = {
         schema: 1,
+        id: identity.id!,
         ...identity,
         pid: child.pid,
         startedAt: deps.now(),

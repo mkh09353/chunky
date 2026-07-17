@@ -89,6 +89,7 @@ import { databaseErrorMessage } from "./sqlite.ts"
 import {
   canonicalWorkspace,
   removeDiscoveryRecordIfOwned,
+  startOwnershipPoller,
   SERVER_IDENTITY_PATH,
   SERVER_LEASES_PATH,
   ServerLeaseTracker,
@@ -344,8 +345,9 @@ const server = Bun.serve({
       const version = process.env.CHUNKY_VERSION
       const buildId = process.env.CHUNKY_BUILD_ID
       const nonce = process.env.CHUNKY_SERVER_NONCE
-      if (!workspace || !version || !buildId || !nonce) return json({ error: "launcher identity unavailable" }, 404)
-      return json({ workspace, version, buildId, nonce, port: server.port })
+      const id = process.env.CHUNKY_SERVER_ID
+      if (!workspace || !version || !buildId || !nonce || !id) return json({ error: "launcher identity unavailable" }, 404)
+      return json({ workspace, version, buildId, nonce, id, port: server.port })
     }
 
     if (pathname === SERVER_LEASES_PATH && serverLeases && (req.method === "POST" || req.method === "DELETE")) {
@@ -1202,6 +1204,30 @@ const server = Bun.serve({
     return new Response("not found", { status: 404, headers: CORS })
   },
 })
+
+const discoveryRecord = process.env.CHUNKY_DISCOVERY_RECORD
+const ownershipId = process.env.CHUNKY_SERVER_ID
+const cleanupDiscovery = () => {
+  if (discoveryRecord && ownershipId) removeDiscoveryRecordIfOwned(discoveryRecord, ownershipId)
+}
+const stopOwnershipPoller = discoveryRecord && ownershipId
+  ? startOwnershipPoller(discoveryRecord, ownershipId, () => {
+      // A successor took the registration. Abort active work before stopping
+      // the listener, matching the normal SIGTERM shutdown path.
+      for (const controller of running.values()) controller.abort()
+      cleanupDiscovery()
+      server.stop(true)
+      process.exitCode = 0
+    })
+  : undefined
+const shutdown = () => {
+  stopOwnershipPoller?.()
+  cleanupDiscovery()
+  for (const controller of running.values()) controller.abort()
+  server.stop(true)
+}
+process.once("SIGTERM", shutdown)
+process.once("SIGINT", shutdown)
 
 console.log(
   `[@chunky/server] listening on http://localhost:${server.port} (provider=${activeProviderId()})`,

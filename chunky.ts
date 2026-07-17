@@ -99,6 +99,7 @@ async function startServer(identity: LauncherServerIdentity): Promise<{ pid: num
         CHUNKY_VERSION: identity.version,
         CHUNKY_BUILD_ID: identity.buildId,
         CHUNKY_SERVER_NONCE: identity.nonce,
+        CHUNKY_SERVER_ID: identity.id,
         CHUNKY_DISCOVERY_RECORD: join(STATE, "servers", `${serverIdentityKey(identity.workspace, identity.version, identity.buildId)}.json`),
         CHUNKY_DB: join(STATE, "chunky.db"),
         CHUNKY_GRAPH_DB: join(STATE, "chunky-graph.db"),
@@ -124,6 +125,7 @@ const shared = await ensureWorkspaceServer({
     ? Number(process.env.CHUNKY_FORCE_PORT)
     : freePort(),
   startServer,
+  stopPid: (pid) => { try { process.kill(pid, "SIGTERM") } catch {} },
 })
 const PORT = shared.record.port
 const leaseToken = randomUUID()

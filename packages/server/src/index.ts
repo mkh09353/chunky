@@ -903,6 +903,10 @@ const server = Bun.serve({
       if (repoId && !repo) return json({ error: `unknown repo "${repoId}"` }, 404)
       const sessionId = randomUUID()
       Store.createSession(sessionId, undefined, repo?.path)
+      // Warm FFF without delaying session creation; FileFinder's native watcher
+      // keeps the index incrementally current. Its public API has no manual
+      // update/rescan hook, so do not add a redundant JS watcher.
+      void getFinder(repo?.path).catch(() => {})
       subscribers(sessionId) // pre-create the fan-out set
       return json({ sessionId })
     }

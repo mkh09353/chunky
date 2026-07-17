@@ -89,7 +89,7 @@ export function buildSystemPrompt(
   const toolsBlock = deferredToolSearch
     ? `Available tools (always bound):
 - read: read file contents (raw text, no line numbers)
-- bash: run shell commands
+- bash: run shell commands; for anything long-running (dev servers, builds, watch modes, slow test suites) pass background=true and keep working — poll with get_task_output instead of blocking the turn
 - fffind: fuzzy path/filename search (default file finder; frecency-ranked)
 - ffgrep: content search (prefer over bash rg/grep)
 ${editListLine}
@@ -100,7 +100,7 @@ ${portableToolSearch ? "- search_tools / call_deferred_tool: discover deferred t
 Additional tools (threads, workflows, goals, sessions, model catalog, skill repos, and advisor when configured) are deferred behind ${portableToolSearch ? "search_tools" : "native tool search"} — use tool search to discover them when needed; do not assume a fixed full list in this prompt.`
     : `Available tools:
 - read: read file contents (raw text, no line numbers)
-- bash: run shell commands
+- bash: run shell commands; for anything long-running (dev servers, builds, watch modes, slow test suites) pass background=true and keep working — poll with get_task_output instead of blocking the turn
 - fffind: fuzzy path/filename search (default file finder; frecency-ranked)
 - ffgrep: content search (prefer over bash rg/grep)
 ${editListLine}

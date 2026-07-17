@@ -12,6 +12,9 @@ export type Item =
    *  main-thread tool boundary, not immediately. */
   | { kind: "user"; text: string; from?: string; interjection?: boolean }
   | { kind: "assistant"; text: string; streaming: boolean; endReason?: MessageEndReason }
+  /** `progress` is LIVE-ONLY text streamed by the tool while it runs (tool.progress).
+   *  It is never persisted or replayed by the server, and tool.end REPLACES it with
+   *  the authoritative `output` — so it exists only between start and end. */
   | {
       kind: "tool"
       id: string
@@ -20,6 +23,7 @@ export type Item =
       done: boolean
       ok?: boolean
       output?: string
+      progress?: string
     }
   | { kind: "error"; text: string }
   | {
@@ -79,6 +83,17 @@ export const initialState: TranscriptState = {
   queue: { entries: [], running: false },
 }
 
+/** Hard cap on accumulated per-tool progress text. A chatty tool (a test runner,
+ *  a build) can stream megabytes; we only ever render the tail, so keep the tail
+ *  and drop the oldest bytes rather than growing without bound. */
+const PROGRESS_MAX_BYTES = 64 * 1024
+
+/** Append a progress chunk, trimming from the FRONT once past the cap. */
+function appendProgress(prev: string | undefined, chunk: string): string {
+  const next = (prev ?? "") + chunk
+  return next.length > PROGRESS_MAX_BYTES ? next.slice(next.length - PROGRESS_MAX_BYTES) : next
+}
+
 function reduceItems(items: Item[], ev: AgentEvent): Item[] {
   switch (ev.type) {
     case "message.user":
@@ -122,10 +137,22 @@ function reduceItems(items: Item[], ev: AgentEvent): Item[] {
       ]
     }
 
+    case "tool.progress":
+      // Keyed STRICTLY by id so concurrently streaming tools never cross-feed.
+      // A chunk for an unknown/closed id is dropped: after a reconnect the tool
+      // item may not exist (progress is never replayed) and a late chunk must not
+      // resurrect text over a finished tool's authoritative output.
+      return items.map((it) =>
+        it.kind === "tool" && it.id === ev.id && !it.done
+          ? { ...it, progress: appendProgress(it.progress, ev.chunk) }
+          : it,
+      )
+
     case "tool.end":
       return items.map((it) =>
         it.kind === "tool" && it.id === ev.id
-          ? { ...it, done: true, ok: ev.ok, output: ev.output }
+          ? // The final output REPLACES every accumulated progress chunk.
+            { ...it, done: true, ok: ev.ok, output: ev.output, progress: undefined }
           : it,
       )
 
@@ -279,6 +306,7 @@ export function reduce(state: TranscriptState, ev: AgentEvent): TranscriptState 
     case "message.delta":
     case "message.end":
     case "tool.start":
+    case "tool.progress":
     case "tool.end":
     case "error": {
       const threadId = ("threadId" in ev && ev.threadId) || MAIN

@@ -149,6 +149,7 @@ Guidelines:
 - Use fffind to locate files and ffgrep for content search; use bash for everything else (ls, git, builds, tests).
 ${editGuideline}
 - Use write only for new files or full rewrites.
+- Independent tool calls run CONCURRENTLY when you emit them in one response — batch them (e.g. several reads, or a read + ffgrep + bash test run) instead of issuing them one at a time. Keep calls that depend on each other's results in separate responses, and don't batch multiple writes to the same file.
 ${multiAgentGuideline}${advisorGuideline}
 ${skillsGuideline}
 - When you create a git commit, end the commit message with a blank line followed by exactly: Co-Authored-By: Chunky <304939924+chunky-cli@users.noreply.github.com>

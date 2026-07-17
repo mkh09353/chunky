@@ -139,7 +139,7 @@ function hasLiveSubscribers(): boolean {
 
 /** Persist an event, then push it to every connected subscriber of the session. */
 function emitTo(sessionId: string, ev: AgentEvent): void {
-  Store.appendEvent(sessionId, ev)
+  if (ev.type !== "tool.progress") Store.appendEvent(sessionId, ev)
   const frame = encoder.encode(sse(ev))
   for (const controller of subscribers(sessionId)) {
     try {

@@ -18,6 +18,7 @@ import {
   stripBom,
 } from "./edit-diff.ts"
 import { toolResult } from "./result.ts"
+import { withFileLock } from "../file-lock.ts"
 
 interface EditInput {
   path: string
@@ -79,6 +80,7 @@ const editSchema = z.preprocess(
 export const editTool = tool(
   async ({ path, edits }: { path: string; edits: Edit[] }, config?: unknown) => {
     const full = resolveInWorkspace(path, workspaceFromConfig(config))
+    return await withFileLock(full, () => {
     const rawContent = readFileSync(full, "utf-8")
 
     // Strip the BOM before matching (the model won't include an invisible BOM in
@@ -106,6 +108,7 @@ export const editTool = tool(
         edits: bounded,
         ...(appliedEdits.length > bounded.length ? { editsTruncated: true } : {}),
       },
+    })
     })
   },
   {

@@ -7,6 +7,7 @@ import { detectLineEnding, normalizeToLF, restoreLineEndings, stripBom } from ".
 import { toolResult } from "../result.ts"
 import { applyHashline } from "./apply.ts"
 import { hashlineEditInputShape, type HashOp } from "./types.ts"
+import { withFileLock } from "../../file-lock.ts"
 
 const preprocess = (value: unknown) => {
   if (!value || typeof value !== "object") return value
@@ -21,6 +22,7 @@ const preprocess = (value: unknown) => {
 export const hashlineEdit = tool(
   async ({ path, edits }: { path: string; edits: HashOp[] }, config?: unknown) => {
     const fullPath = resolveInWorkspace(path, workspaceFromConfig(config))
+    return await withFileLock(fullPath, () => {
     const raw = readFileSync(fullPath, "utf8")
     const { bom, text } = stripBom(raw)
     const ending = detectLineEnding(text)
@@ -37,6 +39,7 @@ export const hashlineEdit = tool(
     writeFileSync(fullPath, bom + restoreLineEndings(result.text, ending), "utf8")
     return toolResult(`Applied ${result.applied} hashline edit(s) to ${path}.\nFresh anchors:\n${result.snippet}${result.warnings.length ? `\nWarnings: ${result.warnings.join(" ")}` : ""}`, {
       raw: { kind: "hashline_edit", status: "ok", applied: result.applied, scheme: "chunk_v1", snippet: result.snippet, snippetStartLine: result.snippetStartLine, snippetRanges: result.snippetRanges, details: result.details, path, warnings: result.warnings },
+    })
     })
   },
   {

@@ -109,6 +109,7 @@ export async function translateStream(
   let sawAssistantOrTool = false
   const seenToolStart = new Set<string>()
   const seenToolEnd = new Set<string>()
+  let unknownToolEnd = 0
   // Track the LAST LLM request's prompt size to feed the cache watch. Within a
   // tool loop later requests reuse the cache; it's the turn's final prompt that
   // approximates the live context that a cold cache would force us to re-send.
@@ -202,7 +203,7 @@ export async function translateStream(
               }
             } else if (kind === "tool") {
               sawAssistantOrTool = true
-              const id = msg?.tool_call_id ?? msg?.id ?? "unknown"
+              const id = msg?.tool_call_id ?? msg?.id ?? `unknown-${++unknownToolEnd}`
               if (seenToolEnd.has(id)) continue
               seenToolEnd.add(id)
               const result = asToolRunResult(
@@ -219,6 +220,7 @@ export async function translateStream(
                 output: result.promptText,
                 ...(result.raw !== undefined ? { raw: result.raw } : {}),
               })
+              // With concurrent tool batches this boundary may occur while sibling tools remain active.
               const interjection = threadId === undefined ? onToolBoundary?.() : undefined
               if (interjection !== undefined) throw Object.assign(new Error(JSON.stringify(interjection)), { name: "InterjectionBoundary" })
             }
@@ -408,7 +410,12 @@ export async function runAgent(
         getAgent(selection, workspace, agentsMd),
         { messages: [{ role: "user", content: userMessageContent(prompt, turnImages) }] } as any,
         {
-          configurable: { thread_id: sessionId, workspace },
+          configurable: {
+            thread_id: sessionId,
+            workspace,
+            emitToolProgress: (toolCallId: string, chunk: string) =>
+              taggedEmitter(emit, undefined)({ type: "tool.progress", id: toolCallId, chunk }),
+          },
           streamMode: ["updates", "messages"],
           recursionLimit: RECURSION_LIMIT,
           signal: abort?.signal,

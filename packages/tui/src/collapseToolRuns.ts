@@ -74,6 +74,11 @@ function summarizeReadlike(run: ToolItem[]): string {
  * - Only successful-or-in-flight calls coalesce. An errored call (`ok === false`)
  *   breaks the run and passes through as its own `tool` row so its error line stays
  *   on screen — a failure is never swallowed into a green group.
+ * - A call currently STREAMING progress (`!done` with accumulated `progress`) also
+ *   breaks the run and stands alone, because a group row has no ⎿ area to show the
+ *   live tail in — folding it would hide the streaming output entirely. This is
+ *   transient: when the call ends, `progress` clears and it folds back into its
+ *   group on the next render (same optimistic pop as an errored call).
  * - A run of a single call passes through unchanged: there's nothing to coalesce
  *   and its ⎿ preview is worth the second line. Only 2+ become a group.
  *
@@ -107,8 +112,9 @@ export function collapseToolRuns(items: Item[]): DisplayItem[] {
   }
 
   for (const it of items) {
-    // Non-tool items and errored calls break any run and render on their own.
-    if (it.kind !== "tool" || it.ok === false) {
+    // Non-tool items, errored calls, and calls streaming a live progress tail all
+    // break any run and render on their own.
+    if (it.kind !== "tool" || it.ok === false || (!it.done && !!it.progress)) {
       flush()
       out.push(it)
       continue

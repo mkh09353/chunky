@@ -7,6 +7,7 @@ import { tool } from "@langchain/core/tools"
 import { z } from "zod"
 import { workspaceFromConfig } from "../workspace.ts"
 import { resolveInWorkspace } from "./fs-util.ts"
+import { withFileLock } from "../file-lock.ts"
 
 export const writeInputShape = {
   path: z.string().describe("File path (relative or absolute)."),
@@ -16,8 +17,10 @@ export const writeInputShape = {
 export const write = tool(
   async ({ path, content }: { path: string; content: string }, config?: unknown) => {
     const full = resolveInWorkspace(path, workspaceFromConfig(config))
-    mkdirSync(dirname(full), { recursive: true })
-    writeFileSync(full, content, "utf-8")
+    await withFileLock(full, () => {
+      mkdirSync(dirname(full), { recursive: true })
+      writeFileSync(full, content, "utf-8")
+    })
     return `Wrote ${content.length} bytes to ${path}.`
   },
   {

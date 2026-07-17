@@ -54,6 +54,40 @@ function toolTarget(input: unknown): string | undefined {
   }
 }
 
+/** How many lines of live tool progress to keep on screen while a tool runs.
+ *  A tail, not a log — mirrors TOOL_PROGRESS_TAIL_LINES in the TUI. */
+const TOOL_PROGRESS_TAIL_LINES = 6
+
+/** Last N lines of streamed progress, for the live tail view. */
+function progressTail(progress: string): string[] {
+  const lines = progress.split("\n")
+  // A trailing newline yields a final "" that would render as a blank row and
+  // make the tail look like it's stalling — drop it, but keep interior blanks.
+  if (lines[lines.length - 1] === "") lines.pop()
+  return lines.slice(-TOOL_PROGRESS_TAIL_LINES)
+}
+
+/** Live tails for every tool in a group that is currently streaming progress.
+ *
+ *  Rendered as a sibling BELOW <ChatToolCalls> rather than via each call's
+ *  `resultDetail`, because the design system only reveals resultDetail on click
+ *  (and, in a multi-call group, only renders the per-call rows once expanded) —
+ *  a live tail has to be visible without interaction. Keyed by tool id, so
+ *  concurrently streaming tools each get their own tail. */
+function ToolProgressTails({ tools }: { tools: ToolItem[] }) {
+  const streaming = tools.filter((t) => !t.done && t.progress)
+  if (streaming.length === 0) return null
+  return (
+    <>
+      {streaming.map((t) => (
+        <pre key={t.id} className="chunky-tool-progress">
+          {progressTail(t.progress!).join("\n")}
+        </pre>
+      ))}
+    </>
+  )
+}
+
 function toToolCall(item: ToolItem): ChatToolCallItem {
   return {
     key: item.id,
@@ -120,6 +154,7 @@ function MessageGroups({ groups }: { groups: Group[] }) {
           return (
             <ChatMessage key={`tools-${i}`} {...assistant}>
               <ChatToolCalls calls={g.tools.map(toToolCall)} />
+              <ToolProgressTails tools={g.tools} />
             </ChatMessage>
           )
         }

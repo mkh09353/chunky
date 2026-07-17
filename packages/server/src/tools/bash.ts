@@ -57,13 +57,15 @@ export const bashInputShape = {
   description: z.string().optional().describe("Short label for the background task."),
 }
 
-async function readPipe(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<string> {
+async function readPipe(reader: ReadableStreamDefaultReader<Uint8Array>, onChunk?: (chunk: string) => void): Promise<string> {
   const decoder = new TextDecoder()
   let text = ""
   while (true) {
     const { done, value } = await reader.read()
-    if (done) return text + decoder.decode()
-    text += decoder.decode(value, { stream: true })
+    if (done) { const tail = decoder.decode(); if (tail) onChunk?.(tail); return text + tail }
+    const chunk = decoder.decode(value, { stream: true })
+    if (chunk) onChunk?.(chunk)
+    text += chunk
   }
 }
 
@@ -123,6 +125,27 @@ export const bash = tool(
 
     const stdoutReader = proc.stdout.getReader()
     const stderrReader = proc.stderr.getReader()
+    const toolCallId = config?.toolCallId ?? config?.configurable?.toolCallId
+    const progress = config?.configurable?.emitToolProgress
+    let streamedBytes = 0
+    let pending = ""
+    let lastFlush = 0
+    let flushTimer: ReturnType<typeof setTimeout> | undefined
+    const flush = () => {
+      flushTimer = undefined
+      if (!pending || !toolCallId || typeof progress !== "function") return
+      const chunk = pending; pending = ""; lastFlush = Date.now()
+      progress(toolCallId, chunk)
+    }
+    const emitChunk = (chunk: string) => {
+      if (!toolCallId || typeof progress !== "function" || streamedBytes >= 32 * 1024) return
+      const allowed = Math.min(Buffer.byteLength(chunk), 32 * 1024 - streamedBytes)
+      if (allowed <= 0) return
+      const part = allowed === Buffer.byteLength(chunk) ? chunk : Buffer.from(chunk).subarray(0, allowed).toString()
+      streamedBytes += Buffer.byteLength(part); pending += part
+      const wait = Math.max(0, 100 - (Date.now() - lastFlush))
+      if (!wait) flush(); else if (!flushTimer) flushTimer = setTimeout(flush, wait)
+    }
 
     let timedOut = false
     let timer: ReturnType<typeof setTimeout> | undefined
@@ -138,8 +161,8 @@ export const bash = tool(
       }, timeout * 1000)
     }
 
-    const stdoutPromise = readPipe(stdoutReader)
-    const stderrPromise = readPipe(stderrReader)
+    const stdoutPromise = readPipe(stdoutReader, emitChunk)
+    const stderrPromise = readPipe(stderrReader, emitChunk)
 
     // A backgrounded child (`server & ...`) inherits the pipes, so EOF may never
     // arrive even though the shell has exited. Wait for exit first, then give
@@ -153,6 +176,8 @@ export const bash = tool(
       void stderrReader.cancel()
     }, 1500)
     const [stdout, stderr] = await Promise.all([stdoutPromise, stderrPromise])
+    if (flushTimer) clearTimeout(flushTimer)
+    flush()
     clearTimeout(grace)
     if (timer) clearTimeout(timer)
 

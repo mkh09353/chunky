@@ -25,6 +25,7 @@ import { dirname, isAbsolute, relative, resolve } from "node:path"
 import { tool } from "@langchain/core/tools"
 import { z } from "zod"
 import { LAUNCH_WORKSPACE, workspaceFromConfig } from "../workspace.ts"
+import { withFileLocks } from "../file-lock.ts"
 
 const BEGIN = "*** Begin Patch"
 const END = "*** End Patch"
@@ -296,7 +297,10 @@ export function applyPatchText(patch: string, workspace: string = LAUNCH_WORKSPA
 
 export const applyPatch = tool(
   async ({ patch }: { patch: string }, config?: unknown) => {
-    const { summary, changed } = applyPatchText(patch, workspaceFromConfig(config))
+    const workspace = workspaceFromConfig(config)
+    const ops = parsePatch(patch)
+    const paths = ops.flatMap((op) => [resolveInWorkspace(op.path, workspace), ...(op.kind === "update" && op.moveTo ? [resolveInWorkspace(op.moveTo, workspace)] : [])])
+    const { summary, changed } = await withFileLocks(paths, () => applyPatchText(patch, workspace))
     return `Applied patch (${changed.length} file${changed.length === 1 ? "" : "s"} changed):\n${summary}`
   },
   {

@@ -173,7 +173,11 @@ export function createChunkySdkMcpServer(
   const readOnly = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false }
   // The same RunnableConfig the LangChain runtime would pass: thread identity for
   // session-scoped tools (spawn/goal) plus the run's workspace for fs/search tools.
-  const runConfig = { configurable: { thread_id: callerThreadId, workspace } }
+  const runConfig = { configurable: {
+    thread_id: callerThreadId,
+    workspace,
+    emitToolProgress: (toolCallId: string, chunk: string) => emit({ type: "tool.progress", id: toolCallId, chunk }),
+  } }
   return createSdkMcpServer({
     name: SERVER_NAME,
     version: "0.0.0",

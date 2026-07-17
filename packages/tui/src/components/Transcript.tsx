@@ -35,6 +35,21 @@ const ItemExpandContext = createContext<{ expanded: Set<string>; toggle: (key: s
  *  100k-line bash dump flooding the transcript). */
 const TOOL_OUTPUT_MAX_LINES = 200
 
+/** How many lines of live tool progress to keep on screen while a tool runs.
+ *  A tail, not a log: enough to see the thing is moving and where it is, few
+ *  enough that a chatty build doesn't push the conversation off the terminal.
+ *  On tool.end the whole tail is replaced by the normal one-line summary. */
+const TOOL_PROGRESS_TAIL_LINES = 6
+
+/** Last N non-empty-ish lines of streamed progress, for the live tail view. */
+function progressTail(progress: string): string[] {
+  const lines = progress.split("\n")
+  // A trailing newline yields a final "" that would render as a blank row and
+  // make the tail look like it's stalling — drop it, but keep interior blanks.
+  if (lines[lines.length - 1] === "") lines.pop()
+  return lines.slice(-TOOL_PROGRESS_TAIL_LINES)
+}
+
 // Max chars for a coalesced group's trailing input hint, mirroring kimi's
 // TOOL_SUMMARY_MAX_LENGTH — tighter than a lone tool's header so the "×N" count
 // and the summary both fit on one line.
@@ -437,6 +452,9 @@ export function ItemView({ item }: { item: DisplayItem }) {
       const key = `t:${item.id}`
       const open = expandable && expandCtx.expanded.has(key)
       const shown = open ? lines.slice(0, TOOL_OUTPUT_MAX_LINES) : []
+      // Live tail: only while the call is in flight. Once done, this is empty and
+      // the row renders exactly as it always has (summary + expandable output).
+      const tail = !item.done && item.progress ? progressTail(item.progress) : []
       return (
         <box marginTop={1} flexDirection="column">
           <box flexDirection="row">
@@ -444,6 +462,15 @@ export function ItemView({ item }: { item: DisplayItem }) {
             <text attributes={BOLD}>{item.name}</text>
             <text attributes={DIM}>({summarizeInput(item.input)})</text>
           </box>
+          {tail.length > 0 && (
+            <box flexDirection="column" marginLeft={4}>
+              {tail.map((l, k) => (
+                <text key={k} attributes={DIM}>
+                  {l.length === 0 ? " " : l}
+                </text>
+              ))}
+            </box>
+          )}
           {item.done && (
             <box
               flexDirection="row"

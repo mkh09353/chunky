@@ -33,6 +33,7 @@ import {
   openEventStream,
   postGoal,
   prettyModel,
+  QueueFullError,
   removeRepo,
   saveMode,
   sendMessage,
@@ -41,11 +42,13 @@ import {
   type AdvisorState,
   type AppConfig,
   type InputImage,
+  type MessageDelivery,
   type ModelSelection,
   type Repo,
 } from "./lib/api"
 import { openExternal } from "./lib/rpc"
 import { sleep } from "./lib/sleep"
+import { isIntentionalAbort, reconnectDelay } from "./lib/reconnect"
 import { parseGoalArgs, parseSlashCommand, SLASH_COMMANDS } from "./lib/commands"
 import { fmtTokens } from "./lib/format"
 import { OnboardingWizard } from "./components/OnboardingWizard"
@@ -58,11 +61,6 @@ import { initialState, pushNotice, reduce, type TranscriptState } from "./lib/tr
 // Which repo tab is open is THIS CLIENT's UI state (the server has no global
 // active workspace anymore) — remembered locally so a relaunch restores it.
 const ACTIVE_REPO_KEY = "chunky.activeRepoId"
-
-// Backoff ladder for reattaching a dropped SSE stream (capped at the last entry).
-// A server restart or a sleep/wake used to strand the thread behind a dead error
-// bar until the user switched threads by hand.
-const RECONNECT_DELAYS = [1_000, 2_000, 5_000]
 
 // Grace period after the stream opens before the empty state is allowed to show.
 // The server replays history immediately on attach but never marks the end of it,
@@ -81,6 +79,13 @@ export default function App() {
   const [activeRepoId, setActiveRepoId] = useState<string | null>(null)
   const [agentsMdEnabled, setAgentsMdEnabled] = useState(true)
   const [connError, setConnError] = useState<string | null>(null)
+  // Health of the event stream, tracked SEPARATELY from connError: connError is
+  // for actionable, dismissible failures (a send that didn't land, a session that
+  // wouldn't create), while this is the live attachment state. Dismissing the
+  // error bar must never hide an in-progress reconnect.
+  const [connectionState, setConnectionState] = useState<
+    "connecting" | "connected" | "reconnecting"
+  >("connecting")
   const [booting, setBooting] = useState(true)
   // True from an attach until its stream is open and history has settled. Gates
   // the empty state so it can't flash over a conversation that's still loading.
@@ -130,6 +135,10 @@ export default function App() {
   const sessionIdRef = useRef<string | null>(null)
   const streamAbort = useRef<AbortController | null>(null)
   const activeRepoIdRef = useRef<string | null>(null)
+  // Latest run state for handleSubmit, which picks the send's delivery. A ref, so
+  // reading it doesn't rebuild the callback on every streamed event.
+  const runningRef = useRef(false)
+  runningRef.current = transcript.status === "running"
   // Aborts the /login poll loop (Cancel button, or App unmount).
   const loginAbort = useRef<AbortController | null>(null)
   const settleTimer = useRef<number | null>(null)
@@ -233,10 +242,10 @@ export default function App() {
       setPendingSkill(null)
       void fetchGoal(baseUrl, id).then(setGoal).catch(() => {})
 
-      // The stream is live: drop any "reconnecting…" bar and let the replayed
-      // history land before the empty state is allowed to render.
+      // The stream is live: let the replayed history land before the empty state
+      // is allowed to render.
       const onOpen = () => {
-        setConnError(null)
+        setConnectionState("connected")
         if (settleTimer.current != null) clearTimeout(settleTimer.current)
         settleTimer.current = window.setTimeout(() => {
           settleTimer.current = null
@@ -244,24 +253,42 @@ export default function App() {
         }, REPLAY_SETTLE_MS)
       }
 
-      // Reconnect ladder. Every reattach replays the session's history from the
-      // top, so the transcript is reset before each retry — otherwise the replay
-      // would render on top of what we already have and double every message.
-      for (let attempt = 0; ; attempt++) {
+      // A healthy stream resets the backoff, so an attachment that survived hours
+      // before dropping retries at the base delay rather than the last cap.
+      let attempt = 0
+      const onEvent = (ev: Parameters<typeof applyEvent>[0]) => {
+        attempt = 0
+        applyEvent(ev)
+      }
+
+      // Reconnect ladder (mirrors the TUI's, see lib/reconnect.ts). There is no
+      // resume cursor — every reattach replays the session's FULL history — so the
+      // transcript is reset before each retry; otherwise the replay would render
+      // on top of what we already have and double every message.
+      for (;;) {
         try {
-          await openEventStream(baseUrl, id, applyEvent, ac.signal, onOpen)
-          return // the server closed the stream cleanly
+          setConnectionState(attempt === 0 ? "connecting" : "reconnecting")
+          await openEventStream(baseUrl, id, onEvent, ac.signal, onOpen)
+          // EOF is a disconnect even when the server closed cleanly (restart, a
+          // proxy reaping an idle stream). Returning here would silently detach:
+          // the UI keeps looking connected while no events can ever arrive again.
+          if (ac.signal.aborted) return
+          setConnectionState("reconnecting")
+          // A healthy stream reset `attempt` to 0, so the first drop retries at
+          // the base 500ms (as the TUI does). Unlike the TUI's flat `attempt = 1`,
+          // repeated immediate EOFs — a server closing the stream as fast as we
+          // open it — climb the ladder instead of hot-looping twice a second.
+          attempt += 1
+          await sleep(reconnectDelay(attempt - 1), ac.signal)
         } catch (err) {
-          if (ac.signal.aborted) return
+          if (isIntentionalAbort(err, ac.signal)) return
+          attempt += 1
+          setConnectionState("reconnecting")
           setTranscriptLoading(false)
-          const delay = RECONNECT_DELAYS[Math.min(attempt, RECONNECT_DELAYS.length - 1)]!
-          setConnError(
-            `Lost the connection to Chunky (${(err as Error).message}). Reconnecting in ${Math.round(delay / 1000)}s…`,
-          )
-          await sleep(delay, ac.signal)
-          if (ac.signal.aborted) return
-          setTranscript(initialState)
+          await sleep(reconnectDelay(attempt), ac.signal)
         }
+        if (ac.signal.aborted) return
+        setTranscript(initialState)
       }
     },
     [applyEvent],
@@ -830,7 +857,7 @@ export default function App() {
   )
 
   const handleSubmit = useCallback(
-    async (text: string) => {
+    async (text: string, opts?: { interject?: boolean }) => {
       const trimmed = text.trim()
       if (!trimmed || !config || !sessionId) return
       setDraft("")
@@ -871,8 +898,21 @@ export default function App() {
         setAttachments(images)
         setPendingSkill(skill)
       }
+      // How the server should handle this send. Option+Enter mid-turn asks to cut
+      // in at the next main-thread tool boundary; a plain send while a turn runs
+      // queues behind it (which is also what the server does for "auto" — being
+      // explicit keeps the intent legible on the wire).
+      const delivery: MessageDelivery = opts?.interject
+        ? "interject"
+        : runningRef.current
+          ? "queue"
+          : "auto"
       try {
-        const blocked = await sendMessage(config.baseUrl, sessionId, trimmed, { images, skill })
+        const blocked = await sendMessage(config.baseUrl, sessionId, trimmed, {
+          images,
+          skill,
+          delivery,
+        })
         if (blocked) {
           // Cache guard: the send did NOT run. Confirm before re-sending the
           // whole context, or hand the draft (and its images) back untouched.
@@ -890,15 +930,25 @@ export default function App() {
             restoreDraft()
             return
           }
-          await sendMessage(config.baseUrl, sessionId, trimmed, { images, skill, force: true })
+          await sendMessage(config.baseUrl, sessionId, trimmed, {
+            images,
+            skill,
+            delivery,
+            force: true,
+          })
         }
         setCacheCold(null)
         void refreshSessions(config.baseUrl)
       } catch (err) {
         // The send failed, so the turn never ran: give the draft back instead of
         // eating it. Losing a long prompt to a dropped server is unforgivable.
+        // A full queue is expected back-pressure, not a fault — say so plainly.
         restoreDraft()
-        setConnError(`Couldn't send that message: ${(err as Error).message}`)
+        setConnError(
+          err instanceof QueueFullError
+            ? err.message
+            : `Couldn't send that message: ${(err as Error).message}`,
+        )
       }
     },
     [askConfirm, config, doMode, refreshSessions, runCommand, sessionId],
@@ -1064,8 +1114,16 @@ export default function App() {
           transcriptLoading={transcriptLoading}
           draft={draft}
           onDraftChange={setDraft}
-          onSubmit={(t) => void handleSubmit(t)}
+          // Option+Enter mid-turn arrives here as { interject: true }.
+          onSubmit={(t: string, opts?: { interject?: boolean }) => void handleSubmit(t, opts)}
           onStop={handleStop}
+          // Server-authoritative queue depth (queue.changed) — the bodies live on
+          // the server; this only reports how many are pending.
+          queueCount={transcript.queue.entries.length}
+          // Drives the composer's "reconnecting…" pill. Deliberately separate from
+          // connError: an active reconnect resolves itself, so it isn't something
+          // the user can dismiss.
+          connectionState={connectionState}
           // Suggestion chips PREFILL the composer rather than firing the canned
           // string at the model as a real turn — they're a starting point to edit,
           // not a prompt anyone meant to send verbatim.

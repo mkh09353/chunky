@@ -71,6 +71,8 @@ export function ChatPane({
   onStop,
   onSuggestion,
   transcriptLoading,
+  queueCount,
+  connectionState,
 }: {
   state: TranscriptState
   workspaceName: string
@@ -101,10 +103,12 @@ export function ChatPane({
   skillsOpenSignal?: number
   draft: string
   onDraftChange: (v: string) => void
-  onSubmit: (text: string) => void
+  onSubmit: (text: string, opts?: { interject?: boolean }) => void
   onStop: () => void
   onSuggestion: (text: string) => void
   transcriptLoading?: boolean
+  queueCount?: number
+  connectionState?: "connecting" | "connected" | "reconnecting"
 }) {
   const running = state.status === "running"
   const empty = !hasTranscript(state)
@@ -192,9 +196,9 @@ export function ChatPane({
   // streaming reply). Read the pinned state BEFORE handing off to the parent,
   // which clears the draft and mutates the DOM.
   const handleSubmit = useCallback(
-    (text: string) => {
+    (text: string, opts?: { interject?: boolean }) => {
       const atBottom = wasAtBottomRef.current
-      onSubmit(text)
+      onSubmit(text, opts)
       if (atBottom) repinToBottom()
     },
     [onSubmit, repinToBottom],
@@ -281,6 +285,22 @@ export function ChatPane({
         }
         return
       }
+      // Option+Enter interjects immediately while a turn is running, rather
+      // than adding the message to the normal prompt queue.
+      if (
+        e.key === "Enter" &&
+        e.altKey &&
+        !e.shiftKey &&
+        !e.metaKey &&
+        !e.ctrlKey &&
+        running &&
+        e.target instanceof HTMLElement &&
+        e.target.isContentEditable
+      ) {
+        e.preventDefault()
+        if (draft.trim()) handleSubmit(draft, { interject: true })
+        return
+      }
       // Cmd+Enter → send, mirroring plain Enter (the Astryx composer only submits
       // on Enter without Shift, so Cmd+Enter would otherwise do nothing). Reuse
       // the controlled onSubmit flow, which trims-guards and clears the draft.
@@ -333,7 +353,7 @@ export function ChatPane({
         }
         composer={
           <div className="chunky-readable">
-            {imageNotice ? <div role="status">Image too large — 7MB max</div> : null}
+            {imageNotice ? <div className="chunky-image-notice" role="status">Image too large — 7MB max</div> : null}
             {cacheCold && !running ? (
               // Early heads-up while idle (TUI parity): the next send would
               // rebuild a cold cache — warn BEFORE the tokens are spent.
@@ -357,6 +377,16 @@ export function ChatPane({
               footerActions={
                 <>
                   {running ? <RunningPill since={runningSince} /> : null}
+                  {queueCount != null && queueCount > 0 ? (
+                    <span className="chunky-queue-pill" role="status">
+                      ⏎ queued: {queueCount}
+                    </span>
+                  ) : null}
+                  {connectionState === "reconnecting" ? (
+                    <span className="chunky-reconnect-pill" role="status">
+                      reconnecting…
+                    </span>
+                  ) : null}
                   {goal ? (
                     <span className="chunky-status-pill" title={goal.objective}>
                       goal: {goal.status}

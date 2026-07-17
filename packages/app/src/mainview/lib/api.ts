@@ -12,6 +12,7 @@ import {
   type GoalStateResponse,
   type ListSessionsResponse,
   type LoginInitiation,
+  type MessageDelivery,
   type ModesResponse,
   type Repo,
   type ReposResponse,
@@ -28,6 +29,8 @@ import {
 import { getRpc } from "./rpc"
 
 export type { SendBlockedResponse } from "@chunky/protocol"
+
+export type { MessageDelivery, QueueEntry } from "@chunky/protocol"
 
 export type { Repo } from "@chunky/protocol"
 
@@ -186,14 +189,42 @@ export interface InputImage {
   mediaType: string
 }
 
-/** POST a user message. Returns null when accepted; on a cache-guard 409 the
- *  turn did NOT run — returns the block details so the caller can confirm and
- *  retry with `force: true`. */
+/** The server's prompt queue is capped (20). A send that would overflow it is
+ *  refused with 429 and never ran — typed so the caller can say so plainly and
+ *  hand the draft back rather than showing a bare status code. */
+export class QueueFullError extends Error {
+  constructor(
+    message = "Chunky's prompt queue is full — wait for it to work through the queued messages, then send this again.",
+  ) {
+    super(message)
+    this.name = "QueueFullError"
+  }
+}
+
+/** POST a user message.
+ *
+ *  `delivery` picks how the server handles a send while a turn is in flight:
+ *   - "auto"      — run now if idle, else the server queues it (its default)
+ *   - "queue"     — explicitly queue behind the running turn
+ *   - "interject" — buffer for the next MAIN-thread tool boundary, mid-turn
+ *   - "steer"     — abort the in-flight turn and resume with this (skips the
+ *                   cache guard server-side)
+ *  Only queue/interject/steer go on the wire; "auto" IS the server default, so
+ *  it's omitted.
+ *
+ *  Returns null when accepted. On a cache-guard 409 the turn did NOT run — the
+ *  block details come back so the caller can confirm and retry with force. A 429
+ *  (queue full) throws QueueFullError; the turn did not run either. */
 export async function sendMessage(
   baseUrl: string,
   sessionId: string,
   text: string,
-  opts: { force?: boolean; images?: InputImage[]; skill?: string | null } = {},
+  opts: {
+    force?: boolean
+    images?: InputImage[]
+    skill?: string | null
+    delivery?: MessageDelivery
+  } = {},
 ): Promise<SendBlockedResponse | null> {
   const res = await fetch(baseUrl + ROUTES.sendMessage(sessionId), {
     method: "POST",
@@ -205,10 +236,14 @@ export async function sendMessage(
       // The visible transcript text stays exactly what the user typed; the
       // server injects this skill's body for THIS turn only.
       ...(opts.skill ? { skill: opts.skill } : {}),
+      ...(opts.delivery && opts.delivery !== "auto" ? { delivery: opts.delivery } : {}),
     }),
   })
   if (res.status === 409) {
     return (await res.json()) as SendBlockedResponse
+  }
+  if (res.status === 429) {
+    throw new QueueFullError()
   }
   if (!res.ok && res.status !== 202) {
     throw new Error(`send message failed (${res.status})`)

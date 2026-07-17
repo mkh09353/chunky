@@ -1032,6 +1032,33 @@ body,
   color: var(--color-text-primary);
 }
 
+.chunky-queue-pill,
+.chunky-reconnect-pill {
+  display: inline-flex;
+  align-items: center;
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  padding: var(--spacing-0-5) var(--spacing-2);
+  border-radius: var(--radius-full);
+  background: var(--color-background-surface);
+  white-space: nowrap;
+}
+
+.chunky-image-notice {
+  display: inline-flex;
+  align-items: center;
+  margin-bottom: var(--spacing-1);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  padding: var(--spacing-1) var(--spacing-2);
+  border-radius: var(--radius-element);
+  background: color-mix(in srgb, var(--color-warning) 12%, transparent);
+}
+
+.chunky-reconnect-pill {
+  opacity: 0.8;
+}
+
 .chunky-status-live::before {
   content: "";
   width: 0.5rem;

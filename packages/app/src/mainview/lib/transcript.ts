@@ -1,13 +1,16 @@
 // Browser port of packages/tui/src/transcript.ts — reduce AgentEvents into a
 // thread tree the chat UI can render.
-import type { AgentEvent, GoalStatus, MessageEndReason } from "@chunky/protocol"
+import type { AgentEvent, GoalStatus, MessageEndReason, QueueEntry } from "@chunky/protocol"
 
 export const MAIN = "main"
 
 export type Item =
   /** `from` marks a message injected by ANOTHER session (send_to_session) —
-   *  rendered with provenance instead of as something the user typed. */
-  | { kind: "user"; text: string; from?: string }
+   *  rendered with provenance instead of as something the user typed.
+   *  `interjection` marks one sent mid-turn (delivery: "interject") — same user
+   *  row, but renderers may tag it since the model only sees it at the next
+   *  main-thread tool boundary, not immediately. */
+  | { kind: "user"; text: string; from?: string; interjection?: boolean }
   | { kind: "assistant"; text: string; streaming: boolean; endReason?: MessageEndReason }
   | {
       kind: "tool"
@@ -60,6 +63,11 @@ export interface TranscriptState {
   threads: Record<string, ThreadNode>
   order: string[]
   status: "idle" | "running"
+  /** The server's prompt queue, as of the last `queue.changed`. Purely a
+   *  projection: the queued prompt BODIES live only on the server, which owns
+   *  ordering and draining. This client never drains or re-sends them — it just
+   *  shows what's pending. */
+  queue: { entries: QueueEntry[]; running: boolean }
 }
 
 export const initialState: TranscriptState = {
@@ -68,6 +76,7 @@ export const initialState: TranscriptState = {
   },
   order: [MAIN],
   status: "idle",
+  queue: { entries: [], running: false },
 }
 
 function reduceItems(items: Item[], ev: AgentEvent): Item[] {
@@ -182,6 +191,31 @@ export function reduce(state: TranscriptState, ev: AgentEvent): TranscriptState 
           status: ev.goal?.status ?? "cleared",
           message: ev.message ?? "Goal updated.",
         },
+      ])
+    }
+
+    case "queue.changed": {
+      // Last-wins snapshot, like goal.update: history replay re-runs every
+      // queue.changed in order, so the final one is the true queue. Never merged
+      // or derived locally — the server is authoritative.
+      return { ...state, queue: { entries: ev.entries, running: ev.running } }
+    }
+
+    case "message.interjection": {
+      // The SAME text arrives twice: `injected: false` when the server accepts
+      // and buffers it, then `injected: true` when the run actually feeds it to
+      // the model at a main-thread tool boundary. The acceptance event is the
+      // sole transcript echo; the injection one is a model-continuation marker
+      // and would double the row.
+      //
+      // No replay gate here (unlike the TUI, which pushes this only during
+      // resume replay): the TUI echoes its own sends locally and so must suppress
+      // the server's copy, whereas this client has no local echo and renders
+      // every user row straight from the stream — live and replayed alike.
+      if (ev.injected) return state
+      return updateThreadItems(state, MAIN, (items) => [
+        ...items,
+        { kind: "user", text: ev.text, interjection: true },
       ])
     }
 

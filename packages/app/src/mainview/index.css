@@ -1047,6 +1047,103 @@ body,
   color: var(--color-text-primary);
 }
 
+/* ---- Todo checklist ------------------------------------------------------- */
+
+/* Anchor for the expanded panel, which floats ABOVE the composer footer so it
+   never reflows the input while the agent ticks items off. */
+.chunky-todo-wrap {
+  position: relative;
+  display: inline-flex;
+}
+
+.chunky-todo-pill {
+  max-width: 22rem;
+  border: none;
+  font-family: inherit;
+  cursor: pointer;
+  overflow: hidden;
+}
+
+.chunky-todo-pill:hover,
+.chunky-todo-pill[aria-expanded="true"] {
+  color: var(--color-text-primary);
+}
+
+/* The in-flight item trailing the count — truncates rather than widening. */
+.chunky-todo-current {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  opacity: 0.8;
+}
+
+.chunky-todo-panel {
+  position: absolute;
+  bottom: calc(100% + var(--spacing-1));
+  left: 0;
+  z-index: 20;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-1);
+  min-width: 18rem;
+  max-width: 26rem;
+  max-height: 16rem;
+  overflow-y: auto;
+  padding: var(--spacing-2);
+  border: 1px solid var(--color-border-subtle);
+  border-radius: var(--radius-element);
+  background: var(--color-background-elevated, var(--color-background-surface));
+  box-shadow: var(--shadow-menu, 0 8px 24px rgb(0 0 0 / 18%));
+}
+
+.chunky-todo-item {
+  display: flex;
+  align-items: baseline;
+  gap: var(--spacing-2);
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+}
+
+.chunky-todo-marker {
+  flex: none;
+  width: 1em;
+  text-align: center;
+}
+
+.chunky-todo-text {
+  flex: 1;
+  min-width: 0;
+}
+
+/* Status treatments: in-progress takes the accent, finished/abandoned work
+   recedes so the eye lands on what's live. */
+.chunky-todo-item[data-status="in_progress"] {
+  color: var(--color-text-primary);
+}
+
+.chunky-todo-item[data-status="in_progress"] .chunky-todo-marker {
+  color: var(--color-accent);
+}
+
+.chunky-todo-item[data-status="completed"] .chunky-todo-text,
+.chunky-todo-item[data-status="cancelled"] .chunky-todo-text {
+  text-decoration: line-through;
+  opacity: 0.6;
+}
+
+.chunky-todo-item[data-status="cancelled"] {
+  opacity: 0.7;
+}
+
+.chunky-todo-assignee {
+  flex: none;
+  padding: 0 var(--spacing-1);
+  border-radius: var(--radius-full);
+  background: var(--color-background-surface);
+  font-size: var(--font-size-xs);
+  color: var(--chunky-purple-soft);
+}
+
 .chunky-queue-pill,
 .chunky-reconnect-pill {
   display: inline-flex;

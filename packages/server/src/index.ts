@@ -945,7 +945,7 @@ const server = Bun.serve({
     }
 
     // Match /api/sessions/:id/(events|messages|interrupt|goal|ship|cache)
-    const m = pathname.match(/^\/api\/sessions\/([^/]+)\/(events|messages|interrupt|goal|ship|cache)$/)
+    const m = pathname.match(/^\/api\/sessions\/([^/]+)\/(events|messages|interrupt|goal|todos|ship|cache)$/)
     if (m) {
       const [, sessionId, kind] = m
       // Accept any session that exists on disk (enables resume across restart),
@@ -1199,6 +1199,7 @@ const server = Bun.serve({
           return json({ error: "missing objective or action" }, 400)
         }
       }
+      if (kind === "todos" && req.method === "GET") return json(Store.getTodos(sessionId))
     }
 
     return new Response("not found", { status: 404, headers: CORS })

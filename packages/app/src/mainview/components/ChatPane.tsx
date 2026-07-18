@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react"
 import { ChatComposer, ChatComposerInput, ChatLayout } from "@astryxdesign/core/Chat"
-import type { CacheCold, GoalSnapshot, ModeInfo } from "@chunky/protocol"
+import type { CacheCold, GoalSnapshot, ModeInfo, TodoSnapshot } from "@chunky/protocol"
 import type { AdvisorState, InputImage, ModelSelection } from "../lib/api"
 import { fmtTokens } from "../lib/format"
 import { hasTranscript, type TranscriptState } from "../lib/transcript"
@@ -10,6 +10,7 @@ import { AdvisorPickerMenu } from "./AdvisorPickerMenu"
 import { EmptyChat } from "./EmptyChat"
 import { ModelPickerMenu } from "./ModelPickerMenu"
 import { SkillsBrowserMenu } from "./SkillsBrowserMenu"
+import { TodoChecklist } from "./TodoChecklist"
 import { TranscriptView } from "./TranscriptView"
 
 // Mirror the TUI's clipboard-image cap (~7MB of base64) — bigger pastes are
@@ -53,6 +54,7 @@ export function ChatPane({
   advisor,
   onAdvisorChange,
   goal,
+  todos,
   cacheCold,
   runningSince,
   attachmentCount,
@@ -90,6 +92,8 @@ export function ChatPane({
   advisor: AdvisorState | null
   onAdvisorChange: (a: AdvisorState) => void
   goal: GoalSnapshot | null
+  /** The session's todo checklist (read-only; empty renders nothing). */
+  todos: TodoSnapshot[]
   /** Idle pre-send warning: the NEXT send would rebuild this cold cache. */
   cacheCold: CacheCold | null
   runningSince: number | null
@@ -415,6 +419,7 @@ export function ChatPane({
                       {goal.status === "active" ? ` ${goal.turns}/${goal.maxTurns}` : ""}
                     </span>
                   ) : null}
+                  <TodoChecklist todos={todos} />
                   {attachmentCount > 0 ? (
                     <span className="chunky-attach-chip">
                       {attachments?.length ? (

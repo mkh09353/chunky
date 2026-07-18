@@ -27,6 +27,7 @@ import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { RemoveMessage, SystemMessage } from "@langchain/core/messages"
 import { Store } from "./store.ts"
 import { snapshotSessionTasks } from "./tasks.ts"
+import { todoSummary } from "./todos.ts"
 import { formatSystemReminder } from "./system-reminder.ts"
 import { activeSidekickSummaries, runningChildSummaries } from "./threads.ts"
 import { ADVISOR_SYSTEM_PROMPT, sidekickSystemPrompt, buildSystemPrompt, type EditToolName } from "./prompt.ts"
@@ -54,6 +55,7 @@ import { skillTools } from "./tools/skills.ts"
 import { write } from "./tools/write.ts"
 import { dualTool } from "./tools/result.ts"
 import { getTaskOutput, killTask } from "./tools/task.ts"
+import { updateTodos } from "./tools/todos.ts"
 import { resolveFileToolProfile } from "./settings.ts"
 import { hashlineRead, hashlineEdit } from "./tools/hashline/index.ts"
 
@@ -69,6 +71,7 @@ export function makePostCompactionReminder() {
         sidekicks: activeSidekickSummaries(sessionId),
         children: runningChildSummaries(sessionId),
         tasks: snapshotSessionTasks(sessionId).map((task) => ({ taskId: task.taskId, status: task.status, command: task.command.split(/\r?\n/, 1)[0] })),
+        todos: Store.getTodos(sessionId).map((todo) => ({ id: todo.id, content: todo.content, status: todo.status, assignee: todo.assignee })),
       }
     },
   ) {
@@ -223,6 +226,8 @@ export function executorToolsFor(selection: AgentSelection) {
     ...(sidekickSel ? [sidekick] : []),
     spawnThread,
     ...goalTools,
+    // DeepAgents' write_todos was deliberately removed; this is its intentional lead-only replacement.
+    updateTodos,
     shipGoal,
     ...sessionTools,
     workflow,

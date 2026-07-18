@@ -82,6 +82,7 @@ export type AgentEvent =
    * blocks, or pauses. `goal` is the current snapshot (null once cleared) and
    * `message` is a short human line the TUI renders as a transcript marker. */
   | { type: "goal.update"; sessionId: string; goal: GoalSnapshot | null; message?: string }
+  | { type: "todos.update"; sessionId: string; todos: TodoSnapshot[] }
   /** A dynamic-workflow phase boundary — groups the sub-agents that follow under
    *  `title` in the owning thread's transcript. `threadId` is the thread that ran
    *  the `workflow` tool (omitted for the main thread). The workflow's sub-agents
@@ -102,6 +103,9 @@ export type GoalStatus = "active" | "paused" | "blocked" | "complete"
  *  to dynamic-workflow runs (each sub-agent a real child thread, typically on a
  *  cheaper model), judge results between runs, and keep its own context lean. */
 export type GoalMode = "direct" | "workflows"
+
+export type TodoStatus = "pending" | "in_progress" | "completed" | "cancelled"
+export interface TodoSnapshot { id: string; content: string; status: TodoStatus; assignee?: string; activeForm?: string }
 
 /** The wire snapshot of a session's goal (a subset of the server's stored Goal). */
 export interface GoalSnapshot {
@@ -342,6 +346,8 @@ export const ROUTES = {
   // POST GoalRequest -> GoalStateResponse. Set an objective (starts the loop) or
   // run a lifecycle action (pause/resume/clear).
   goal: (id: string) => `/api/sessions/${id}/goal`,
+  // GET -> TodoSnapshot[] — the session's current todo checklist (read-only).
+  todos: (id: string) => `/api/sessions/${id}/todos`,
   // POST ShipRequest -> 202. Ask THIS session to write a handoff brief and ship
   // it to a fresh workflows-mode goal session (via the ship_goal tool).
   ship: (id: string) => `/api/sessions/${id}/ship`,

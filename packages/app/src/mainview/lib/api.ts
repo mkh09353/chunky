@@ -24,6 +24,7 @@ import {
   type SkillReposResponse,
   type SkillCatalogEntry,
   type SkillsCatalogResponse,
+  type TodoSnapshot,
 } from "@chunky/protocol"
 
 import { getRpc } from "./rpc"
@@ -283,6 +284,20 @@ export async function fetchGoal(baseUrl: string, sessionId: string): Promise<Goa
   if (!res.ok) throw new Error(`goal status failed (${res.status})`)
   const data = (await res.json()) as GoalStateResponse
   return data.goal
+}
+
+/** The session's todo checklist. Read-only: the agent owns the list and pushes
+ *  updates over `todos.update`. Tolerant by design — an older server (no route)
+ *  or a transport hiccup just means "no todos", never a broken composer. */
+export async function fetchTodos(baseUrl: string, sessionId: string): Promise<TodoSnapshot[]> {
+  try {
+    const res = await fetch(baseUrl + ROUTES.todos(sessionId))
+    if (!res.ok) return []
+    const data = (await res.json()) as TodoSnapshot[] | null
+    return Array.isArray(data) ? data : []
+  } catch {
+    return []
+  }
 }
 
 /** Set an objective (starts the autonomous loop; the server streams goal.update

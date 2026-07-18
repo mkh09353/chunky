@@ -25,6 +25,7 @@ export const CORE_TOOL_NAMES = Object.freeze([
   "sidekick",
   "search_skills",
   "load_skill",
+  "update_todos",
 ] as const)
 
 const CORE_TOOL_NAME_SET = new Set<string>(CORE_TOOL_NAMES)

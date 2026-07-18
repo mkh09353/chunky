@@ -8,11 +8,13 @@ export interface ReminderGoal {
 export interface ReminderTask { taskId: string; status: string; command: string }
 export interface ReminderSidekick { seat: string; brief: string }
 export interface ReminderChild { threadId: string; title: string }
+export interface ReminderTodo { id: string; content: string; status: string; assignee?: string }
 export interface LiveSessionState {
   goal?: ReminderGoal
   sidekicks?: ReminderSidekick[]
   children?: ReminderChild[]
   tasks?: ReminderTask[]
+  todos?: ReminderTodo[]
 }
 
 const oneLine = (value: string, max = 140) => {
@@ -28,6 +30,7 @@ export function formatSystemReminder(state: LiveSessionState): string | null {
     const g = state.goal
     lines.push("## Active Goal", `status: ${safe(g.status)} | mode: ${safe(g.mode)} | turn ${g.turns}/${g.maxTurns}`, `<untrusted_objective>${safe(g.objective, 500)}</untrusted_objective>`)
   }
+  if (state.todos?.length) lines.push("## Session Todos", ...state.todos.map((t) => `- ${safe(t.status)} — ${safe(t.content)}${t.assignee ? ` [${safe(t.assignee)}]` : ""}`))
   if (state.sidekicks?.length) lines.push("## Active Sidekicks", ...state.sidekicks.map((s) => `- ${safe(s.seat)} — ${safe(s.brief)}`))
   if (state.children?.length) lines.push("## Running Child Threads", ...state.children.map((c) => `- ${safe(c.threadId, 80)} — ${safe(c.title)}`))
   if (state.tasks?.length) lines.push("## Background Tasks", ...state.tasks.map((t) => `- ${safe(t.taskId, 80)} (${safe(t.status)}) — ${safe(t.command)}`))

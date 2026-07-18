@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react"
-import type { CacheCold, GoalSnapshot, ModeInfo, ModeSpec, SessionSummary } from "@chunky/protocol"
+import type { CacheCold, GoalSnapshot, ModeInfo, ModeSpec, SessionSummary, TodoSnapshot } from "@chunky/protocol"
 import { AppShell } from "@astryxdesign/core/AppShell"
 import { SideNav, SideNavItem, SideNavSection } from "@astryxdesign/core/SideNav"
 import { TopNav, TopNavHeading } from "@astryxdesign/core/TopNav"
@@ -15,6 +15,7 @@ import {
   fetchCacheGuard,
   fetchCacheStatus,
   fetchGoal,
+  fetchTodos,
   fetchModel,
   fetchModes,
   initiateLogin,
@@ -115,6 +116,9 @@ export default function App() {
   const [advisor, setAdvisorState] = useState<AdvisorState | null>(null)
   // The session's current goal (composer pill; tracked from goal.update events).
   const [goal, setGoal] = useState<GoalSnapshot | null>(null)
+  // The session's todo checklist (composer checklist pill; tracked from
+  // todos.update events, seeded from REST on attach like the goal).
+  const [todos, setTodos] = useState<TodoSnapshot[]>([])
   // Passive cold-cache indicator: while idle, the NEXT send would re-send this
   // much context. Shown above the composer so the warning lands BEFORE you send.
   const [cacheCold, setCacheCold] = useState<CacheCold | null>(null)
@@ -222,6 +226,9 @@ export default function App() {
     // Track goal state for the composer pill. History replay (resume) re-runs
     // these in order, so the last one wins and the pill reflects the true state.
     if (ev.type === "goal.update") setGoal(ev.goal)
+    // Last-wins snapshot: every todos.update carries the WHOLE list, so replay
+    // and live updates converge on the same state without merging.
+    if (ev.type === "todos.update") setTodos(ev.todos)
   }, [])
 
   const refreshSessions = useCallback(
@@ -254,10 +261,12 @@ export default function App() {
       // replay over SSE, but a session with no goal never emits one — so seed
       // from the REST snapshot rather than trusting replay alone.
       setGoal(null)
+      setTodos([])
       setCacheCold(null)
       setAttachments([])
       setPendingSkill(null)
       void fetchGoal(baseUrl, id).then(setGoal).catch(() => {})
+      void fetchTodos(baseUrl, id).then(setTodos)
 
       // The stream is live: let the replayed history land before the empty state
       // is allowed to render.
@@ -1194,6 +1203,7 @@ export default function App() {
           advisor={advisor}
           onAdvisorChange={setAdvisorState}
           goal={goal}
+          todos={todos}
           cacheCold={cacheCold}
           runningSince={runningSince}
           attachmentCount={attachments.length}

@@ -4,6 +4,7 @@
 import { openSqlite, retrySqliteTransaction } from "./sqlite.ts"
 import type { AgentEvent, SessionSummary } from "@chunky/protocol"
 import type { Goal } from "./goal.ts"
+import type { TodoSnapshot } from "./todos.ts"
 import type { AgentSelection } from "./providers/registry.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
 
@@ -37,6 +38,10 @@ db.exec(`
     max_turns     INTEGER NOT NULL,
     evidence      TEXT,
     blocked_reason TEXT
+  );
+  CREATE TABLE IF NOT EXISTS todos (
+    session_id TEXT PRIMARY KEY,
+    json TEXT NOT NULL
   );
 `)
 
@@ -93,6 +98,9 @@ const stmtUpsertGoal = db.query(
      max_turns = $max_turns, evidence = $evidence, blocked_reason = $blocked_reason`,
 )
 const stmtClearGoal = db.query("DELETE FROM goals WHERE session_id = ?")
+const stmtGetTodos = db.query("SELECT json FROM todos WHERE session_id = ?")
+const stmtPutTodos = db.query("INSERT INTO todos (session_id, json) VALUES (?, ?) ON CONFLICT(session_id) DO UPDATE SET json = excluded.json")
+const stmtClearTodos = db.query("DELETE FROM todos WHERE session_id = ?")
 const stmtSelection = db.query("SELECT selection FROM sessions WHERE id = ?")
 const stmtPinSelection = db.query("UPDATE sessions SET selection = ? WHERE id = ?")
 const appendEventTx = (sessionId: string, ev: AgentEvent, now: number) => {
@@ -130,6 +138,12 @@ function rowToGoal(row: GoalRow): Goal {
 }
 
 export const Store = {
+  getTodos(sessionId: string): TodoSnapshot[] {
+    const row = stmtGetTodos.get(sessionId) as { json: string } | null
+    return row ? JSON.parse(row.json) as TodoSnapshot[] : []
+  },
+  putTodos(sessionId: string, todos: TodoSnapshot[]): void { stmtPutTodos.run(sessionId, JSON.stringify(todos)) },
+  clearTodos(sessionId: string): void { stmtClearTodos.run(sessionId) },
   createSession(id: string, title = "New session", workspace: string = LAUNCH_WORKSPACE): void {
     const now = Date.now()
     stmtCreate.run(id, title, now, now, workspace)

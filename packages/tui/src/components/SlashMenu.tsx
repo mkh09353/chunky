@@ -11,6 +11,8 @@ export interface Command {
 export const COMMANDS: Command[] = [
   { name: "/clear", description: "Clear the conversation" },
   { name: "/resume", description: "Resume a previous thread in this repo" },
+  { name: "/rewind", description: "Restore files and conversation to an earlier turn" },
+  { name: "/fork", description: "Branch this session, optionally in a Git worktree" },
   { name: "/help", description: "Show help" },
   { name: "/login", description: "Log in to an OAuth provider (Grok / Codex)" },
   { name: "/onboard", description: "Open the first-run onboarding guide" },

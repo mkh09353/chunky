@@ -2,7 +2,7 @@
 // Makes transcripts survive a server restart, so reconnecting to a sessionId
 // replays the full prior run — i.e. "resume". Kept deliberately tiny.
 import { openSqlite, retrySqliteTransaction } from "./sqlite.ts"
-import type { AgentEvent, SessionSummary } from "@chunky/protocol"
+import type { AgentEvent, RewindPoint, SessionSummary } from "@chunky/protocol"
 import type { Goal } from "./goal.ts"
 import type { TodoSnapshot } from "./todos.ts"
 import type { AgentSelection } from "./providers/registry.ts"
@@ -42,6 +42,20 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS todos (
     session_id TEXT PRIMARY KEY,
     json TEXT NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS session_turns (
+    session_id TEXT NOT NULL, turn_index INTEGER NOT NULL, start_event_seq INTEGER NOT NULL,
+    end_event_seq INTEGER, snapshot_commit TEXT, anchor_checkpoint_id TEXT, user_text TEXT NOT NULL,
+    status TEXT NOT NULL, created_at INTEGER NOT NULL, completed_at INTEGER,
+    PRIMARY KEY (session_id, turn_index)
+  );
+  CREATE TABLE IF NOT EXISTS session_branches (
+    child_session_id TEXT PRIMARY KEY, parent_session_id TEXT NOT NULL, fork_event_seq INTEGER NOT NULL,
+    kind TEXT NOT NULL CHECK(kind IN ('normal', 'worktree')), directive TEXT, created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS session_workspaces (
+    session_id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('directory', 'worktree')), path TEXT NOT NULL,
+    git_common_dir TEXT, branch TEXT, parent_session_id TEXT, created_at INTEGER NOT NULL
   );
 `)
 
@@ -89,6 +103,14 @@ const stmtTitleOf = db.query("SELECT title FROM sessions WHERE id = ?")
 const stmtNextSeq = db.query("SELECT COALESCE(MAX(seq), -1) + 1 AS n FROM events WHERE session_id = ?")
 const stmtInsertEvent = db.query("INSERT INTO events (session_id, seq, json) VALUES (?, ?, ?)")
 const stmtHistory = db.query("SELECT json FROM events WHERE session_id = ? ORDER BY seq ASC")
+const stmtLastSeq = db.query("SELECT MAX(seq) AS n FROM events WHERE session_id = ?")
+const stmtNextTurn = db.query("SELECT COALESCE(MAX(turn_index), 0) + 1 AS n FROM session_turns WHERE session_id = ?")
+const stmtInsertTurn = db.query("INSERT INTO session_turns (session_id, turn_index, start_event_seq, snapshot_commit, user_text, status, created_at) VALUES (?, ?, ?, ?, ?, 'running', ?)")
+const stmtCompleteTurn = db.query("UPDATE session_turns SET end_event_seq = ?, anchor_checkpoint_id = ?, status = 'complete', completed_at = ? WHERE session_id = ? AND turn_index = ?")
+const stmtPoints = db.query("SELECT turn_index, created_at, user_text, snapshot_commit, anchor_checkpoint_id FROM session_turns WHERE session_id = ? ORDER BY turn_index DESC")
+const stmtTurn = db.query("SELECT * FROM session_turns WHERE session_id = ? AND turn_index = ?")
+const stmtTruncateEvents = db.query("DELETE FROM events WHERE session_id = ? AND seq >= ?")
+const stmtTruncateTurns = db.query("DELETE FROM session_turns WHERE session_id = ? AND turn_index >= ?")
 const stmtGetGoal = db.query("SELECT * FROM goals WHERE session_id = ?")
 const stmtUpsertGoal = db.query(
   `INSERT INTO goals (session_id, objective, status, mode, created_at, updated_at, turns, max_turns, evidence, blocked_reason)
@@ -103,6 +125,12 @@ const stmtPutTodos = db.query("INSERT INTO todos (session_id, json) VALUES (?, ?
 const stmtClearTodos = db.query("DELETE FROM todos WHERE session_id = ?")
 const stmtSelection = db.query("SELECT selection FROM sessions WHERE id = ?")
 const stmtPinSelection = db.query("UPDATE sessions SET selection = ? WHERE id = ?")
+const stmtCopyEvents = db.query("INSERT INTO events (session_id, seq, json) SELECT ?, seq, json FROM events WHERE session_id = ? ORDER BY seq")
+const stmtCopyTurns = db.query("INSERT INTO session_turns (session_id, turn_index, start_event_seq, end_event_seq, snapshot_commit, anchor_checkpoint_id, user_text, status, created_at, completed_at) SELECT ?, turn_index, start_event_seq, end_event_seq, snapshot_commit, anchor_checkpoint_id, user_text, status, created_at, completed_at FROM session_turns WHERE session_id = ?")
+const stmtBranch = db.query("INSERT INTO session_branches VALUES (?, ?, ?, ?, ?, ?)")
+const stmtWorktree = db.query("INSERT INTO session_workspaces VALUES (?, 'worktree', ?, ?, ?, ?, ?)")
+const stmtBranchOf = db.query("SELECT * FROM session_branches WHERE child_session_id = ?")
+const stmtWorkspaceMeta = db.query("SELECT * FROM session_workspaces WHERE session_id = ?")
 const appendEventTx = (sessionId: string, ev: AgentEvent, now: number) => {
   const row = stmtNextSeq.get(sessionId) as { n: number }
   stmtInsertEvent.run(sessionId, row.n, JSON.stringify(ev))
@@ -164,6 +192,38 @@ export const Store = {
   /** Persist one event and bump the session's last_activity. */
   appendEvent(sessionId: string, ev: AgentEvent): void {
     retrySqliteTransaction(db, () => appendEventTx(sessionId, ev, Date.now()))
+  },
+
+  /** Sequence assigned to the next persisted event (for a turn boundary). */
+  nextEventSeq(sessionId: string): number {
+    return (stmtNextSeq.get(sessionId) as { n: number }).n
+  },
+
+  startTurn(sessionId: string, userText: string, snapshotCommit: string | null): number {
+    const turn = (stmtNextTurn.get(sessionId) as { n: number }).n
+    stmtInsertTurn.run(sessionId, turn, this.nextEventSeq(sessionId), snapshotCommit, userText, Date.now())
+    return turn
+  },
+
+  completeTurn(sessionId: string, turn: number, anchorCheckpointId: string | null): void {
+    const last = stmtLastSeq.get(sessionId) as { n: number | null }
+    stmtCompleteTurn.run(last.n, anchorCheckpointId, Date.now(), sessionId, turn)
+  },
+
+  rewindPoints(sessionId: string): RewindPoint[] {
+    return (stmtPoints.all(sessionId) as Array<{ turn_index: number; created_at: number; user_text: string; snapshot_commit: string | null; anchor_checkpoint_id: string | null }>).map((r) => ({
+      turn: r.turn_index, createdAt: r.created_at, userText: r.user_text,
+      complete: !!r.snapshot_commit && !!r.anchor_checkpoint_id,
+    }))
+  },
+
+  turn(sessionId: string, turn: number): { startEventSeq: number; snapshotCommit: string | null; anchorCheckpointId: string | null } | null {
+    const r = stmtTurn.get(sessionId, turn) as { start_event_seq: number; snapshot_commit: string | null; anchor_checkpoint_id: string | null } | null
+    return r && { startEventSeq: r.start_event_seq, snapshotCommit: r.snapshot_commit, anchorCheckpointId: r.anchor_checkpoint_id }
+  },
+
+  rewindTranscript(sessionId: string, turn: number, startEventSeq: number): void {
+    retrySqliteTransaction(db, () => { stmtTruncateEvents.run(sessionId, startEventSeq); stmtTruncateTurns.run(sessionId, turn) })
   },
 
   history(sessionId: string): AgentEvent[] {
@@ -282,5 +342,31 @@ export const Store = {
   /** Pin (or with null, unpin) the session's model selection. */
   pinSelection(sessionId: string, selection: PinnedSelection | null): void {
     stmtPinSelection.run(selection ? JSON.stringify(selection) : null, sessionId)
+  },
+
+  /** Atomically materialize a current-state child. Snapshot commits remain
+   * reachable by their parent refs; copied turn metadata lets the child rewind. */
+  forkSession(childId: string, parentId: string, workspace: string, kind: "normal" | "worktree", directive?: string, worktree?: { gitCommonDir: string; branch: string }): void {
+    const parent = db.query("SELECT title, selection FROM sessions WHERE id = ?").get(parentId) as { title: string; selection: string | null }
+    const now = Date.now()
+    retrySqliteTransaction(db, () => {
+      stmtCreate.run(childId, `${parent.title} · fork`, now, now, workspace)
+      if (parent.selection) stmtPinSelection.run(parent.selection, childId)
+      stmtCopyEvents.run(childId, parentId)
+      stmtCopyTurns.run(childId, parentId)
+      const last = stmtLastSeq.get(parentId) as { n: number | null }
+      stmtBranch.run(childId, parentId, last.n ?? -1, kind, directive ?? null, now)
+      if (kind === "worktree" && worktree) stmtWorktree.run(childId, workspace, worktree.gitCommonDir, worktree.branch, parentId, now)
+    })
+  },
+
+  forkBranchOf(sessionId: string): { parentSessionId: string; kind: "normal" | "worktree"; directive: string | null } | null {
+    const row = stmtBranchOf.get(sessionId) as { parent_session_id: string; kind: "normal" | "worktree"; directive: string | null } | null
+    return row && { parentSessionId: row.parent_session_id, kind: row.kind, directive: row.directive }
+  },
+
+  workspaceMetadataOf(sessionId: string): { path: string; branch: string; parentSessionId: string } | null {
+    const row = stmtWorkspaceMeta.get(sessionId) as { path: string; branch: string; parent_session_id: string } | null
+    return row && { path: row.path, branch: row.branch, parentSessionId: row.parent_session_id }
   },
 }

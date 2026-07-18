@@ -11,10 +11,16 @@ import {
   type GoalRequest,
   type SendBlockedResponse,
   type ShipRequest,
+  type RewindRequest,
+  type ForkRequest,
+  type ForkResponse,
 } from "@chunky/protocol"
 import { runAgent, type InputImage, type InterjectionBoundary } from "./run.ts"
 import { shipHandoffPrompt } from "./tools/ship.ts"
 import { Store } from "./store.ts"
+import { restoreSnapshot, snapshotWorkspace } from "./shadow-git.ts"
+import { createForkWorktree, removeForkWorktree } from "./worktree-fork.ts"
+import { anchorLatestCheckpoint, cloneThreadAtCheckpoint, rewindCheckpoints } from "./bun-sqlite-saver.ts"
 import { DEFAULT_MAX_TURNS, firstLine, goalKickoffPrompt, toSnapshot, type Goal } from "./goal.ts"
 import { invalidateAgent } from "./agent.ts"
 import {
@@ -77,6 +83,7 @@ import {
   addRepo,
   listRepos,
   removeRepo,
+  repoId,
   repoById,
   selectRepo,
 } from "./repos.ts"
@@ -110,6 +117,9 @@ const runDone = new Map<string, Promise<void>>()
 const promptQueues = new Map<string, PromptQueue>()
 const interjections = new Map<string, InterjectionBuffer>()
 const queueBusy = new Set<string>()
+// Bus delivery emits its user event before it asks the bus to dispatch. Keep
+// that root-turn identity across the two callbacks.
+const busTurns = new Map<string, number[]>()
 const encoder = new TextEncoder()
 
 let shuttingDown = false
@@ -142,7 +152,7 @@ function hasLiveSubscribers(): boolean {
 
 /** Persist an event, then push it to every connected subscriber of the session. */
 function emitTo(sessionId: string, ev: AgentEvent): void {
-  if (ev.type !== "tool.progress") Store.appendEvent(sessionId, ev)
+  if (ev.type !== "tool.progress" && ev.type !== "session.rewound") Store.appendEvent(sessionId, ev)
   const frame = encoder.encode(sse(ev))
   for (const controller of subscribers(sessionId)) {
     try {
@@ -206,6 +216,7 @@ function startRun(
   text: string,
   images?: InputImage[],
   options?: { suppressCacheWarning?: boolean },
+  turn?: number,
 ): Promise<void> {
   const ac = new AbortController()
   running.set(sessionId, ac)
@@ -225,6 +236,7 @@ function startRun(
       emitTo(sessionId, { type: "session.status", sessionId, status: "idle" })
     })
     .finally(() => {
+      if (turn != null) Store.completeTurn(sessionId, turn, anchorLatestCheckpoint(sessionId, turn))
       if (running.get(sessionId) === ac) running.delete(sessionId)
       if (runDone.get(sessionId) === done) runDone.delete(sessionId)
       drainQueue(sessionId)
@@ -243,8 +255,9 @@ function startRun(
         if (next) {
           queueBusy.add(sessionId)
           emitTo(sessionId, { type: "queue.changed", sessionId, entries: promptQueues.get(sessionId)?.snapshot() ?? [], running: false })
+          const nextTurn = beginUserTurn(sessionId, next.shown)
           emitTo(sessionId, { type: "message.user", text: next.shown })
-          void startRun(sessionId, next.prompt, next.images)
+          void startRun(sessionId, next.prompt, next.images, undefined, nextTurn)
         } else {
           emitTo(sessionId, { type: "queue.changed", sessionId, entries: [], running: false })
         }
@@ -272,16 +285,40 @@ function dispatchRun(
   text: string,
   images?: InputImage[],
   options?: { suppressCacheWarning?: boolean },
+  turn?: number,
 ): void {
   running.get(sessionId)?.abort()
-  void startRun(sessionId, text, images, options)
+  void startRun(sessionId, text, images, options, turn)
 }
+
+/** Record a visible root user turn before its transcript event so rewind can
+ * remove that event and everything after it. Snapshot failure is intentional
+ * degradation: the agent still runs, but that point is unavailable to rewind. */
+function beginUserTurn(sessionId: string, text: string): number {
+  const workspace = Store.workspaceOf(sessionId) ?? LAUNCH_WORKSPACE
+  const snapshot = snapshotWorkspace(workspace, `refs/sessions/${sessionId}`)
+  return Store.startTurn(sessionId, text, snapshot)
+}
+
+function sessionIsBusy(sessionId: string): boolean {
+  const activeChildren = new Map<string, boolean>()
+  for (const ev of Store.history(sessionId)) {
+    if (ev.type === "thread.spawn") activeChildren.set(ev.threadId, true)
+    if (ev.type === "thread.status") activeChildren.set(ev.threadId, ev.status === "running")
+  }
+  return running.has(sessionId) || [...activeChildren.values()].some(Boolean)
+}
+
 
 // Wire the inter-session tools (list_sessions / send_to_session) to this
 // module's run machinery. Bus deliveries never abort in-flight turns — they
 // queue behind them (see session-bus.ts).
 installSessionBus({
   emitUserMessage(sessionId, text, from) {
+    const turn = beginUserTurn(sessionId, text)
+    const turns = busTurns.get(sessionId) ?? []
+    turns.push(turn)
+    busTurns.set(sessionId, turns)
     emitTo(sessionId, { type: "message.user", text, from })
   },
   emitEvent(sessionId, ev) {
@@ -293,7 +330,8 @@ installSessionBus({
     // async-local store so its LLM tokens stream only through its own
     // iterator — not into the sender's `messages` stream via the ambient
     // callback context (same isolation as ThreadManager.spawn).
-    return AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () => startRun(sessionId, text))
+    const turn = busTurns.get(sessionId)?.shift()
+    return AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () => startRun(sessionId, text, undefined, undefined, turn))
   },
   isRunning(sessionId) {
     return running.has(sessionId)
@@ -945,12 +983,81 @@ const server = Bun.serve({
     }
 
     // Match /api/sessions/:id/(events|messages|interrupt|goal|ship|cache)
-    const m = pathname.match(/^\/api\/sessions\/([^/]+)\/(events|messages|interrupt|goal|todos|ship|cache)$/)
+    const m = pathname.match(/^\/api\/sessions\/([^/]+)\/(events|messages|interrupt|goal|todos|ship|cache|rewind-points|rewind|fork)$/)
     if (m) {
       const [, sessionId, kind] = m
       // Accept any session that exists on disk (enables resume across restart),
       // not just ones created in this process.
       if (!Store.exists(sessionId)) return json({ error: "unknown session" }, 404)
+
+      if (kind === "rewind-points" && req.method === "GET") {
+        return json({ points: Store.rewindPoints(sessionId) })
+      }
+
+      if (kind === "fork" && req.method === "POST") {
+        let body: ForkRequest
+        try { body = await req.json() as ForkRequest } catch { return json({ error: "invalid JSON body" }, 400) }
+        if (body.worktree != null && typeof body.worktree !== "boolean") return json({ error: "invalid worktree" }, 400)
+        if (body.directive != null && typeof body.directive !== "string") return json({ error: "invalid directive" }, 400)
+        if (sessionIsBusy(sessionId)) return json({ error: "session or child thread is running" }, 409)
+        const workspace = Store.workspaceOf(sessionId) ?? LAUNCH_WORKSPACE
+        const childId = randomUUID()
+        const snapshot = snapshotWorkspace(workspace, `refs/sessions/${sessionId}`)
+        if (!snapshot) return json({ error: "could not snapshot workspace" }, 409)
+        let childWorkspace = workspace
+        let worktree: { path: string; branch: string } | undefined
+        let commonDir = ""
+        if (body.worktree) {
+          const created = createForkWorktree(workspace, childId, (target) => restoreSnapshot(workspace, snapshot, target))
+          if (!created) return json({ error: "could not create or restore worktree" }, 409)
+          childWorkspace = created.path; worktree = { path: created.path, branch: created.branch }; commonDir = created.gitCommonDir
+        }
+        try {
+          Store.forkSession(childId, sessionId, childWorkspace, body.worktree ? "worktree" : "normal", body.directive, worktree ? { gitCommonDir: commonDir, branch: worktree.branch } : undefined)
+          const latest = Store.rewindPoints(sessionId).find((p) => p.complete)
+          if (latest) {
+            const point = Store.turn(sessionId, latest.turn)
+            if (point?.anchorCheckpointId) cloneThreadAtCheckpoint(sessionId, childId, point.anchorCheckpointId)
+          }
+        } catch (err) {
+          if (worktree) removeForkWorktree(workspace, childWorkspace, worktree.branch)
+          return json({ error: "could not persist fork" }, 409)
+        }
+        subscribers(childId)
+        if (body.directive?.trim()) {
+          const turn = beginUserTurn(childId, body.directive)
+          emitTo(childId, { type: "message.user", text: body.directive })
+          AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () => dispatchRun(childId, body.directive!, undefined, undefined, turn))
+        }
+        const response: ForkResponse = { sessionId: childId, workspace: childWorkspace, parentSessionId: sessionId, ...(worktree ? { worktree } : {}) }
+        return json(response)
+      }
+
+      if (kind === "rewind" && req.method === "POST") {
+        let body: RewindRequest
+        try { body = await req.json() as RewindRequest } catch { return json({ error: "invalid JSON body" }, 400) }
+        if (!Number.isInteger(body.turn) || body.turn < 1) return json({ error: "invalid turn" }, 400)
+        // The root registry covers root runs. Child/sidekick activity is visible
+        // in the persisted lifecycle markers, including child threads spawned by
+        // the current root run.
+        if (sessionIsBusy(sessionId)) {
+          return json({ error: "session or child thread is running" }, 409)
+        }
+        const point = Store.turn(sessionId, body.turn)
+        if (!point) return json({ error: "unknown turn" }, 409)
+        if (!point.snapshotCommit || !point.anchorCheckpointId) return json({ error: "turn is incomplete or cannot be rewound" }, 409)
+        const workspace = Store.workspaceOf(sessionId) ?? LAUNCH_WORKSPACE
+        // Best effort only: a safety ref improves recovery, but must not make an
+        // otherwise valid rewind impossible.
+        snapshotWorkspace(workspace, `refs/sessions/${sessionId}-pre-rewind`)
+        if (!restoreSnapshot(workspace, point.snapshotCommit)) return json({ error: "could not restore workspace snapshot" }, 409)
+        Store.rewindTranscript(sessionId, body.turn, point.startEventSeq)
+        rewindCheckpoints(sessionId, point.anchorCheckpointId)
+        Store.clearGoal(sessionId)
+        Store.clearTodos(sessionId)
+        emitTo(sessionId, { type: "session.rewound", sessionId, turn: body.turn })
+        return json({ sessionId, turn: body.turn })
+      }
 
       // GET .../events -> SSE. Replays persisted history first (== resume), then live.
       if (kind === "events" && req.method === "GET") {
@@ -1085,12 +1192,13 @@ const server = Bun.serve({
           return new Response(null, { status: 202, headers: CORS })
         }
 
+        const turn = visibleText ? beginUserTurn(sessionId, visibleText) : undefined
         if (visibleText) emitTo(sessionId, { type: "message.user", text: visibleText })
 
         // Abort any prior in-flight turn, then run this one (tracked so /interrupt
         // can cancel it). If a goal is active, runAgent keeps continuing it after.
         // A force-confirmed send skips the redundant turn-start cache notice.
-        dispatchRun(sessionId, text, images, { suppressCacheWarning: force })
+        dispatchRun(sessionId, text, images, { suppressCacheWarning: force }, turn)
 
         return new Response(null, { status: 202, headers: CORS })
       }

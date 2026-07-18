@@ -38,14 +38,21 @@ export function pruneCheckpointHistory(
 ): void {
   const boundedLimit = Math.max(1, Math.floor(limit))
   const tx = () => {
+    // Kept here too because this exported helper is exercised against bare
+    // in-memory test databases, outside BunSqliteSaver.setup().
+    db.exec(`CREATE TABLE IF NOT EXISTS checkpoint_anchors (
+      thread_id TEXT NOT NULL, checkpoint_id TEXT NOT NULL, turn_index INTEGER NOT NULL,
+      PRIMARY KEY (thread_id, checkpoint_id));`)
     db.prepare(
       `DELETE FROM checkpoints
        WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id NOT IN (
          SELECT checkpoint_id FROM checkpoints
          WHERE thread_id = ? AND checkpoint_ns = ?
          ORDER BY checkpoint_id DESC LIMIT ?
+       ) AND checkpoint_id NOT IN (
+         SELECT checkpoint_id FROM checkpoint_anchors WHERE thread_id = ?
        )`,
-    ).run(threadId, checkpointNs, threadId, checkpointNs, boundedLimit)
+    ).run(threadId, checkpointNs, threadId, checkpointNs, boundedLimit, threadId)
     db.prepare(
       `DELETE FROM writes
        WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id NOT IN (
@@ -120,6 +127,9 @@ export class BunSqliteSaver extends BaseCheckpointSaver {
       thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL,
       task_id TEXT NOT NULL, idx INTEGER NOT NULL, channel TEXT NOT NULL, type TEXT, value BLOB,
       PRIMARY KEY (thread_id, checkpoint_ns, checkpoint_id, task_id, idx));`)
+    this.db.exec(`CREATE TABLE IF NOT EXISTS checkpoint_anchors (
+      thread_id TEXT NOT NULL, checkpoint_id TEXT NOT NULL, turn_index INTEGER NOT NULL,
+      PRIMARY KEY (thread_id, checkpoint_id));`)
     retrySqliteBusy(() => pruneAllCheckpointHistory(this.db))
     this.withoutCheckpoint = prepareSql(this.db, false)
     this.withCheckpoint = prepareSql(this.db, true)
@@ -313,4 +323,52 @@ export class BunSqliteSaver extends BaseCheckpointSaver {
         ? maxChannelVersion(...(Object.values(checkpoint.channel_versions) as any[]))
         : this.getNextVersion(undefined)
   }
+}
+
+/** The rewind API uses the same graph DB, even when no saver instance happens
+ * to be active in this request. */
+function graphDb(): Database {
+  const db = openSqlite(process.env.CHUNKY_GRAPH_DB || "chunky-graph.db")
+  db.exec(`CREATE TABLE IF NOT EXISTS checkpoint_anchors (
+    thread_id TEXT NOT NULL, checkpoint_id TEXT NOT NULL, turn_index INTEGER NOT NULL,
+    PRIMARY KEY (thread_id, checkpoint_id));`)
+  return db
+}
+
+export function anchorLatestCheckpoint(threadId: string, turnIndex: number): string | null {
+  const db = graphDb()
+  const row = db.prepare("SELECT checkpoint_id FROM checkpoints WHERE thread_id = ? ORDER BY checkpoint_id DESC LIMIT 1").get(threadId) as { checkpoint_id: string } | null
+  if (!row) return null
+  retrySqliteTransaction(db, () => {
+    db.prepare("INSERT OR REPLACE INTO checkpoint_anchors (thread_id, checkpoint_id, turn_index) VALUES (?, ?, ?)").run(threadId, row.checkpoint_id, turnIndex)
+    db.prepare(`DELETE FROM checkpoint_anchors WHERE thread_id = ? AND checkpoint_id IN (
+      SELECT checkpoint_id FROM checkpoint_anchors WHERE thread_id = ? ORDER BY turn_index DESC LIMIT -1 OFFSET 50
+    )`).run(threadId, threadId)
+  })
+  return row.checkpoint_id
+}
+
+export function rewindCheckpoints(threadId: string, checkpointId: string): void {
+  const db = graphDb()
+  retrySqliteTransaction(db, () => {
+    db.prepare("DELETE FROM writes WHERE thread_id = ? AND checkpoint_id > ?").run(threadId, checkpointId)
+    db.prepare("DELETE FROM checkpoints WHERE thread_id = ? AND checkpoint_id > ?").run(threadId, checkpointId)
+    db.prepare("DELETE FROM checkpoint_anchors WHERE thread_id = ? AND checkpoint_id > ?").run(threadId, checkpointId)
+  })
+}
+
+/** Forks may have no completed anchor; that is intentionally a fresh agent
+ * state rather than a failed fork. The copied checkpoint is a new root. */
+export function cloneThreadAtCheckpoint(sourceThreadId: string, targetThreadId: string, checkpointId: string): boolean {
+  const db = graphDb()
+  const checkpoint = db.prepare("SELECT * FROM checkpoints WHERE thread_id = ? AND checkpoint_id = ?").get(sourceThreadId, checkpointId) as any
+  if (!checkpoint) return false
+  retrySqliteTransaction(db, () => {
+    db.prepare("INSERT OR REPLACE INTO checkpoints (thread_id, checkpoint_ns, checkpoint_id, parent_checkpoint_id, type, checkpoint, metadata) VALUES (?, ?, ?, NULL, ?, ?, ?)")
+      .run(targetThreadId, checkpoint.checkpoint_ns, checkpoint.checkpoint_id, checkpoint.type, checkpoint.checkpoint, checkpoint.metadata)
+    const writes = db.prepare("SELECT * FROM writes WHERE thread_id = ? AND checkpoint_ns = ? AND checkpoint_id = ?").all(sourceThreadId, checkpoint.checkpoint_ns, checkpointId) as any[]
+    const insert = db.prepare("INSERT OR REPLACE INTO writes (thread_id, checkpoint_ns, checkpoint_id, task_id, idx, channel, type, value) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
+    for (const w of writes) insert.run(targetThreadId, w.checkpoint_ns, w.checkpoint_id, w.task_id, w.idx, w.channel, w.type, w.value)
+  })
+  return true
 }

@@ -15,8 +15,11 @@ import {
   type GoalRequest,
   type GoalSnapshot,
   type GoalStateResponse,
+  type ForkResponse,
   type ListSessionsResponse,
   type LoginInitiation,
+  type RewindPoint,
+  type RewindPointsResponse,
   type ModeSpec,
   type ModesResponse,
   type SendBlockedResponse,
@@ -33,6 +36,8 @@ import { StatusLine } from "./components/StatusLine.js"
 import { PromptInput, type StatusSegment } from "./components/PromptInput.js"
 import { LoginPicker, type ProviderRow } from "./components/LoginPicker.js"
 import { ResumePicker } from "./components/ResumePicker.js"
+import { RewindPicker } from "./components/RewindPicker.js"
+import { ForkPicker, parseForkArgs } from "./components/ForkPicker.js"
 import { ModelPicker, type ModelSelectionResult } from "./components/ModelPicker.js"
 import { SkillsPicker } from "./components/SkillsPicker.js"
 import { ProviderPicker } from "./components/ProviderPicker.js"
@@ -179,6 +184,19 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   const doModeRef = useRef<(rest: string) => void>(() => {})
   // When set, the /resume thread picker is open (owns the keyboard while shown).
   const [resumePicker, setResumePicker] = useState<{ sessions: SessionSummary[]; selected: number } | null>(null)
+  // When set, the /rewind picker is open. `error` shows a server refusal (409)
+  // in place; `busy` freezes the keys while the POST is in flight.
+  const [rewindPicker, setRewindPicker] = useState<{
+    points: RewindPoint[]
+    error?: string | null
+    busy?: boolean
+  } | null>(null)
+  // When set, the /fork worktree chooser is open (only when no --worktree flag).
+  const [forkPicker, setForkPicker] = useState<{
+    directive?: string
+    error?: string | null
+    busy?: boolean
+  } | null>(null)
   // The active model selection, reflected on the status line.
   const [currentSel, setCurrentSel] = useState<CurrentSelection | null>(null)
   // The active advisor config, reflected on the status line.
@@ -223,6 +241,9 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   // render from the event. Cleared before each live send so the server's echo
   // can't double with the local pushUser echo (see reduce()'s message.user).
   const resumeReplayRef = useRef(false)
+  // Set below once `attachSession`/`printLine` exist; lets the SSE reducer
+  // (declared earlier than both) react to another client rewinding this session.
+  const onRemoteRewindRef = useRef<(sessionId: string, turn: number) => void>(() => {})
   // Images pasted (Ctrl+V) onto the NEXT message. A ref mirrors it so `submit`
   // reads the latest set without going stale in its closure.
   const [attachments, setAttachments] = useState<ClipboardImage[]>([])
@@ -248,6 +269,8 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     sidekickSeatMenuOpen ||
     modeMenuOpen ||
     resumePicker != null ||
+    rewindPicker != null ||
+    forkPicker != null ||
     pendingSend != null
 
   // Ctrl+T collapses/expands child-thread bodies (the tree view stays; only
@@ -310,6 +333,9 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       // Track goal state for the status line. History replay (resume) re-runs these
       // in order, so the last one wins and the status line reflects the true state.
       if (ev.type === "goal.update") setGoal(ev.goal)
+      // Another client (or this one) rewound the session: the live stream is now
+      // stale. Re-attach so the truncated history replays through the same path.
+      if (ev.type === "session.rewound") onRemoteRewindRef.current(ev.sessionId, ev.turn)
     },
     [mode],
   )
@@ -543,6 +569,14 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       }
       if (command === "/sidekick" || command.startsWith("/sidekick ")) {
         doSidekick(command.slice("/sidekick".length).trim())
+        return
+      }
+      if (command === "/fork" || command.startsWith("/fork ")) {
+        doFork(command.slice("/fork".length).trim())
+        return
+      }
+      if (command === "/rewind") {
+        void doRewind()
         return
       }
       const images = attachmentsRef.current
@@ -781,10 +815,14 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     }
   }, [mode, baseUrl, printLine])
 
-  // Reattach to a picked thread: the same local wipe as /clear, then point the
-  // live-session effect at the EXISTING id instead of creating a fresh one.
-  const attachResume = useCallback((s: SessionSummary) => {
+  // THE session-switch path. Wipes local UI exactly like /clear, then points the
+  // live-session effect at an EXISTING id so its SSE history replays. /resume,
+  // /rewind (truncated history), /fork (the child) and a remote session.rewound
+  // all funnel through here — there is deliberately no second attach path.
+  const attachSession = useCallback((sessionId: string) => {
     setResumePicker(null)
+    setRewindPicker(null)
+    setForkPicker(null)
     setState(initialState)
     setStartedAt(null)
     setCacheCold(null)
@@ -793,10 +831,148 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     setAttachments([])
     setPrefill(null)
     setAuthoritativeQueueCount(0)
-    resumeTargetRef.current = s.sessionId
+    resumeTargetRef.current = sessionId
     sessionIdRef.current = null
     setSessionKey((k) => k + 1)
   }, [])
+  // `apply` (the SSE reducer) is defined above both of these but must react to a
+  // session.rewound event, so it reaches the current pair through this ref.
+  onRemoteRewindRef.current = (sessionId, turn) => {
+    printLine(`Session rewound to turn ${turn} — reattaching.`)
+    attachSession(sessionId)
+  }
+
+  // /rewind — restore files AND conversation to an earlier turn. The picker only
+  // chooses the turn; on confirm the server truncates and we RE-ATTACH, so the
+  // replayed (now shorter) history is what rebuilds the transcript.
+  const doRewind = useCallback(async () => {
+    if (mode !== "live") {
+      printLine("/rewind needs the live server (run the server, then the TUI with --live).")
+      return
+    }
+    const id = sessionIdRef.current
+    if (!id) {
+      printLine("/rewind needs an active session.")
+      return
+    }
+    try {
+      const res = await fetch(baseUrl + ROUTES.rewindPoints(id))
+      const body = (await res.json()) as RewindPointsResponse & { error?: string }
+      if (!res.ok || body.error) {
+        printLine(`Rewind failed: ${body.error || `HTTP ${res.status}`}`)
+        return
+      }
+      const points = body.points ?? []
+      if (points.length === 0) {
+        printLine("No earlier turns to rewind to yet.")
+        return
+      }
+      if (!points.some((p) => p.complete)) {
+        printLine("No completed turn to rewind to yet.")
+        return
+      }
+      setRewindPicker({ points })
+    } catch (err) {
+      printLine(`Rewind failed: ${String(err)}`)
+    }
+  }, [mode, baseUrl, printLine])
+
+  // Second Enter in the picker landed: commit the rewind. A 409 means the server
+  // refused (session busy) — that text stays IN the picker so the choice is kept.
+  const confirmRewind = useCallback(
+    async (point: RewindPoint) => {
+      const id = sessionIdRef.current
+      if (!id) return
+      setRewindPicker((s) => (s ? { ...s, busy: true, error: null } : s))
+      try {
+        const res = await fetch(baseUrl + ROUTES.rewind(id), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ turn: point.turn }),
+        })
+        const body = (await res.json()) as { sessionId?: string; turn?: number; error?: string }
+        if (!res.ok || body.error) {
+          setRewindPicker((s) => (s ? { ...s, busy: false, error: body.error || `HTTP ${res.status}` } : s))
+          return
+        }
+        // Re-attach to the SAME session: its truncated history replays cleanly.
+        attachSession(body.sessionId || id)
+        printLine(`Rewound to turn ${point.turn} — files and conversation restored.`)
+      } catch (err) {
+        setRewindPicker((s) => (s ? { ...s, busy: false, error: String(err) } : s))
+      }
+    },
+    [baseUrl, attachSession, printLine],
+  )
+
+  // POST the fork and switch this TUI onto the child session.
+  const postFork = useCallback(
+    async (opts: { worktree?: boolean; directive?: string }, fromPicker: boolean) => {
+      const id = sessionIdRef.current
+      if (!id) {
+        printLine("/fork needs an active session.")
+        return
+      }
+      // The parent's title for the notice line; best-effort, never fatal.
+      let parentTitle = "this session"
+      try {
+        const res = await fetch(`${baseUrl + ROUTES.listSessions}?cwd=${encodeURIComponent(process.cwd())}`)
+        const body = (await res.json()) as ListSessionsResponse
+        parentTitle = body.sessions.find((s) => s.sessionId === id)?.title ?? parentTitle
+      } catch {}
+      if (fromPicker) setForkPicker((s) => (s ? { ...s, busy: true, error: null } : s))
+      try {
+        const res = await fetch(baseUrl + ROUTES.fork(id), {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({
+            ...(opts.worktree === undefined ? {} : { worktree: opts.worktree }),
+            ...(opts.directive ? { directive: opts.directive } : {}),
+          }),
+        })
+        const body = (await res.json()) as Partial<ForkResponse> & { error?: string }
+        if (!res.ok || body.error || !body.sessionId) {
+          const msg = body.error || `HTTP ${res.status}`
+          if (fromPicker) setForkPicker((s) => (s ? { ...s, busy: false, error: msg } : s))
+          else printLine(`Fork failed: ${msg}`)
+          return
+        }
+        // Same mechanism as a resume attach: the child's history replays.
+        attachSession(body.sessionId)
+        const wt = body.worktree
+        printLine(
+          `Forked from ${parentTitle} — workspace: ${wt?.path ?? body.workspace ?? ""}` +
+            (wt ? ` (branch ${wt.branch})` : ""),
+        )
+      } catch (err) {
+        if (fromPicker) setForkPicker((s) => (s ? { ...s, busy: false, error: String(err) } : s))
+        else printLine(`Fork failed: ${String(err)}`)
+      }
+    },
+    [baseUrl, attachSession, printLine],
+  )
+
+  // /fork [--worktree|--no-worktree] [directive] — with an explicit flag we post
+  // straight away; without one the small ForkPicker asks in place / worktree.
+  const doFork = useCallback(
+    (rest: string) => {
+      if (mode !== "live") {
+        printLine("/fork needs the live server (run the server, then the TUI with --live).")
+        return
+      }
+      if (!sessionIdRef.current) {
+        printLine("/fork needs an active session.")
+        return
+      }
+      const parsed = parseForkArgs(rest)
+      if (parsed.worktree === undefined) {
+        setForkPicker({ directive: parsed.directive })
+        return
+      }
+      void postFork(parsed, false)
+    },
+    [mode, printLine, postFork],
+  )
 
   // Resume-picker navigation: ↑/↓ move, enter reattaches, esc cancels.
   useInput(
@@ -812,7 +988,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       }
       if (key.return) {
         const row = resumePicker.sessions[resumePicker.selected]
-        if (row) attachResume(row)
+        if (row) attachSession(row.sessionId)
         return
       }
       if (key.escape) setResumePicker(null)
@@ -1464,12 +1640,18 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         case "/resume":
           void doResume()
           break
+        case "/rewind":
+          void doRewind()
+          break
+        case "/fork":
+          doFork("")
+          break
         case "/quit":
           exit()
           break
         case "/help":
           printLine(
-            "Commands: /clear, /resume, /help, /login, /model, /skills, /provider, /workers, /advisor, /sidekick, /mode, /goal, /shipit, /cacheguard, /quit. `/workers` shows automatic workflow routes; `/workers tag|auto|reset` changes exceptions. Input: enter to send (queues during a running turn), option+enter to steer a running turn, ctrl+v to attach a clipboard image.",
+            "Commands: /clear, /resume, /rewind, /fork, /help, /login, /model, /skills, /provider, /workers, /advisor, /sidekick, /mode, /goal, /shipit, /cacheguard, /quit. `/rewind` restores files and conversation to an earlier turn; `/fork [--worktree|--no-worktree] [directive]` branches this session, optionally into a Git worktree. `/workers` shows automatic workflow routes; `/workers tag|auto|reset` changes exceptions. Input: enter to send (queues during a running turn), option+enter to steer a running turn, ctrl+v to attach a clipboard image.",
           )
           break
         case "/login":
@@ -1639,6 +1821,24 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         }} />}
         {loginPicker && <LoginPicker providers={loginPicker.providers} selected={loginPicker.selected} />}
         {resumePicker && <ResumePicker sessions={resumePicker.sessions} selected={resumePicker.selected} />}
+        {rewindPicker && (
+          <RewindPicker
+            points={rewindPicker.points}
+            error={rewindPicker.error}
+            busy={rewindPicker.busy}
+            onConfirm={(point) => void confirmRewind(point)}
+            onCancel={() => setRewindPicker(null)}
+          />
+        )}
+        {forkPicker && (
+          <ForkPicker
+            directive={forkPicker.directive}
+            error={forkPicker.error}
+            busy={forkPicker.busy}
+            onSelect={(worktree) => void postFork({ worktree, directive: forkPicker.directive }, true)}
+            onCancel={() => setForkPicker(null)}
+          />
+        )}
         {skillsPickerOpen && <SkillsPicker baseUrl={baseUrl} sessionId={sessionIdRef.current} onSelect={(name) => { setPendingSkill(name); setSkillsPickerOpen(false) }} onCancel={() => setSkillsPickerOpen(false)} />}
         {modelPickerOpen && (
           <ModelPicker baseUrl={baseUrl} onDone={onModelDone} onCancel={() => setModelPickerOpen(false)} />

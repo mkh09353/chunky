@@ -33,6 +33,9 @@ export interface QueueEntry {
 
 export type AgentEvent =
   | { type: "session.status"; sessionId: string; status: "idle" | "running" }
+  /** Sent only to currently attached clients after a rewind. It is deliberately
+   * not part of transcript history: clients must reconnect and replay. */
+  | { type: "session.rewound"; sessionId: string; turn: number }
   /** Emitted at the START of a turn when the prompt cache for this thread is
    * cold — the previous turn's cached prefix is gone, so this turn re-sends the
    * whole context. Either the idle gap exceeded the cache TTL, or the model
@@ -194,6 +197,20 @@ export interface SessionSummary {
 export interface ListSessionsResponse {
   sessions: SessionSummary[]
 }
+export interface RewindPoint { turn: number; createdAt: number; userText: string; complete: boolean }
+export interface RewindPointsResponse { points: RewindPoint[] }
+export interface RewindRequest { turn: number }
+export interface RewindResponse { sessionId: string; turn: number }
+
+/** `/fork` — branch the session. `worktree` asks the server to cut a new git
+ * worktree for the child; `directive` seeds the child's first instruction. */
+export interface ForkRequest { worktree?: boolean; directive?: string }
+export interface ForkResponse {
+  sessionId: string
+  workspace: string
+  parentSessionId: string
+  worktree?: { path: string; branch: string }
+}
 
 /** A local folder Chunky can operate in. Threads are scoped per repo. */
 export interface Repo {
@@ -339,6 +356,9 @@ export const ROUTES = {
   // GET -> SSE stream of AgentEvent. Replays persisted history first, so opening
   // this on an existing id IS "resume": the full prior transcript streams, then live.
   events: (id: string) => `/api/sessions/${id}/events`,
+  rewindPoints: (id: string) => `/api/sessions/${id}/rewind-points`,
+  rewind: (id: string) => `/api/sessions/${id}/rewind`,
+  fork: (id: string) => `/api/sessions/${id}/fork`,
   // GET ?q=&limit=&repo=<id> -> { items: FileSearchItem[] } — FFF fuzzy search
   // for @-mentions, scoped to one repo (default repo when omitted).
   fileSearch: `/api/files/search`,

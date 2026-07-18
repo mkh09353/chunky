@@ -32,7 +32,7 @@ import { abortableSleep, isIntentionalAbort, reconnectDelay, retryableHttpMessag
 import { ACCENT, BORDER, WARNING } from "./theme.js"
 import { WelcomeBanner } from "./components/WelcomeBanner.js"
 import { Transcript, fmtTokens } from "./components/Transcript.js"
-import { StatusLine } from "./components/StatusLine.js"
+import { StatusLine, WatchingLine } from "./components/StatusLine.js"
 import { PromptInput, type StatusSegment } from "./components/PromptInput.js"
 import { LoginPicker, type ProviderRow } from "./components/LoginPicker.js"
 import { ResumePicker } from "./components/ResumePicker.js"
@@ -253,6 +253,10 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   // Server-authoritative count from queue.changed. The queued prompt bodies live
   // only on the server; this client never drains or re-sends them.
   const [authoritativeQueueCount, setAuthoritativeQueueCount] = useState(0)
+  // Running background bash tasks + monitors, from background.changed. That
+  // event is LIVE-ONLY (never replayed from history), so these counts are always
+  // reset to 0 on a session switch and re-learned from the next live event.
+  const [background, setBackground] = useState({ tasks: 0, monitors: 0 })
   // Latest run state for `submit`, which is defined before `running` is derived.
   const runningRef = useRef(false)
   runningRef.current = state.status === "running"
@@ -311,6 +315,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       if (ev.type === "message.start" && !ev.threadId) lastAssistantRef.current = ""
       if (ev.type === "message.delta" && !ev.threadId) lastAssistantRef.current += ev.text
       if (ev.type === "queue.changed") setAuthoritativeQueueCount(ev.entries.length)
+      if (ev.type === "background.changed") setBackground({ tasks: ev.tasks, monitors: ev.monitors })
       // Live sends are echoed locally after the POST is accepted. On resume, the
       // accepted injected:false event is the sole raw transcript echo;
       // injected:true is only a model-continuation marker.
@@ -831,6 +836,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     setAttachments([])
     setPrefill(null)
     setAuthoritativeQueueCount(0)
+    setBackground({ tasks: 0, monitors: 0 })
     resumeTargetRef.current = sessionId
     sessionIdRef.current = null
     setSessionKey((k) => k + 1)
@@ -1628,6 +1634,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           setAttachments([])
           setPrefill(null)
           setAuthoritativeQueueCount(0)
+          setBackground({ tasks: 0, monitors: 0 })
           if (mode === "live") {
             const old = sessionIdRef.current
             if (old) void fetch(baseUrl + ROUTES.interrupt(old), { method: "POST" }).catch(() => {})
@@ -1811,7 +1818,13 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       </scrollbox>
       {(running && startedAt != null) || connection === "reconnecting" ? (
         <StatusLine startedAt={startedAt ?? undefined} reconnecting={connection === "reconnecting"} />
-      ) : null}
+      ) : running ? null : (
+        // Idle, but background work is still going: the spinner's slot shows what
+        // we're waiting on. `running` is re-checked here because the branch above
+        // also needs startedAt — a running turn must never show BOTH lines.
+        // Renders nothing when both counts are 0.
+        <WatchingLine tasks={background.tasks} monitors={background.monitors} />
+      )}
       {updateNotice && <text attributes={TextAttributes.DIM}>{updateNotice}</text>}
       <box flexDirection="column" width="100%" marginTop={1} flexShrink={0}>
         {onboardingOpen && <OnboardingWizard baseUrl={baseUrl} onDone={(stamped) => { setOnboardingOpen(false); if (!stamped) void fetch(baseUrl + "/api/onboarding/complete", { method: "POST" }).catch(() => {}) }} onLogin={async (p) => {

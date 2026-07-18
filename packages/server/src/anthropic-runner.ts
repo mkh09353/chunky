@@ -23,6 +23,7 @@ import { noteRequest } from "./cache-watch.ts"
 import type { CacheContext, InputImage } from "./run.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { bash, bashInputShape } from "./tools/bash.ts"
+import { monitor, monitorInputShape } from "./tools/monitor.ts"
 import { editInputShape, editTool } from "./tools/edit.ts"
 import { fffind, fffindInputShape, ffgrep, ffgrepInputShape } from "./tools/fff.ts"
 import {
@@ -63,6 +64,7 @@ const ALLOWED_TOOLS = [`mcp__${SERVER_NAME}__*`]
 const CHUNKY_TOOLS = [
   read,
   bash,
+  monitor,
   getTaskOutput,
   killTask,
   fffind,
@@ -198,6 +200,8 @@ export function createChunkySdkMcpServer(
         (args) => bash.invoke(args, runConfig),
         emit,
       ),
+      wrapChunkyTool(monitor.name, monitor.description, monitorInputShape,
+        (args) => monitor.invoke(args, runConfig), emit),
       wrapChunkyTool(getTaskOutput.name, getTaskOutput.description, getTaskOutputInputShape,
         (args) => getTaskOutput.invoke(args, runConfig), emit, readOnly),
       wrapChunkyTool(killTask.name, killTask.description, killTaskInputShape,

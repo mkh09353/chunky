@@ -36,6 +36,8 @@ export type AgentEvent =
   /** Sent only to currently attached clients after a rewind. It is deliberately
    * not part of transcript history: clients must reconnect and replay. */
   | { type: "session.rewound"; sessionId: string; turn: number }
+  /** Live task counts; deliberately not persisted in transcript history. */
+  | { type: "background.changed"; sessionId: string; tasks: number; monitors: number }
   /** Emitted at the START of a turn when the prompt cache for this thread is
    * cold — the previous turn's cached prefix is gone, so this turn re-sends the
    * whole context. Either the idle gap exceeded the cache TTL, or the model

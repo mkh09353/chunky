@@ -55,6 +55,7 @@ import { skillTools } from "./tools/skills.ts"
 import { write } from "./tools/write.ts"
 import { dualTool } from "./tools/result.ts"
 import { getTaskOutput, killTask } from "./tools/task.ts"
+import { monitor } from "./tools/monitor.ts"
 import { updateTodos } from "./tools/todos.ts"
 import { resolveFileToolProfile } from "./settings.ts"
 import { hashlineRead, hashlineEdit } from "./tools/hashline/index.ts"
@@ -216,6 +217,7 @@ export function executorToolsFor(selection: AgentSelection) {
   const tools = [
     ...fileToolsFor(selection.model, selection.provider),
     dualTool(bash),
+    monitor,
     getTaskOutput,
     killTask,
     fffind,

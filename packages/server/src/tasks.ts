@@ -3,13 +3,14 @@ import { appendFileSync, mkdirSync, renameSync, unlinkSync, writeFileSync } from
 import { join } from "node:path"
 import type { Subprocess } from "bun"
 import { terminateProcessTree } from "./process-tree.ts"
+import { backgroundChanged } from "./background-dispatch.ts"
 
 export type TaskStatus = "running" | "completed" | "failed" | "cancelled"
 
 export interface TaskSnapshot {
   taskId: string
   sessionId: string
-  kind: "bash"
+  kind: "bash" | "monitor"
   command: string
   description?: string
   status: TaskStatus
@@ -36,13 +37,14 @@ function sessionTasks(sessionId: string) {
   return map
 }
 
-export function createTask(sessionId: string, input: { command: string; description?: string; spillPath: string; process: Subprocess }): TaskRecord {
-  const id = `task-${nextIds.get(sessionId) ?? 1}`
+export function createTask(sessionId: string, input: { command: string; description?: string; spillPath: string; process: Subprocess; kind?: "bash" | "monitor" }): TaskRecord {
+  const kind = input.kind ?? "bash"
+  const id = `${kind === "monitor" ? "mon" : "task"}-${nextIds.get(sessionId) ?? 1}`
   nextIds.set(sessionId, (nextIds.get(sessionId) ?? 1) + 1)
   let resolveDone!: () => void
   const done = new Promise<void>((resolve) => { resolveDone = resolve })
   const record = {
-    taskId: id, sessionId, kind: "bash" as const, command: input.command, description: input.description,
+    taskId: id, sessionId, kind, command: input.command, description: input.description,
     status: "running" as const, startedAt: Date.now(), output: "", rawOutputBytes: 0, truncated: false,
     spillPath: input.spillPath, isTerminal: false, process: input.process, cancelRequested: false, done, resolveDone, outputBytes: 0,
   }
@@ -51,7 +53,16 @@ export function createTask(sessionId: string, input: { command: string; descript
     try { renameSync(input.spillPath, taskPath); record.spillPath = taskPath } catch { /* retain the initialized path */ }
   }
   sessionTasks(sessionId).set(id, record)
+  backgroundChanged(sessionId)
   return record
+}
+
+export function liveTaskCounts(sessionId: string): { tasks: number; monitors: number } {
+  let tasks = 0, monitors = 0
+  for (const record of sessionTasks(sessionId).values()) if (!record.isTerminal) {
+    if (record.kind === "monitor") monitors++; else tasks++
+  }
+  return { tasks, monitors }
 }
 
 export function appendTaskOutput(record: TaskRecord, chunk: string): void {
@@ -72,6 +83,18 @@ export function appendTaskOutput(record: TaskRecord, chunk: string): void {
   if (record.rawOutputBytes > OUTPUT_CAP) record.truncated = true
 }
 
+export function appendBufferedTaskOutput(record: TaskRecord, chunk: string, cap = OUTPUT_CAP): void {
+  appendFileSync(record.spillPath, chunk, "utf8")
+  record.rawOutputBytes += Buffer.byteLength(chunk)
+  record.output += chunk
+  while (Buffer.byteLength(record.output) > cap) {
+    const drop = Math.max(1, record.output.indexOf("\n") + 1)
+    record.output = "[older monitor output truncated]\n" + record.output.slice(drop)
+    record.truncated = true
+  }
+  record.outputBytes = Buffer.byteLength(record.output)
+}
+
 export function finishTask(record: TaskRecord, exitCode: number | null, signal?: string): void {
   if (record.isTerminal) return
   record.exitCode = exitCode
@@ -81,9 +104,28 @@ export function finishTask(record: TaskRecord, exitCode: number | null, signal?:
   record.isTerminal = true
   record.process = undefined
   record.resolveDone()
+  backgroundChanged(record.sessionId)
   const reminders = pendingReminders.get(record.sessionId) ?? []
   if (!reminders.includes(record.taskId) && reminders.length < 32) reminders.push(record.taskId)
   pendingReminders.set(record.sessionId, reminders)
+}
+
+export function countMonitors(sessionId: string): number { return liveTaskCounts(sessionId).monitors }
+export function appendReminder(sessionId: string, text: string): void {
+  const id = `notice:${text}`
+  const reminders = pendingReminders.get(sessionId) ?? []
+  if (!reminders.includes(id) && reminders.length < 32) reminders.push(id)
+  pendingReminders.set(sessionId, reminders)
+}
+export function monitorLines(chunk: string, pending: string): { lines: string[]; pending: string } {
+  const all = pending + chunk
+  const parts = all.split(/\r?\n/)
+  return { lines: parts.slice(0, -1), pending: parts.at(-1) ?? "" }
+}
+export function floodExceeded(times: number[], now: number, max: number): { times: number[]; exceeded: boolean } {
+  const kept = times.filter((time) => now - time < 60_000)
+  kept.push(now)
+  return { times: kept, exceeded: kept.length > max }
 }
 
 export function snapshotTask(record: TaskRecord): TaskSnapshot {
@@ -118,6 +160,10 @@ export function requestCancel(record: TaskRecord): void {
 export function markTaskTimedOut(record: TaskRecord): void {
   if (!record.isTerminal) { record.timedOut = true; record.cancelRequested = false }
 }
+/** A monitor flood is an intentional forced failure, distinct from user cancel. */
+export function markTaskFailed(record: TaskRecord): void {
+  if (!record.isTerminal) { record.timedOut = true; record.cancelRequested = false }
+}
 export function consumeTaskReminder(sessionId: string, id: string): void {
   const reminders = pendingReminders.get(sessionId)
   if (!reminders) return
@@ -129,6 +175,7 @@ export function pendingTaskReminders(sessionId: string): string {
   pendingReminders.delete(sessionId)
   return ids.map((id) => {
     const record = getTaskRecord(sessionId, id)
+    if (id.startsWith("notice:")) return id.slice(7)
     return record ? `Background task ${id} (${record.description ?? record.command}) is ${record.status}. Use get_task_output with task_ids=["${id}"] for output.` : ""
   }).filter(Boolean).join("\n")
 }
@@ -136,6 +183,7 @@ export function peekTaskReminders(sessionId: string): { text: string; ids: strin
   const ids = [...(pendingReminders.get(sessionId) ?? [])]
   return { ids, text: ids.map((id) => {
     const record = getTaskRecord(sessionId, id)
+    if (id.startsWith("notice:")) return id.slice(7)
     return record ? `Background task ${id} (${record.description ?? record.command}) is ${record.status}. Use get_task_output with task_ids=["${id}"] for output.` : ""
   }).filter(Boolean).join("\n") }
 }

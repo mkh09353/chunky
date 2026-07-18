@@ -1,8 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { existsSync, readFileSync } from "node:fs"
-import { appendTaskOutput, cleanupSession, consumeTaskReminder, createTask, finishTask, pendingTaskReminders, resetTasks, snapshotTask, snapshotSessionTasks, taskOutputCap, taskSpillPath } from "./tasks.ts"
+import { appendTaskOutput, cleanupSession, consumeTaskReminder, createTask, finishTask, floodExceeded, monitorLines, pendingTaskReminders, resetTasks, snapshotTask, snapshotSessionTasks, taskOutputCap, taskSpillPath } from "./tasks.ts"
+import { installBackgroundDispatcher, resetBackgroundDispatcher, routeBackgroundNotice } from "./background-dispatch.ts"
 
-afterEach(async () => { await resetTasks() })
+afterEach(async () => { await resetTasks(); resetBackgroundDispatcher() })
 
 describe("background task registry", () => {
   test("numbers independently and tracks lifecycle timestamps", async () => {
@@ -40,5 +41,20 @@ describe("background task registry", () => {
     const record = createTask("snap", { command: "true", process: proc, spillPath: taskSpillPath("snap") })
     expect(snapshotSessionTasks("snap")[0].taskId).toBe(record.taskId)
     finishTask(record, 0)
+  })
+  test("splits monitor lines and enforces a sliding flood window", () => {
+    expect(monitorLines("one\ntwo", "old")).toEqual({ lines: ["oldone"], pending: "two" })
+    let times: number[] = []
+    for (let i = 0; i < 3; i++) times = floodExceeded(times, i, 2).times
+    expect(floodExceeded([0, 1], 2, 2).exceeded).toBe(true)
+    expect(floodExceeded([0], 60_001, 1).exceeded).toBe(false)
+  })
+  test("routes notices to wake only when idle", () => {
+    const wakes: string[] = []
+    installBackgroundDispatcher({ isRunning: () => false, wake: (_id, prompt) => wakes.push(prompt), changed: () => {} })
+    expect(routeBackgroundNotice("s", "prompt", "shown")).toBe("wake")
+    expect(wakes).toEqual(["prompt"])
+    installBackgroundDispatcher({ isRunning: () => true, wake: () => { throw new Error("unexpected") }, changed: () => {} })
+    expect(routeBackgroundNotice("s", "prompt", "shown")).toBe("reminder")
   })
 })

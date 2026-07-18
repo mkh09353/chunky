@@ -17,7 +17,8 @@ import { workspaceFromConfig } from "../workspace.ts"
 import { MAX_BYTES, MAX_LINES } from "./fs-util.ts"
 import { compressBashOutput } from "./compress.ts"
 import { toolResult } from "./result.ts"
-import { appendTaskOutput, createTask, finishTask, markTaskTimedOut, taskSpillPath } from "../tasks.ts"
+import { appendReminder, appendTaskOutput, createTask, finishTask, markTaskTimedOut, taskSpillPath } from "../tasks.ts"
+import { routeBackgroundNotice } from "../background-dispatch.ts"
 import { terminateProcessTree } from "../process-tree.ts"
 
 // Commands still run under `bash -lc` (the model writes bash, so bash semantics
@@ -55,6 +56,7 @@ export const bashInputShape = {
   timeout: z.number().optional().describe("Timeout in seconds (optional)."),
   background: z.boolean().optional().describe("Run asynchronously and return a task ID."),
   description: z.string().optional().describe("Short label for the background task."),
+  ready_pattern: z.string().optional().describe("Regex to notify once when a background task is ready; valid only with background=true."),
 }
 
 async function readPipe(reader: ReadableStreamDefaultReader<Uint8Array>, onChunk?: (chunk: string) => void): Promise<string> {
@@ -70,7 +72,10 @@ async function readPipe(reader: ReadableStreamDefaultReader<Uint8Array>, onChunk
 }
 
 export const bash = tool(
-  async ({ command, timeout, background, description }: { command: string; timeout?: number; background?: boolean; description?: string }, config?: any) => {
+  async ({ command, timeout, background, description, ready_pattern }: { command: string; timeout?: number; background?: boolean; description?: string; ready_pattern?: string }, config?: any) => {
+    if (ready_pattern && !background) return toolResult("ready_pattern is only valid with background=true.", { ok: false })
+    let readyRegex: RegExp | undefined
+    if (ready_pattern) try { readyRegex = new RegExp(ready_pattern) } catch { return toolResult("ready_pattern must be a valid regular expression.", { ok: false }) }
     const path = await userLoginPath()
     const proc = Bun.spawn(["bash", "-lc", command], {
       cwd: workspaceFromConfig(config),
@@ -86,6 +91,17 @@ export const bash = tool(
       if (!sessionId) return toolResult("Background tasks require an active session.", { ok: false })
       const spillPath = taskSpillPath(sessionId)
       const record = createTask(sessionId, { command, description, spillPath, process: proc })
+      let readyNotified = false, linePending = ""
+      const observe = (chunk: string) => {
+        if (!readyRegex || readyNotified) return
+        const bits = (linePending + chunk).split(/\r?\n/); linePending = bits.pop() ?? ""
+        for (const line of bits) if (readyRegex.test(line)) {
+          readyNotified = true
+          const text = `Background task ${record.taskId} is ready: matched /${ready_pattern}/ on line: ${line}`
+          if (routeBackgroundNotice(sessionId, text, text) === "reminder") appendReminder(sessionId, text)
+          break
+        }
+      }
       const readers = [proc.stdout.getReader(), proc.stderr.getReader()]
       const read = async (reader: ReadableStreamDefaultReader<Uint8Array>) => {
         const decoder = new TextDecoder()
@@ -93,10 +109,10 @@ export const bash = tool(
           while (true) {
             const { done, value } = await reader.read()
             if (done) break
-            appendTaskOutput(record, decoder.decode(value, { stream: true }))
+            const chunk = decoder.decode(value, { stream: true }); appendTaskOutput(record, chunk); observe(chunk)
           }
           const tail = decoder.decode()
-          if (tail) appendTaskOutput(record, tail)
+          if (tail) { appendTaskOutput(record, tail); observe(tail) }
         } finally { reader.releaseLock() }
       }
       const timeoutTimer = timeout && timeout > 0 ? setTimeout(() => {
@@ -214,7 +230,7 @@ export const bash = tool(
   },
   {
     name: "bash",
-    description: `Run a shell command in the project root; this is how you list, search (grep/rg), and find files. Combines stdout+stderr, compresses noisy tool output (git/gh/npm/tsc/tests), signal-truncates to ~${MAX_LINES} lines / ${MAX_BYTES / 1000}KB (full output spilled to a temp file). Optional timeout in seconds. Use background=true for long work, then get_task_output or kill_task.`,
+    description: `Run a shell command in the project root; this is how you list, search (grep/rg), and find files. Combines stdout+stderr, compresses noisy tool output (git/gh/npm/tsc/tests), signal-truncates to ~${MAX_LINES} lines / ${MAX_BYTES / 1000}KB (full output spilled to a temp file). Optional timeout in seconds. For dev servers use background=true with ready_pattern to be notified once ready; use monitor for ongoing watching.`,
     schema: z.object(bashInputShape),
   },
 )

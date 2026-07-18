@@ -66,7 +66,7 @@ async function main() {
   assert(
     JSON.stringify(registeredTools) === JSON.stringify([
       "bash", "create_goal", "edit", "fffind", "ffgrep", "get_goal", "get_task_output", "goal_blocked",
-      "goal_complete", "kill_task", "load_skill", "manage_models", "manage_skill_repos", "read", "search_skills",
+      "goal_complete", "kill_task", "load_skill", "manage_models", "manage_skill_repos", "monitor", "read", "search_skills",
       "ship_goal", "sidekick", "spawn_thread", "workflow", "write",
     ]),
     `SDK MCP registered tool set mismatch: ${registeredTools.join(", ")}`,

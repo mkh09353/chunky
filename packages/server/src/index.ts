@@ -91,7 +91,8 @@ import { loadRelayConfig } from "./relay/config.ts"
 import { startUplink } from "./relay/uplink.ts"
 import { getModelAvailability, manageModelCatalog, setModelAvailability, type ModelCatalogAction } from "./model-catalog.ts"
 import { manageSkillRepos, type SkillRepoMutationAction } from "./skill-repos.ts"
-import { resetTasks } from "./tasks.ts"
+import { resetTasks, liveTaskCounts } from "./tasks.ts"
+import { installBackgroundDispatcher } from "./background-dispatch.ts"
 import { databaseErrorMessage } from "./sqlite.ts"
 import {
   canonicalWorkspace,
@@ -152,7 +153,7 @@ function hasLiveSubscribers(): boolean {
 
 /** Persist an event, then push it to every connected subscriber of the session. */
 function emitTo(sessionId: string, ev: AgentEvent): void {
-  if (ev.type !== "tool.progress" && ev.type !== "session.rewound") Store.appendEvent(sessionId, ev)
+  if (ev.type !== "tool.progress" && ev.type !== "session.rewound" && ev.type !== "background.changed") Store.appendEvent(sessionId, ev)
   const frame = encoder.encode(sse(ev))
   for (const controller of subscribers(sessionId)) {
     try {
@@ -336,6 +337,18 @@ installSessionBus({
   isRunning(sessionId) {
     return running.has(sessionId)
   },
+})
+
+// Background tasks must not inherit an ambient tool-call AsyncLocalStorage
+// context: their wake turns belong exclusively to their owning session.
+installBackgroundDispatcher({
+  isRunning: (sessionId) => running.has(sessionId),
+  wake(sessionId, prompt, shownText) {
+    const turn = beginUserTurn(sessionId, shownText)
+    emitTo(sessionId, { type: "message.user", text: shownText, from: "monitor" })
+    void AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () => startRun(sessionId, prompt, undefined, undefined, turn))
+  },
+  changed(sessionId) { emitTo(sessionId, { type: "background.changed", sessionId, ...liveTaskCounts(sessionId) }) },
 })
 
 const CORS = {

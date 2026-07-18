@@ -58,6 +58,14 @@ export interface ThreadNode {
    *  (e.g. its final summary) renders BELOW it, not above. Undefined for threads
    *  created before their spawn event (fallback paths) → rendered at the end. */
   anchorIndex?: number
+  /** Wall-clock ms when this thread started RUNNING — drives the header's elapsed
+   *  clock. Live-only: cleared whenever the thread leaves `running`, so a replayed
+   *  (historic) transcript never renders bogus clocks. */
+  startedAt?: number
+  /** Wall-clock ms of the most recent event routed to this thread (including
+   *  tool.progress chunks and reasoning deltas) — drives the idle clock.
+   *  Live-only, cleared alongside `startedAt`. */
+  lastEventAt?: number
   items: Item[]
 }
 
@@ -210,11 +218,15 @@ function updateThreadItems(
     items: [],
   }
   const order = state.threads[threadId] ? state.order : [...state.order, threadId]
-  return {
-    ...state,
-    order,
-    threads: { ...state.threads, [threadId]: { ...thread, items: fn(thread.items) } },
+  // Any event routed here is a sign of life: bump the idle clock (and start the
+  // elapsed clock if the thread is running but was never spawn-stamped).
+  const now = Date.now()
+  const next: ThreadNode = {
+    ...thread,
+    items: fn(thread.items),
+    ...(thread.status === "running" ? { startedAt: thread.startedAt ?? now, lastEventAt: now } : {}),
   }
+  return { ...state, order, threads: { ...state.threads, [threadId]: next } }
 }
 
 /** Pure reducer: fold one AgentEvent into the thread tree. */
@@ -276,6 +288,8 @@ export function reduce(state: TranscriptState, ev: AgentEvent): TranscriptState 
         // Anchor the thread at its spawn point in the parent's stream so its block
         // renders inline there. Keep an already-set anchor stable across re-spawns.
         anchorIndex: existing?.anchorIndex ?? state.threads[parentId]?.items.length ?? 0,
+        startedAt: existing?.startedAt ?? Date.now(),
+        lastEventAt: Date.now(),
         items: existing?.items ?? [],
       }
       return {
@@ -287,13 +301,21 @@ export function reduce(state: TranscriptState, ev: AgentEvent): TranscriptState 
 
     case "thread.status": {
       const existing = state.threads[ev.threadId]
+      const now = Date.now()
+      // Running → stamp/refresh the liveness clocks; leaving running → DROP them,
+      // so a finished (or replayed) thread renders exactly as it did before.
+      const live =
+        ev.status === "running"
+          ? { startedAt: existing?.startedAt ?? now, lastEventAt: now }
+          : { startedAt: undefined, lastEventAt: undefined }
       const node: ThreadNode = existing
-        ? { ...existing, status: ev.status, title: ev.title ?? existing.title }
+        ? { ...existing, status: ev.status, title: ev.title ?? existing.title, ...live }
         : {
             id: ev.threadId,
             parentId: MAIN,
             title: ev.title ?? ev.threadId,
             status: ev.status,
+            ...live,
             items: [],
           }
       return {

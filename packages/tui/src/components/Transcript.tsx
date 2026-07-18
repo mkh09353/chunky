@@ -54,6 +54,37 @@ function progressTail(progress: string): string[] {
 // TOOL_SUMMARY_MAX_LENGTH — tighter than a lone tool's header so the "×N" count
 // and the summary both fit on one line.
 const TOOL_SUMMARY_MAX_LENGTH = 50
+/** Live-activity preview budgets (the preview must never wrap). */
+const ACTIVITY_INPUT_MAX = 28
+const ACTIVITY_TAIL_MAX = 70
+const PREVIEW_MAX = 96
+/** Hide the idle clock under this; tint it WARNING past the second threshold. */
+const IDLE_SHOW_MS = 10_000
+const IDLE_WARN_MS = 60_000
+
+/** One shared 1s ticker for every thread's clocks — subscribers share a single
+ *  interval, so N running children don't create N timers. */
+let clockSubs = new Set<() => void>()
+let clockTimer: ReturnType<typeof setInterval> | null = null
+function useClockTick(active: boolean): number {
+  const [now, setNow] = useState(() => Date.now())
+  useEffect(() => {
+    if (!active) return
+    const sub = () => setNow(Date.now())
+    clockSubs.add(sub)
+    clockTimer ??= setInterval(() => {
+      for (const s of clockSubs) s()
+    }, 1000)
+    return () => {
+      clockSubs.delete(sub)
+      if (clockSubs.size === 0 && clockTimer) {
+        clearInterval(clockTimer)
+        clockTimer = null
+      }
+    }
+  }, [active])
+  return now
+}
 
 /** Compact token count for notices: 1234 → "1.2k", 1_500_000 → "1.5M". */
 export function fmtTokens(n: number): string {
@@ -239,6 +270,40 @@ function threadPreview(items: Item[]): { text: string; more: number } {
   return { text: "", more: 0 }
 }
 
+/** The newest sign of life in a RUNNING thread, as one short line: a running
+ *  tool renders as `name(input summary)`, streaming text renders as its tail. */
+function liveActivity(items: Item[]): string {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const it = items[i]!
+    if (it.kind === "tool" && !it.done) {
+      const hint = summarizeInput(it.input, ACTIVITY_INPUT_MAX)
+      return hint ? `${it.name}(${hint})` : it.name
+    }
+    if ((it.kind === "assistant" || it.kind === "reasoning") && it.streaming) {
+      const tail = tailText(it.text)
+      if (tail) return tail
+    }
+    if (it.kind === "tool" || it.kind === "assistant" || it.kind === "reasoning") break
+  }
+  return ""
+}
+
+/** Last ~70 chars of streaming text, collapsed to a single whitespace-free line. */
+function tailText(text: string): string {
+  const flat = text.replace(/\s+/g, " ").trim()
+  if (!flat) return ""
+  return flat.length > ACTIVITY_TAIL_MAX ? `…${flat.slice(flat.length - ACTIVITY_TAIL_MAX)}` : flat
+}
+
+/** Compact duration: 45s / 1m12s / 1h02m. */
+function formatDuration(ms: number): string {
+  const total = Math.max(0, Math.floor(ms / 1000))
+  if (total < 60) return `${total}s`
+  const mins = Math.floor(total / 60)
+  if (mins < 60) return `${mins}m${String(total % 60).padStart(2, "0")}s`
+  return `${Math.floor(mins / 60)}h${String(mins % 60).padStart(2, "0")}m`
+}
+
 /**
  * One child thread. `Ctrl+T` (global) folds every thread to a header line; by
  * default each thread shows a ONE-LINE preview and expands per-thread (`Ctrl+O`
@@ -270,7 +335,14 @@ function ThreadBlock({
   const showBody = !collapsed && isExpanded
   const showPreview = !collapsed && !isExpanded
   const headFg = isFocused ? ACCENT : rail
+  // Re-render the clocks/activity on a shared 1s tick while this thread runs.
+  const now = useClockTick(running)
   const preview = showPreview ? threadPreview(thread.items) : null
+  const activity = running ? liveActivity(thread.items) : ""
+  const elapsed = running && thread.startedAt != null ? formatDuration(now - thread.startedAt) : null
+  const idleMs = running && thread.lastEventAt != null ? now - thread.lastEventAt : 0
+  const showIdle = idleMs >= IDLE_SHOW_MS
+  const idleStuck = idleMs >= IDLE_WARN_MS
   const countLabel = `${thread.items.length} item${thread.items.length === 1 ? "" : "s"}${
     childCount > 0 ? `, ${childCount} sub` : ""
   }`
@@ -286,7 +358,19 @@ function ThreadBlock({
           thread: {thread.title}
         </text>
         {thread.model ? <text attributes={DIM}>{`  · ${thread.model}`}</text> : null}
-        <text attributes={DIM}>{running ? "  (running…)" : "  (done)"}</text>
+        {running ? (
+          <>
+            <text attributes={DIM}>{elapsed ? `  (running… ${elapsed}` : "  (running…"}</text>
+            {showIdle ? (
+              <text fg={idleStuck ? WARNING : undefined} attributes={DIM}>
+                {` · idle ${formatDuration(idleMs)}`}
+              </text>
+            ) : null}
+            <text attributes={DIM}>{")"}</text>
+          </>
+        ) : (
+          <text attributes={DIM}>{"  (done)"}</text>
+        )}
         {collapsed && (thread.items.length > 0 || childCount > 0) && (
           <text attributes={DIM}>{`  ${countLabel}`}</text>
         )}
@@ -302,7 +386,12 @@ function ThreadBlock({
             <text fg={rail}>{"│"}</text>
           </box>
           <box flexDirection="column" flexGrow={1}>
-            {preview && preview.text ? (
+            {running ? (
+              // Live: newest activity + item count, always ONE truncated line.
+              <text attributes={DIM}>
+                {truncate(activity ? `${countLabel} · ${activity}` : countLabel, PREVIEW_MAX) + " …"}
+              </text>
+            ) : preview && preview.text ? (
               <text attributes={DIM}>
                 {truncate(preview.text, 80)}
                 {preview.more > 0 ? `  (+${preview.more} more lines · ⌃O)` : ""}

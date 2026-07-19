@@ -1,7 +1,47 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark" data-astryx-theme="neutral">
+<html lang="en" data-astryx-theme="neutral">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      Pre-paint theme bootstrap. Resolves the stored preference (or the OS, for
+      "system") and pins `data-theme` + `color-scheme` BEFORE the first paint, so
+      startup can't flash the wrong theme while the module bundle loads.
+
+      This deliberately mirrors lib/theme.tsx (loadThemeMode / systemTheme /
+      applyResolvedTheme) — it can't import it, because a module script is
+      deferred and would run too late. Keep the two in sync, including the
+      "chunky.theme" storage key.
+
+      `color-scheme` is always written as a SINGLE keyword, never the `light dark`
+      pair: Astryx's tokens are light-dark() pairs, and WKWebView won't reliably
+      inherit an ambiguous color-scheme into contenteditable subtrees — which used
+      to render the chat composer's typed text as invisible specks. See the long
+      comment at the top of lib/theme.tsx.
+    -->
+    <script>
+      (function () {
+        var resolved = "dark"
+        try {
+          var stored = null
+          try {
+            stored = localStorage.getItem("chunky.theme")
+          } catch (e) {
+            /* storage disabled — fall through to system */
+          }
+          var mode = stored === "light" || stored === "dark" || stored === "system" ? stored : "system"
+          resolved =
+            mode === "system"
+              ? window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches
+                ? "dark"
+                : "light"
+              : mode
+        } catch (e) {
+          /* keep the dark default */
+        }
+        document.documentElement.setAttribute("data-theme", resolved)
+        document.documentElement.style.colorScheme = resolved
+      })()
+    </script>
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png" />
     <link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png" />

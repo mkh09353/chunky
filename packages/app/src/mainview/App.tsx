@@ -60,6 +60,8 @@ import { ConfirmModal, WaitModal } from "./components/Modals"
 import { groupSessions, isPlaceholderTitle, relativeTime, threadLabel } from "./lib/format"
 import { ThreadRenameInput } from "./components/ThreadRenameInput"
 import { MIN_NOTIFY_MS, notifyTurnEnd } from "./lib/notify"
+import { ThemeToggle } from "./components/ThemeToggle"
+import { isThemeMode, systemTheme, THEME_MODES, useThemeMode } from "./lib/theme"
 import { initialState, pushNotice, reduce, type TranscriptState } from "./lib/transcript"
 
 // Which repo tab is open is THIS CLIENT's UI state (the server has no global
@@ -146,6 +148,9 @@ export default function App() {
   const pendingSkillRef = useRef<string | null>(null)
   pendingSkillRef.current = pendingSkill
   const [onboardingOpen, setOnboardingOpen] = useState(false)
+  // Appearance setting (system/light/dark). Owned by ThemeModeProvider in main.tsx;
+  // read here so /theme can drive the same state as the TopNav toggle.
+  const { setMode: setThemeMode, cycleMode: cycleTheme } = useThemeMode()
 
   const sessionIdRef = useRef<string | null>(null)
   const streamAbort = useRef<AbortController | null>(null)
@@ -909,6 +914,33 @@ export default function App() {
           case "/onboard":
             setOnboardingOpen(true)
             return
+          case "/theme": {
+            // Bare /theme cycles (same as clicking the TopNav toggle); an explicit
+            // argument sets it outright.
+            const arg = rest.trim().toLowerCase()
+            if (!arg) {
+              const next = cycleTheme()
+              notice(
+                next === "system"
+                  // systemTheme() is read live rather than from render state, which
+                  // still holds the pre-cycle value at this point.
+                  ? `Appearance: matching your system (currently ${systemTheme()}). \`/theme light|dark\` pins it.`
+                  : `Appearance: ${next}. \`/theme system\` follows your OS again.`,
+              )
+              return
+            }
+            if (!isThemeMode(arg)) {
+              notice(`Usage: /theme <${THEME_MODES.join("|")}> — bare \`/theme\` cycles through them.`)
+              return
+            }
+            setThemeMode(arg)
+            notice(
+              arg === "system"
+                ? `Appearance: matching your system (currently ${systemTheme()}).`
+                : `Appearance: ${arg}.`,
+            )
+            return
+          }
           case "/cacheguard":
             await doCacheGuard(rest)
             return
@@ -925,7 +957,20 @@ export default function App() {
         notice(`${name} failed: ${(err as Error).message}`)
       }
     },
-    [config, sessionId, handleNewThread, notice, refreshSessions, attachSession, doLogin, doCacheGuard, doMode, doSkills],
+    [
+      config,
+      sessionId,
+      handleNewThread,
+      notice,
+      refreshSessions,
+      attachSession,
+      doLogin,
+      doCacheGuard,
+      doMode,
+      doSkills,
+      cycleTheme,
+      setThemeMode,
+    ],
   )
 
   const handleSubmit = useCallback(
@@ -1054,6 +1099,7 @@ export default function App() {
                 }
               />
             }
+            endContent={<ThemeToggle />}
             startContent={
               <RepoTabs
                 repos={repos}

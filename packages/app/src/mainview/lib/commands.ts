@@ -59,6 +59,11 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   },
   { name: "/onboard", description: "Open the onboarding guide", insert: "/onboard" },
   {
+    name: "/theme",
+    description: "Appearance: /theme system|light|dark (bare cycles through them)",
+    insert: "/theme ",
+  },
+  {
     name: "/cacheguard",
     description: "Confirm-before-resend threshold for cold caches (/cacheguard <tokens|off>)",
     insert: "/cacheguard ",

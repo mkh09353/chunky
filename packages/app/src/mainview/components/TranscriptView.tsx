@@ -8,8 +8,10 @@ import {
   type ChatToolCallItem,
 } from "@astryxdesign/core/Chat"
 import { Markdown } from "@astryxdesign/core/Markdown"
+import { CodeBlock } from "@astryxdesign/core/CodeBlock"
 import type { Item, ThreadNode, TranscriptState } from "../lib/transcript"
 import { MAIN } from "../lib/transcript"
+import { USER_ANCHOR_CLASS } from "../lib/minimap"
 import {
   buildRenderPlan,
   childrenOf,
@@ -17,6 +19,54 @@ import {
   type Group,
   type ToolItem,
 } from "../lib/renderPlan"
+
+/** Fenced code blocks longer than this collapse behind a "show more" affordance,
+ *  so a 400-line file dump can't swallow the whole transcript. Picked to comfortably
+ *  clear a typical function or config snippet (which should stay fully visible). */
+const CODE_COLLAPSE_THRESHOLD = 30
+
+/** Ceiling on a code block's rendered height. Blocks under the collapse threshold
+ *  but with very long lines still scroll internally rather than pushing the
+ *  conversation off screen. */
+const CODE_MAX_HEIGHT = "32rem"
+
+/**
+ * Fenced code blocks in assistant markdown, rendered with the design system's
+ * CodeBlock instead of Markdown's bare default: copy button, language label,
+ * line numbers, and collapse-when-huge.
+ *
+ * Wired in via Markdown's `components.code` slot (see MARKDOWN_COMPONENTS), which
+ * receives ONLY fenced blocks — inline `code` spans go through `components.inlineCode`,
+ * which we deliberately leave unset so they keep the theme's default inline look.
+ */
+function TranscriptCodeBlock({ code, language }: { code: string; language?: string }) {
+  // A trailing newline from the fence shouldn't count as a line — it would put a
+  // phantom numbered row under the last statement of every block.
+  const lineCount = code.replace(/\n$/, "").split("\n").length
+  return (
+    <CodeBlock
+      code={code}
+      language={language}
+      hasCopyButton
+      // Only label a block whose fence actually declared a language; an unlabelled
+      // fence would otherwise render an empty chip.
+      hasLanguageLabel={Boolean(language)}
+      // Gutter numbers help nobody on a one-liner and cost horizontal room.
+      hasLineNumbers={lineCount > 1}
+      isCollapsible={lineCount > CODE_COLLAPSE_THRESHOLD}
+      collapsibleThreshold={CODE_COLLAPSE_THRESHOLD}
+      maxHeight={CODE_MAX_HEIGHT}
+      // Fill the readable column rather than CodeBlock's default fit-content, so
+      // consecutive blocks line up instead of stepping with their longest line.
+      width="100%"
+    />
+  )
+}
+
+/** Module-level and frozen: Markdown re-parses when `components` changes identity,
+ *  so an inline object literal here would re-render every block on every streamed
+ *  delta and visibly break the isStreaming fade. */
+const MARKDOWN_COMPONENTS = { code: TranscriptCodeBlock } as const
 
 /** Collapse whitespace so multi-line inputs read as a single tidy summary line. */
 function oneLine(s: string): string {
@@ -136,7 +186,7 @@ function AvatarSpacer() {
 
 /** Render a run of grouped items as chat messages, with avatar/burst logic scoped
  *  to this run (a thread block naturally breaks a burst). */
-function MessageGroups({ groups }: { groups: Group[] }) {
+function MessageGroups({ groups, isMain }: { groups: Group[]; isMain: boolean }) {
   const copyMessage = useCallback((text: string) => void navigator.clipboard.writeText(text), [])
   const senders = groups.map(senderOf)
   return (
@@ -163,7 +213,15 @@ function MessageGroups({ groups }: { groups: Group[] }) {
         switch (item.kind) {
           case "user":
             return (
-              <ChatMessage key={`u-${i}`} sender="user">
+              // Main-thread prompts carry the minimap's anchor class (see
+              // lib/minimap.ts): className is the one prop ChatMessage actually
+              // forwards to its root element. Child-thread prompts stay unmarked —
+              // they live inside collapsible blocks with no stable position.
+              <ChatMessage
+                key={`u-${i}`}
+                sender="user"
+                className={isMain ? USER_ANCHOR_CLASS : undefined}
+              >
                 <ChatMessageBubble
                   name={burstStart ? <span className="chunky-sender">You</span> : undefined}
                 >
@@ -181,7 +239,9 @@ function MessageGroups({ groups }: { groups: Group[] }) {
               <ChatMessage key={`a-${i}`} {...assistant}>
                 <ChatMessageBubble variant="ghost">
                   {item.text ? (
-                    <Markdown isStreaming={item.streaming}>{item.text}</Markdown>
+                    <Markdown isStreaming={item.streaming} components={MARKDOWN_COMPONENTS}>
+                      {item.text}
+                    </Markdown>
                   ) : item.streaming ? (
                     <span className="chunky-thinking">Chunky's thinking…</span>
                   ) : null}
@@ -279,7 +339,7 @@ function ParentBody({
       {plan.map((node, i) => (
         <Fragment key={i}>
           {node.kind === "items" ? (
-            <MessageGroups groups={node.groups} />
+            <MessageGroups groups={node.groups} isMain={parentId === MAIN} />
           ) : (
             node.threads.map((thread) => (
               <ThreadBlock

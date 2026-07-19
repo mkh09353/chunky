@@ -11,7 +11,9 @@ import { EmptyChat } from "./EmptyChat"
 import { ModelPickerMenu } from "./ModelPickerMenu"
 import { SkillsBrowserMenu } from "./SkillsBrowserMenu"
 import { TodoChecklist } from "./TodoChecklist"
+import { TranscriptMinimap } from "./TranscriptMinimap"
 import { TranscriptView } from "./TranscriptView"
+import { buildMinimapEntries } from "../lib/minimap"
 
 // Mirror the TUI's clipboard-image cap (~7MB of base64) — bigger pastes are
 // skipped rather than resized.
@@ -124,6 +126,26 @@ export function ChatPane({
   const empty = !hasTranscript(state)
   const [imageNotice, setImageNotice] = useState(false)
   const composerRootRef = useRef<HTMLDivElement>(null)
+
+  // One minimap bar per main-thread user turn. Recomputed only when the transcript
+  // changes identity, which for a streaming reply is every delta — but the walk is
+  // O(items) over a list we already hold, and the result feeds a handful of bars.
+  const minimapEntries = useMemo(() => buildMinimapEntries(state), [state])
+
+  // The composer is a STICKY DOCK INSIDE the scroll container, so a gutter pinned
+  // to the pane's full height would run underneath it. Measure the dock and stop
+  // the gutter above it. ResizeObserver because the dock grows with the draft, the
+  // attachment thumbnails, and the cache banner.
+  const [composerInset, setComposerInset] = useState(0)
+  useEffect(() => {
+    const el = composerRootRef.current
+    if (!el) return
+    const sync = () => setComposerInset(el.offsetHeight)
+    sync()
+    const ro = new ResizeObserver(sync)
+    ro.observe(el)
+    return () => ro.disconnect()
+  }, [empty])
 
   useEffect(() => {
     if (focusSignal == null) return
@@ -368,6 +390,15 @@ export function ChatPane({
       onKeyDown={handleKeyDown}
       onFocusCapture={handleFocusCapture}
     >
+      {/* Sits OUTSIDE ChatLayout: it must not join the scrolled content, or it
+          would change scrollHeight and confuse the at-bottom tracking below. */}
+      {!empty ? (
+        <TranscriptMinimap
+          scrollRef={layoutRef}
+          entries={minimapEntries}
+          bottomInset={composerInset}
+        />
+      ) : null}
       <ChatLayout
         ref={layoutRef}
         density="balanced"

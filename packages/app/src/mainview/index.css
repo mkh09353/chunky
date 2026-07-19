@@ -2,18 +2,50 @@
 @import "@astryxdesign/core/astryx.css";
 @import "@astryxdesign/theme-neutral/theme.css";
 
-/* Chunky is a permanently-dark app (index.html hard-codes data-theme="dark").
+/* FORCED, SINGLE-KEYWORD color-scheme — the fix for the composer "invisible text" bug.
+
    Astryx's theme colors are all `light-dark(<light>, <dark>)`, so the branch a
    node paints depends on its computed `color-scheme`. Astryx only sets
-   `color-scheme: dark` on the inner <Theme mode="dark"> wrapper, leaving the
-   document root at `light dark` — which, under an OS in Light Mode, resolves
-   `light-dark()` to the LIGHT branch. Any node that slips out of the wrapper's
+   `color-scheme` on the inner <Theme> wrapper, leaving the document root at the
+   ambiguous `light dark` pair — and any node that slips out of the wrapper's
    color-scheme context (WebKit is stricter than Chromium about inheriting it
-   into contenteditable subtrees) then paints near-black text on the dark UI —
-   e.g. the composer renders typed text as invisible specks ("dots"). Forcing
-   the root to `dark` makes light-dark() resolve dark everywhere, unconditionally. */
-:root {
+   into contenteditable subtrees) then resolves light-dark() the WRONG way. That
+   painted near-black text on the dark UI: the composer rendered typed text as
+   invisible specks ("dots").
+
+   The app used to solve this by pinning the root to `dark` forever. It now
+   supports system/light/dark, so the pin FOLLOWS the resolved theme instead:
+   lib/theme.tsx (and the pre-paint bootstrap in index.html) always write a
+   concrete "light" | "dark" to `data-theme` plus an inline `color-scheme`, never
+   `system` and never the `light dark` pair. These rules are the stylesheet-side
+   half of that guarantee, so the invariant holds even if the inline style is
+   ever dropped. Both modes are pinned — that's what keeps the bug fixed. */
+:root[data-theme="dark"] {
   color-scheme: dark;
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+}
+
+/* Belt and braces for the original bug: re-assert the scheme ON the composer's
+   contenteditable subtree, so it can't inherit an ambiguous value under WebKit
+   no matter how many isolated stacking contexts it sits inside. */
+:root[data-theme="dark"] .astryx-chat-composer-input,
+:root[data-theme="dark"] [contenteditable="true"] {
+  color-scheme: dark;
+}
+
+:root[data-theme="light"] .astryx-chat-composer-input,
+:root[data-theme="light"] [contenteditable="true"] {
+  color-scheme: light;
+}
+
+/* And pin the actual text colour to the theme token, so typed text is legible
+   even if a future DS change stops cascading a colour into the editable. */
+.chunky-readable .astryx-chat-composer-input,
+.chunky-readable [contenteditable="true"] {
+  color: var(--color-text-primary);
 }
 
 html,
@@ -44,21 +76,49 @@ body,
   /* Width of the readable content column shared by transcript and composer. */
   --chunky-readable: 46rem;
 
-  /* Brand palette lifted verbatim from chunky.to. */
+  /* Brand palette lifted verbatim from chunky.to. These are the fixed brand hues;
+     the THEME-AWARE choices are made below, in the accent token mapping. */
   --chunky-purple: #7c4ddb;
   --chunky-purple-deep: #5f35b8;
   --chunky-purple-soft: #b9a3f0;
   --chunky-purple-circle: #a98fe8;
   --chunky-ink: #23263a;
 
+  /* The brand purple as *text/icon* colour, picked per mode for contrast against
+     the body: the soft lavender reads well on the dark body but is far too pale
+     on white, so light mode uses the deep purple instead. Every rule that wants
+     "purple text" should use this rather than --chunky-purple-soft directly. */
+  --chunky-purple-text: light-dark(var(--chunky-purple-deep), var(--chunky-purple-soft));
+
+  /* Faint purple wash for hovers/selected rows — a near-black tint on dark, a
+     near-white tint on light. */
+  --chunky-purple-wash: light-dark(#f1ebfc, #251d3d);
+
+  /* Elevation. Heavy black shadow reads as depth on a dark body but as grime on a
+     light one, so both alpha and hue soften in light mode. Used as the FALLBACK
+     to Astryx's own shadow tokens, preserving the existing var(--shadow-*, …) shape. */
+  --chunky-shadow-lift: light-dark(0 16px 36px rgba(15, 12, 30, 0.14), 0 16px 36px rgba(0, 0, 0, 0.4));
+  --chunky-shadow-menu: light-dark(0 8px 24px rgb(15 12 30 / 10%), 0 8px 24px rgb(0 0 0 / 18%));
+  --chunky-shadow-panel: light-dark(0 1.5rem 4rem rgba(15, 12, 30, 0.18), 0 1.5rem 4rem rgba(0, 0, 0, 0.45));
+
+  /* Modal backdrop. A 62%-black scrim over a light UI is oppressive; lighten and
+     tint it so the dimmed content still reads as content. */
+  --chunky-scrim: light-dark(rgba(28, 24, 45, 0.38), rgba(0, 0, 0, 0.62));
+
+  /* Semantic text colours that must flip contrast per mode — the dark-mode values
+     are pale-on-black and would be illegible on white. */
+  --chunky-text-danger: light-dark(#b3261e, #f58b8b);
+  --chunky-text-warning: light-dark(#8a5a00, #e0b252);
+
   /* Retint Astryx's accent (used for primary buttons, selected nav, focus)
-     from near-white to Chunky purple. Text/icon accents run lighter so they
-     stay legible on the dark body. */
+     from near-white to Chunky purple. The solid purple carries white text in
+     both modes; text/icon accents follow --chunky-purple-text so they stay
+     legible against whichever body they're on. */
   --color-accent: var(--chunky-purple);
-  --color-accent-muted: #251d3d;
+  --color-accent-muted: var(--chunky-purple-wash);
   --color-on-accent: #ffffff;
-  --color-text-accent: var(--chunky-purple-soft);
-  --color-icon-accent: var(--chunky-purple-soft);
+  --color-text-accent: var(--chunky-purple-text);
+  --color-icon-accent: var(--chunky-purple-text);
   --color-focus: var(--chunky-purple);
 }
 
@@ -94,6 +154,9 @@ body,
   min-height: 0;
   display: flex;
   flex-direction: column;
+  /* Positioning context for the transcript minimap, which overlays the left
+     gutter without joining the scrolled content. */
+  position: relative;
 }
 
 /* Center transcript + composer in a comfortable reading measure instead of
@@ -174,16 +237,16 @@ body,
 
 .chunky-suggestion:hover {
   background: var(--color-overlay-hover);
-  border-color: var(--chunky-purple-soft);
+  border-color: var(--chunky-purple-text);
 }
 
 .chunky-suggestion:hover .chunky-suggestion-icon {
-  color: var(--chunky-purple-soft);
+  color: var(--chunky-purple-text);
 }
 
 /* Purple period echoing the chunky.to "Chunky." wordmark. */
 .chunky-brand-dot {
-  color: var(--chunky-purple-soft);
+  color: var(--chunky-purple-text);
 }
 
 .chunky-suggestion-icon {
@@ -203,7 +266,7 @@ body,
   border-radius: var(--radius-full);
   overflow: hidden;
   flex-shrink: 0;
-  background: var(--chunky-purple-circle);
+  background: var(--chunky-purple-text);
 }
 
 .chunky-mark {
@@ -247,7 +310,7 @@ body,
 
 .chunky-response-warning {
   margin-top: var(--spacing-2);
-  color: var(--color-text-yellow, #b7791f);
+  color: var(--color-text-yellow, var(--chunky-text-warning));
   font-size: var(--font-size-xs);
 }
 
@@ -426,7 +489,7 @@ body,
 }
 
 .astryx-side-nav ::-webkit-scrollbar-thumb:hover {
-  background-color: var(--chunky-purple-soft);
+  background-color: var(--chunky-purple-text);
 }
 
 /* ---- @-mention file menu -------------------------------------------------- */
@@ -535,7 +598,7 @@ body,
 }
 
 .chunky-repotab-add:hover:not(:disabled) {
-  border-color: var(--chunky-purple-soft);
+  border-color: var(--chunky-purple-text);
   color: var(--color-text-primary);
 }
 
@@ -569,7 +632,7 @@ body,
   border-radius: var(--radius-container);
   background: var(--color-background-popover);
   border: 1px solid var(--color-border);
-  box-shadow: var(--shadow-lift, 0 16px 36px rgba(0, 0, 0, 0.4));
+  box-shadow: var(--shadow-lift, var(--chunky-shadow-lift));
   display: flex;
   flex-direction: column;
   gap: var(--spacing-2);
@@ -719,7 +782,7 @@ body,
   border-radius: var(--radius-container);
   background: var(--color-background-popover);
   border: 1px solid var(--color-border);
-  box-shadow: var(--shadow-lift, 0 16px 36px rgba(0, 0, 0, 0.4));
+  box-shadow: var(--shadow-lift, var(--chunky-shadow-lift));
   display: flex;
   flex-direction: column;
   gap: var(--spacing-1);
@@ -798,7 +861,7 @@ body,
   width: 0.9rem;
   height: 0.9rem;
   flex-shrink: 0;
-  color: var(--chunky-purple-soft);
+  color: var(--chunky-purple-text);
 }
 
 /* Star toggle: invisible until the row is hovered or it's already starred. */
@@ -827,7 +890,7 @@ body,
 }
 
 .chunky-model-star-on {
-  color: var(--chunky-purple-soft);
+  color: var(--chunky-purple-text);
 }
 
 .chunky-model-star svg {
@@ -913,7 +976,7 @@ body,
 }
 
 .chunky-model-pill:hover:not(:disabled) {
-  border-color: var(--chunky-purple-soft);
+  border-color: var(--chunky-purple-text);
   color: var(--color-text-primary);
 }
 
@@ -1004,7 +1067,7 @@ body,
 }
 
 .chunky-skill-toggle:hover {
-  border-color: var(--chunky-purple-soft);
+  border-color: var(--chunky-purple-text);
   color: var(--color-text-primary);
 }
 
@@ -1026,7 +1089,7 @@ body,
 
 /* Queued-skill chip in the composer footer (reuses the attachment chip look). */
 .chunky-skill-chip {
-  color: var(--chunky-purple-soft);
+  color: var(--chunky-purple-text);
 }
 
 /* ---- Chrome --------------------------------------------------------------- */
@@ -1093,7 +1156,7 @@ body,
   border: 1px solid var(--color-border-subtle);
   border-radius: var(--radius-element);
   background: var(--color-background-elevated, var(--color-background-surface));
-  box-shadow: var(--shadow-menu, 0 8px 24px rgb(0 0 0 / 18%));
+  box-shadow: var(--shadow-menu, var(--chunky-shadow-menu));
 }
 
 .chunky-todo-item {
@@ -1141,7 +1204,7 @@ body,
   border-radius: var(--radius-full);
   background: var(--color-background-surface);
   font-size: var(--font-size-xs);
-  color: var(--chunky-purple-soft);
+  color: var(--chunky-purple-text);
 }
 
 .chunky-queue-pill,
@@ -1291,8 +1354,8 @@ body,
   cursor: pointer;
 }
 
-.chunky-onboarding-backdrop { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; padding: var(--spacing-6); background: rgba(0,0,0,.62); animation: chunky-onboarding-in 160ms ease-out; }
-.chunky-onboarding { position: relative; width: min(100%, 40rem); max-height: calc(100vh - 3rem); overflow: auto; padding: var(--spacing-8); border: 1px solid var(--color-border); border-radius: var(--radius-container); background: var(--color-background-surface); box-shadow: 0 1.5rem 4rem rgba(0,0,0,.45); }
+.chunky-onboarding-backdrop { position: fixed; inset: 0; z-index: 100; display: flex; align-items: center; justify-content: center; padding: var(--spacing-6); background: var(--chunky-scrim); animation: chunky-onboarding-in 160ms ease-out; }
+.chunky-onboarding { position: relative; width: min(100%, 40rem); max-height: calc(100vh - 3rem); overflow: auto; padding: var(--spacing-8); border: 1px solid var(--color-border); border-radius: var(--radius-container); background: var(--color-background-surface); box-shadow: var(--chunky-shadow-panel); }
 .chunky-onboarding h2 { margin: 0 0 var(--spacing-2); font-size: var(--font-size-2xl); }
 .chunky-onboarding-muted { color: var(--color-text-secondary); margin: 0 0 var(--spacing-5); }
 .chunky-onboarding-close { position: absolute; right: var(--spacing-4); top: var(--spacing-4); border: 0; background: transparent; color: var(--color-text-secondary); font-size: 1.5rem; cursor: pointer; }
@@ -1300,7 +1363,7 @@ body,
 .chunky-onboarding-provider { display: grid; grid-template-columns: 1fr auto auto; align-items: center; gap: var(--spacing-3); padding: var(--spacing-3); border: 1px solid var(--color-border); border-radius: var(--radius-container); }
 .chunky-onboarding-provider small, .chunky-onboarding-card small { display: block; color: var(--color-text-secondary); margin-top: var(--spacing-1); }
 .chunky-onboarding-pill { font-size: var(--font-size-xs); color: var(--color-text-secondary); }
-.chunky-onboarding-pill.ready, .chunky-onboarding-pill.inherited { color: var(--chunky-purple-soft); }
+.chunky-onboarding-pill.ready, .chunky-onboarding-pill.inherited { color: var(--chunky-purple-text); }
 .chunky-onboarding button { border: 1px solid var(--color-border); border-radius: var(--radius-control); padding: var(--spacing-2) var(--spacing-3); background: transparent; color: var(--color-text-primary); cursor: pointer; font: inherit; }
 .chunky-onboarding button:disabled { opacity: .5; cursor: default; }
 .chunky-onboarding-primary { background: var(--chunky-purple) !important; border-color: var(--chunky-purple) !important; color: white !important; }
@@ -1310,7 +1373,7 @@ body,
 .chunky-onboarding-card.selected { border-color: var(--chunky-purple); background: var(--color-accent-muted); }
 .chunky-onboarding-field { display: grid; gap: var(--spacing-1); margin-top: var(--spacing-3); color: var(--color-text-secondary); font-size: var(--font-size-sm); }
 .chunky-onboarding-field input { width: 100%; padding: var(--spacing-3); border: 1px solid var(--color-border); border-radius: var(--radius-control); background: var(--color-background-body); color: var(--color-text-primary); font: inherit; }
-.chunky-onboarding-error { color: #f58b8b; margin-top: var(--spacing-3); }
+.chunky-onboarding-error { color: var(--chunky-text-danger); margin-top: var(--spacing-3); }
 .chunky-onboarding-loading { color: var(--color-text-secondary); }
 @keyframes chunky-onboarding-in { from { opacity: 0 } to { opacity: 1 } }
 
@@ -1385,7 +1448,7 @@ body,
   height: 0.5rem;
   flex-shrink: 0;
   border-radius: var(--radius-full);
-  background: var(--chunky-purple-soft);
+  background: var(--chunky-purple-text);
   animation: chunky-pulse 1.4s ease-in-out infinite;
 }
 
@@ -1401,7 +1464,7 @@ body,
   border: 1px solid var(--color-border);
   border-radius: var(--radius-container);
   background: var(--color-background-surface);
-  box-shadow: 0 1.5rem 4rem rgba(0, 0, 0, 0.45);
+  box-shadow: var(--chunky-shadow-panel);
 }
 
 .chunky-modal h2 {
@@ -1440,7 +1503,7 @@ body,
 
 .chunky-onboarding-cancel:hover {
   color: var(--color-text-primary) !important;
-  border-color: var(--chunky-purple-soft) !important;
+  border-color: var(--chunky-purple-text) !important;
 }
 
 /* ---- Add-repo progress ------------------------------------------------------
@@ -1455,7 +1518,7 @@ body,
   flex-shrink: 0;
   border-radius: var(--radius-full);
   border: 2px solid var(--color-border-emphasized);
-  border-top-color: var(--chunky-purple-soft);
+  border-top-color: var(--chunky-purple-text);
   animation: chunky-spin 700ms linear infinite;
 }
 
@@ -1495,4 +1558,211 @@ body,
   border-radius: var(--radius-element);
   padding: var(--spacing-1-5) var(--spacing-2);
   outline: none;
+}
+
+/* ---- Appearance toggle (TopNav end slot) -----------------------------------
+
+   One quiet icon button cycling system → light → dark, mirroring `/theme`. Lives
+   in the frameless header, so it must opt out of the window drag region — the
+   `.astryx-app-shell-header :is(button, …)` rule above already covers that. */
+
+.chunky-theme-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-element);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.chunky-theme-toggle:hover {
+  background: var(--color-background-hover);
+  color: var(--color-text-primary);
+  border-color: var(--color-border);
+}
+
+.chunky-theme-toggle:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.chunky-theme-toggle-icon {
+  width: 1.05rem;
+  height: 1.05rem;
+}
+
+/* ---- Long-transcript performance (content-visibility) -----------------------
+
+   Long sessions used to lay out and paint every message in the thread. Rather
+   than windowing the list in JS, we let the engine skip the off-screen work:
+   `content-visibility: auto` makes a row's subtree render-skipped while it's
+   outside the viewport, and `contain-intrinsic-size` supplies a placeholder box
+   so the scrollbar still has something to measure.
+
+   WHY NOT A WINDOWING LIBRARY: virtualization wants fixed/measurable row heights
+   and full control of the scroll container. Ours are neither — rows are variable
+   height streaming markdown (which changes size on every delta), sub-thread blocks
+   expand and collapse on click, and the scroll container belongs to the design
+   system's ChatLayout and is shared with a sticky composer dock. A windowed list
+   would have had to re-implement ChatPane's at-bottom tracking and re-pin logic
+   against synthetic scrolls, and would break Ctrl+T fold-all and the minimap's
+   anchor jumping (targets that aren't mounted can't be measured or scrolled to).
+   content-visibility keeps the real DOM, real scroll semantics, and real anchors —
+   every one of those features keeps working untouched — while still skipping the
+   expensive part. It degrades to "render everything" (i.e. today's behaviour) on
+   engines that don't support it, so there is no fallback path to maintain.
+
+   The `auto` in `contain-intrinsic-size` is load-bearing: the engine remembers each
+   row's LAST RENDERED size instead of pinning it to the guess, so scroll geometry
+   converges on the truth as you scroll and doesn't rubber-band. */
+
+.chunky-transcript .astryx-chat-message {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 4rem;
+}
+
+/* Sub-thread blocks are the other unbounded thing in a transcript: an expanded
+   fan-out can hold hundreds of rows. Taller guess since an expanded block is big;
+   `auto` corrects it after first paint either way. */
+.chunky-transcript .chunky-subthread {
+  content-visibility: auto;
+  contain-intrinsic-size: auto 8rem;
+}
+
+/* ---- Transcript minimap ----------------------------------------------------
+
+   A slim gutter of bars down the LEFT edge of the chat viewport — one per
+   main-thread user turn — for navigating a long thread. Left, deliberately: the
+   native scrollbar owns the right edge, and the transcript is centred in a 46rem
+   column, so the left gutter is dead space at typical window widths.
+
+   The container never takes pointer events; only the bars do, and only while the
+   gutter is shown. Otherwise this overlay would swallow clicks and text selection
+   aimed at the transcript underneath it. */
+
+.chunky-minimap {
+  position: absolute;
+  left: 0;
+  top: var(--spacing-4);
+  width: 2.75rem;
+  z-index: 5;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity 160ms ease;
+}
+
+.chunky-minimap[data-visible] {
+  opacity: 1;
+}
+
+.chunky-minimap-strip {
+  position: relative;
+  height: 100%;
+  /* Bars are positioned by percentage across the full track; the inset keeps the
+     first and last from sitting flush against the ends. */
+  padding-block: var(--spacing-3);
+  box-sizing: border-box;
+}
+
+.chunky-minimap-bar {
+  position: absolute;
+  left: var(--spacing-4);
+  width: 0.75rem;
+  height: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: var(--radius-full);
+  background: var(--color-border-emphasized);
+  cursor: pointer;
+  pointer-events: none;
+  transition: background 120ms ease, width 120ms ease, transform 120ms ease;
+}
+
+.chunky-minimap[data-visible] .chunky-minimap-bar {
+  pointer-events: auto;
+}
+
+.chunky-minimap-bar:hover,
+.chunky-minimap-bar:focus-visible {
+  background: var(--chunky-purple-text);
+  width: 1.25rem;
+  outline: none;
+}
+
+.chunky-minimap-bar:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 3px;
+}
+
+/* The turn currently at the top of the viewport. Wider and in full brand purple so
+   your place in the thread reads at a glance. */
+.chunky-minimap-bar[data-active] {
+  background: var(--chunky-purple);
+  width: 1.5rem;
+  height: 3px;
+}
+
+/* Hover card, anchored beside the bar it describes. Floats over the transcript,
+   so it carries the same elevation treatment as the pickers/popovers. */
+.chunky-minimap-preview {
+  position: absolute;
+  left: calc(var(--spacing-4) + 1.75rem);
+  transform: translateY(-50%);
+  width: 20rem;
+  max-width: 40vw;
+  display: flex;
+  flex-direction: column;
+  gap: var(--spacing-1);
+  padding: var(--spacing-2) var(--spacing-3);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-container);
+  background: var(--color-background-popover);
+  box-shadow: var(--shadow-menu, var(--chunky-shadow-menu));
+  pointer-events: none;
+  z-index: 6;
+}
+
+.chunky-minimap-preview-prompt {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-primary);
+  font-weight: var(--font-weight-medium);
+  /* Two lines of prompt, then ellipsis — enough to recognise the turn. */
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.chunky-minimap-preview-reply {
+  font-size: var(--font-size-xs);
+  color: var(--color-text-secondary);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+/* Below this width the centred transcript column reaches the left edge, and the
+   gutter would sit on top of the conversation instead of beside it. */
+@media (max-width: 60rem) {
+  .chunky-minimap {
+    display: none;
+  }
+}
+
+/* Motion-sensitive users: no fade, no bar growth. (Smooth scrolling on a jump is
+   disabled in TranscriptMinimap.tsx, which reads the same media query.) */
+@media (prefers-reduced-motion: reduce) {
+  .chunky-minimap,
+  .chunky-minimap-bar {
+    transition: none;
+  }
 }

@@ -14,5 +14,6 @@ settings.json
 models-dev-cache.json
 repos.json
 .chunky-fff/
+.chunky-notes/
 relay.json
 .playwright-mcp/

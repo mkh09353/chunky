@@ -31,6 +31,7 @@ import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { runWorkflowScript, workflowConcurrency, type WorkflowHost, type WorkflowTier } from "./workflow/engine.ts"
 import { workflowRouteResolver } from "./workflow/router.ts"
 import { streamWithCheckpointRecovery } from "./checkpoint-recovery.ts"
+import { createDelegateWatchdog } from "./watchdog.ts"
 
 /** Reasoning-effort cap for `big`-tier workflow agents: keep a lower configured
  *  effort, clamp anything at/above medium (or unset) to medium. */
@@ -193,6 +194,10 @@ export class ThreadManager implements ThreadSpawner {
     if (!sessionChildren) { sessionChildren = new Map(); runningChildrenBySession.set(this.rootId, sessionChildren) }
     sessionChildren.set(childThreadId, { threadId: childThreadId, title: opts.title })
 
+    // Inactivity watchdog: if the child's stream goes silent (stalled provider
+    // connection), abort it and hand the lead a real error instead of hanging
+    // the awaited tool promise forever. Every event the child emits resets it.
+    const dog = createDelegateWatchdog({ emit: this.emit, label: `child thread "${opts.title}"`, parent: this.abort })
     try {
       if (providerRuntime(selection.provider) === "anthropic-sdk") {
         const { runAnthropicAgent } = await import("./anthropic-runner.ts")
@@ -201,11 +206,11 @@ export class ThreadManager implements ThreadSpawner {
             selection,
             threadId: childThreadId,
             prompt: opts.instructions,
-            emit: this.emit,
+            emit: dog.emit,
             eventThreadId: childThreadId,
             freshSession: true,
             workspace: this.workspace,
-            abort: this.abort,
+            abort: dog.abort,
           }),
           "child thread",
         )
@@ -223,16 +228,17 @@ export class ThreadManager implements ThreadSpawner {
             configurable: { thread_id: childThreadId, workspace: this.workspace },
             streamMode: ["updates", "messages"],
             recursionLimit: RECURSION_LIMIT,
-            signal: this.abort?.signal,
+            signal: dog.abort.signal,
           } as any,
         ),
       )
-      return ThreadManager.nonEmptyReport(await translateStream(stream, childThreadId, this.emit), "child thread")
+      return ThreadManager.nonEmptyReport(await translateStream(stream, childThreadId, dog.emit), "child thread")
     } catch (err) {
-      const message = (err as Error)?.message ?? String(err)
+      const message = dog.timedOut() ? dog.timeoutMessage() : ((err as Error)?.message ?? String(err))
       this.emit({ type: "error", message, threadId: childThreadId } as AgentEvent)
       return `error: ${message}`
     } finally {
+      dog.dispose()
       this.emit({ type: "thread.status", threadId: childThreadId, status: "idle", title: opts.title })
       unregisterThread(childThreadId)
       this.selections.delete(childThreadId)
@@ -344,6 +350,7 @@ export class ThreadManager implements ThreadSpawner {
     this.emit({ type: "thread.status", threadId: advisorThreadId, status: "running", title: "Advisor" })
 
     let finalText = ""
+    const dog = createDelegateWatchdog({ emit: this.emit, label: "advisor", parent: this.abort })
     try {
       if (providerRuntime(advisorSel.provider) === "anthropic-sdk") {
         // Anthropic advisors (Claude) run via the SDK runtime, not LangChain —
@@ -354,12 +361,12 @@ export class ThreadManager implements ThreadSpawner {
           selection: advisorSel,
           threadId: advisorThreadId,
           prompt: content,
-          emit: this.emit,
+          emit: dog.emit,
           eventThreadId: advisorThreadId,
           systemPrompt: ADVISOR_SYSTEM_PROMPT,
           allowedTools: ["mcp__chunky__read", "mcp__chunky__bash"],
           workspace: this.workspace,
-          abort: this.abort,
+          abort: dog.abort,
         })
       } else {
         // Same async-local isolation as spawn(): a cleared store so the advisor's
@@ -373,17 +380,18 @@ export class ThreadManager implements ThreadSpawner {
               configurable: { thread_id: advisorThreadId, workspace: this.workspace },
               streamMode: ["updates", "messages"],
               recursionLimit: RECURSION_LIMIT,
-              signal: this.abort?.signal,
+              signal: dog.abort.signal,
             } as any,
           ),
         )
-        finalText = await translateStream(stream, advisorThreadId, this.emit)
+        finalText = await translateStream(stream, advisorThreadId, dog.emit)
       }
     } catch (err) {
-      const message = (err as Error)?.message ?? String(err)
+      const message = dog.timedOut() ? dog.timeoutMessage() : ((err as Error)?.message ?? String(err))
       this.emit({ type: "error", message, threadId: advisorThreadId } as AgentEvent)
       finalText = `error: ${message}`
     } finally {
+      dog.dispose()
       this.emit({ type: "thread.status", threadId: advisorThreadId, status: "idle", title: "Advisor" })
     }
 
@@ -448,6 +456,7 @@ export class ThreadManager implements ThreadSpawner {
     this.emit({ type: "thread.status", threadId: sidekickThreadId, status: "running", title })
 
     let finalText = ""
+    const dog = createDelegateWatchdog({ emit: this.emit, label: "sidekick", parent: this.abort })
     try {
       const agentsMd = await distilledAgentsMd(this.workspace, rootSelection)
       if (providerRuntime(sidekickSel.provider) === "anthropic-sdk") {
@@ -459,7 +468,7 @@ export class ThreadManager implements ThreadSpawner {
           selection: sidekickSel,
           threadId: sidekickThreadId,
           prompt: opts.brief,
-          emit: this.emit,
+          emit: dog.emit,
           eventThreadId: sidekickThreadId,
           systemPrompt: sidekickSystemPrompt(agentsMd),
           allowedTools: [
@@ -472,7 +481,7 @@ export class ThreadManager implements ThreadSpawner {
           ],
           workspace: this.workspace,
           agentsMd,
-          abort: this.abort,
+          abort: dog.abort,
         })
       } else {
         // Same async-local isolation as spawn(): a cleared store so the sidekick's
@@ -485,17 +494,18 @@ export class ThreadManager implements ThreadSpawner {
               configurable: { thread_id: sidekickThreadId, workspace: this.workspace },
               streamMode: ["updates", "messages"],
               recursionLimit: RECURSION_LIMIT,
-              signal: this.abort?.signal,
+              signal: dog.abort.signal,
             } as any,
           ),
         )
-        finalText = await translateStream(stream, sidekickThreadId, this.emit)
+        finalText = await translateStream(stream, sidekickThreadId, dog.emit)
       }
     } catch (err) {
-      const message = (err as Error)?.message ?? String(err)
+      const message = dog.timedOut() ? dog.timeoutMessage() : ((err as Error)?.message ?? String(err))
       this.emit({ type: "error", message, threadId: sidekickThreadId } as AgentEvent)
       finalText = `error: ${message}`
     } finally {
+      dog.dispose()
       this.emit({ type: "thread.status", threadId: sidekickThreadId, status: "idle", title })
       sessionSidekicks.delete(sidekickKey)
       if (sessionSidekicks.size === 0) activeSidekicks.delete(this.rootId)

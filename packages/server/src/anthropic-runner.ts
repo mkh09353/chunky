@@ -418,6 +418,10 @@ export async function translateAnthropicMessages(
   const textChunks: string[] = []
   let sawInit = false
   let pendingEndReason: MessageEndReason = "complete"
+  // Remember SDK-reported failures: if the stream ends having produced NO text,
+  // surfacing the failure as a thrown error (instead of returning "") is the
+  // only way a delegating caller (sidekick/advisor/spawn) learns what happened.
+  let lastErrorDetail: string | null = null
 
   const openAssistant = () => {
     if (!assistantOpen) {
@@ -487,6 +491,7 @@ export async function translateAnthropicMessages(
 
       if (message.type === "assistant" && message.error) {
         closeAssistant()
+        lastErrorDetail = String(message.error)
         emit({ type: "error", message: `Anthropic request failed: ${message.error}` })
         continue
       }
@@ -497,6 +502,7 @@ export async function translateAnthropicMessages(
           if (textChunks.length === 0 && message.result) appendText(message.result)
         } else {
           const detail = message.errors.join("; ") || message.subtype
+          lastErrorDetail = detail
           emit({ type: "error", message: `Anthropic Agent SDK failed: ${detail}` })
         }
         // Result carries the turn's usage; arm the cache watch with its prompt
@@ -521,7 +527,13 @@ export async function translateAnthropicMessages(
   }
 
   if (!sawInit) throw new Error("anthropic: Agent SDK stream ended before initialization")
-  return textChunks.join("")
+  const text = textChunks.join("")
+  // A run that produced no text at all is a failure, not a report — throw so the
+  // caller returns a real error string instead of a silent empty result.
+  if (text.trim() === "" && lastErrorDetail) {
+    throw new Error(`Anthropic Agent SDK run produced no output: ${lastErrorDetail}`)
+  }
+  return text
 }
 
 // Anthropic accepts base64 image blocks only for these media types; anything

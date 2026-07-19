@@ -147,6 +147,15 @@ export class ThreadManager implements ThreadSpawner {
    * root, the child links to the main thread (parentThreadId=null); otherwise the
    * child nests under the caller (deeper recursion).
    */
+  /** An empty report from a delegate is always a failure mode, never an answer:
+   *  returning "" renders as "completed with no output" and leaves the lead (and
+   *  the user) with zero signal about what happened. Replace it with an explicit,
+   *  actionable error string. */
+  private static nonEmptyReport(text: string, who: string): string {
+    if (text.trim() !== "") return text
+    return `error: ${who} finished without producing any output — its run likely failed or was cut off mid-stream. Check the ${who} thread for errors and re-send the brief (or split it smaller).`
+  }
+
   async spawn(opts: {
     callerThreadId: string
     title: string
@@ -187,16 +196,19 @@ export class ThreadManager implements ThreadSpawner {
     try {
       if (providerRuntime(selection.provider) === "anthropic-sdk") {
         const { runAnthropicAgent } = await import("./anthropic-runner.ts")
-        return await runAnthropicAgent({
-          selection,
-          threadId: childThreadId,
-          prompt: opts.instructions,
-          emit: this.emit,
-          eventThreadId: childThreadId,
-          freshSession: true,
-          workspace: this.workspace,
-          abort: this.abort,
-        })
+        return ThreadManager.nonEmptyReport(
+          await runAnthropicAgent({
+            selection,
+            threadId: childThreadId,
+            prompt: opts.instructions,
+            emit: this.emit,
+            eventThreadId: childThreadId,
+            freshSession: true,
+            workspace: this.workspace,
+            abort: this.abort,
+          }),
+          "child thread",
+        )
       }
 
       // A child spawned from inside the parent's tool node runs on the parent's
@@ -215,7 +227,7 @@ export class ThreadManager implements ThreadSpawner {
           } as any,
         ),
       )
-      return await translateStream(stream, childThreadId, this.emit)
+      return ThreadManager.nonEmptyReport(await translateStream(stream, childThreadId, this.emit), "child thread")
     } catch (err) {
       const message = (err as Error)?.message ?? String(err)
       this.emit({ type: "error", message, threadId: childThreadId } as AgentEvent)
@@ -375,7 +387,7 @@ export class ThreadManager implements ThreadSpawner {
       this.emit({ type: "thread.status", threadId: advisorThreadId, status: "idle", title: "Advisor" })
     }
 
-    return finalText
+    return ThreadManager.nonEmptyReport(finalText, "advisor")
   }
 
   /**
@@ -489,6 +501,6 @@ export class ThreadManager implements ThreadSpawner {
       if (sessionSidekicks.size === 0) activeSidekicks.delete(this.rootId)
     }
 
-    return finalText
+    return ThreadManager.nonEmptyReport(finalText, "sidekick")
   }
 }

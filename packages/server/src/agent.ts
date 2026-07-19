@@ -59,6 +59,7 @@ import { monitor } from "./tools/monitor.ts"
 import { updateTodos } from "./tools/todos.ts"
 import { resolveFileToolProfile } from "./settings.ts"
 import { hashlineRead, hashlineEdit } from "./tools/hashline/index.ts"
+import { browserTools } from "./tools/browser.ts"
 
 export function makePostCompactionReminder() {
   let handledSummaryId: string | undefined
@@ -236,6 +237,7 @@ export function executorToolsFor(selection: AgentSelection) {
     manageModels,
     manageSkillReposTool,
     ...skillTools,
+    ...browserTools,
     ...(advisorSel ? [advisor] : []),
   ]
   return { tools, hasAdvisor: advisorSel != null, hasSidekick: sidekickSel != null }

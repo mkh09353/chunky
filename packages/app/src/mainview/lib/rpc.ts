@@ -16,6 +16,12 @@ export function nativeRpcAvailable(): boolean {
 // webview app.
 export type RpcClient = {
   request?: Record<string, (...a: unknown[]) => Promise<unknown>>
+  // Incoming push messages from bun (`{ type: "message", id, payload }`).
+  // "*" is a wildcard: (messageName, payload).
+  addMessageListener?: (
+    message: string,
+    listener: (...a: unknown[]) => void,
+  ) => void
 }
 
 // The electrobun RPC client, lazily created once. A single shared instance —

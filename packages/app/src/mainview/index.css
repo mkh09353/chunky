@@ -1766,3 +1766,271 @@ body,
     transition: none;
   }
 }
+
+/* ---- built-in terminals ---------------------------------------------- */
+
+/* The pane switcher owns the main content area's height so the terminal below
+   can be `flex: 1` rather than guessing a pixel height. */
+.chunky-panes {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+
+.chunky-panetabs {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-1);
+  padding: var(--spacing-1) var(--spacing-3);
+  border-bottom: 1px solid var(--color-border);
+  min-width: 0;
+}
+
+.chunky-panetabs [role="tablist"] {
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+.chunky-panetabs [role="tablist"]::-webkit-scrollbar {
+  display: none;
+}
+
+.chunky-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1;
+}
+.chunky-pane[hidden] {
+  display: none;
+}
+
+.chunky-term-pane {
+  flex: 1;
+  min-height: 0;
+  overflow: hidden;
+  padding: var(--spacing-2);
+  background: var(--color-background-surface);
+}
+
+/* Hidden terminals park here. NOT `display: none`: xterm measures cell size
+   from real layout, and a display:none subtree reports 0x0, which makes fit()
+   compute a garbage grid the moment the tab is shown again. Offscreen keeps it
+   laid out and measurable. */
+.chunky-term-holder {
+  position: fixed;
+  left: -10000px;
+  top: 0;
+  width: 800px;
+  height: 600px;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.chunky-term-instance,
+.chunky-term-instance .xterm,
+.chunky-term-instance .xterm-viewport,
+.chunky-term-instance .xterm-screen {
+  width: 100%;
+  height: 100%;
+}
+
+/* ---- built-in browser pane -------------------------------------------- */
+
+/* The main content area's horizontal split: workspace (chat + terminal tabs)
+   on the left, browser pane on the right. With the pane closed this collapses
+   to a plain full-width wrapper, so the chat is untouched when unused. */
+.chunky-split {
+  display: flex;
+  flex-direction: row;
+  min-height: 0;
+  min-width: 0;
+  flex: 1;
+  height: 100%;
+}
+
+/* The workspace side takes the remaining room. `min-width: 0` is what lets it
+   actually shrink — without it the transcript's content sets a floor and the
+   divider refuses to travel left. */
+.chunky-split > .chunky-panes,
+.chunky-split > .chunky-chat-wrap {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* Width is set inline from persisted state; flex-shrink is off so the pane
+   holds the size you dragged it to. */
+.chunky-browser {
+  display: flex;
+  flex-direction: row;
+  flex: none;
+  min-width: 0;
+  height: 100%;
+}
+
+.chunky-browser-divider {
+  flex: none;
+  width: 5px;
+  margin-inline: -2px;
+  cursor: col-resize;
+  background: var(--color-border);
+  /* The 5px hit area is bigger than the 1px line people aim at, so only the
+     middle pixel is painted. */
+  background-clip: content-box;
+  padding-inline: 2px;
+  z-index: 1;
+  transition: background 120ms ease;
+}
+
+.chunky-browser-divider:hover,
+.chunky-browser-divider:active {
+  background: var(--color-accent);
+}
+
+.chunky-browser-body {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-width: 0;
+  min-height: 0;
+  border-inline-start: 1px solid var(--color-border);
+  background: var(--color-background-surface);
+}
+
+.chunky-browser-toolbar {
+  display: flex;
+  align-items: center;
+  gap: var(--spacing-1);
+  padding: var(--spacing-1) var(--spacing-2);
+  border-bottom: 1px solid var(--color-border);
+  flex: none;
+}
+
+.chunky-browser-btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: none;
+  width: 1.75rem;
+  height: 1.75rem;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-element);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.chunky-browser-btn svg {
+  width: 1rem;
+  height: 1rem;
+}
+
+.chunky-browser-btn:hover:not(:disabled) {
+  background: var(--color-background-hover);
+  color: var(--color-text-primary);
+  border-color: var(--color-border);
+}
+
+.chunky-browser-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
+}
+
+.chunky-browser-btn:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.chunky-browser-url {
+  flex: 1;
+  min-width: 0;
+  height: 1.75rem;
+  padding-inline: var(--spacing-2);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-full);
+  background: var(--color-background-body);
+  color: var(--color-text-primary);
+  font-size: var(--font-size-xs);
+  font-family: inherit;
+}
+
+.chunky-browser-url:focus {
+  outline: none;
+  border-color: var(--color-focus);
+}
+
+/* Host for the native <electrobun-webview> overlay. The element is sized to
+   100% of this box and its position is pushed to the native side on resize. */
+.chunky-browser-view {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  position: relative;
+  background: #fff;
+}
+
+.chunky-browser-placeholder {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: var(--spacing-2);
+  height: 100%;
+  padding: var(--spacing-6);
+  text-align: center;
+  background: var(--color-background-surface);
+}
+
+.chunky-browser-placeholder-title {
+  margin: 0;
+  font-weight: var(--font-weight-semibold);
+  color: var(--color-text-primary);
+}
+
+.chunky-browser-placeholder-body {
+  margin: 0;
+  max-width: 22rem;
+  font-size: var(--font-size-sm);
+  line-height: 1.55;
+  color: var(--color-text-secondary);
+}
+
+/* TopNav globe button — matches .chunky-theme-toggle, its neighbour. */
+.chunky-browser-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2rem;
+  height: 2rem;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--radius-element);
+  background: transparent;
+  color: var(--color-text-secondary);
+  cursor: pointer;
+  transition: background 120ms ease, color 120ms ease, border-color 120ms ease;
+}
+
+.chunky-browser-toggle svg {
+  width: 1.05rem;
+  height: 1.05rem;
+}
+
+.chunky-browser-toggle:hover {
+  background: var(--color-background-hover);
+  color: var(--color-text-primary);
+  border-color: var(--color-border);
+}
+
+.chunky-browser-toggle:focus-visible {
+  outline: 2px solid var(--color-focus);
+  outline-offset: 2px;
+}
+
+.chunky-browser-toggle-on {
+  color: var(--color-text-accent);
+  background: var(--color-accent-muted);
+}

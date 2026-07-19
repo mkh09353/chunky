@@ -1,4 +1,6 @@
-import { BrowserWindow, Updater, createRPC, Utils, ApplicationMenu } from "electrobun/bun"
+import { BrowserWindow, Updater, createRPC, Utils, ApplicationMenu, app } from "electrobun/bun"
+import { TerminalManager } from "./terminal-manager"
+import type { TerminalAckRequest, TerminalOpenRequest, TerminalResizeRequest, TerminalWriteRequest } from "../shared/terminal"
 
 const DEV_SERVER_PORT = 5173
 const DEV_SERVER_URL = process.env.VITE_DEV_URL ?? `http://localhost:${DEV_SERVER_PORT}`
@@ -41,6 +43,7 @@ const workspaceName = workspace.split(/[\\/]/).filter(Boolean).pop() || "workspa
 // HMR nor the views:// server ever reads. The static public/chunky-config.json
 // stays as a dev-browser fallback only.)
 const config = { baseUrl, workspace, workspaceName }
+const terminalManager = new TerminalManager(workspace || process.env.HOME || process.cwd())
 
 // macOS routes ⌘C/⌘V/⌘X/⌘A through the app menu's key-equivalents — the standard
 // Edit → Copy item fires `copy:` on the focused WKWebView. Electrobun (unlike
@@ -118,10 +121,16 @@ const rpc = createRPC({
       const picked = paths.find((p) => p && p.trim()) ?? ""
       return picked
     },
+    terminalOpen: (req: TerminalOpenRequest) => terminalManager.open(req),
+    terminalWrite: (req: TerminalWriteRequest) => terminalManager.write(req),
+    terminalResize: (req: TerminalResizeRequest) => terminalManager.resize(req),
+    terminalClose: (req: { terminalId: string }) => terminalManager.close(req.terminalId),
+    terminalList: () => terminalManager.list(),
+    terminalAck: (req: TerminalAckRequest) => terminalManager.ack(req),
   },
 })
 
-new BrowserWindow({
+const window = new BrowserWindow({
   title: "Chunky",
   url,
   rpc,
@@ -142,6 +151,12 @@ new BrowserWindow({
   minWidth: 720,
   minHeight: 520,
 })
+
+// Electrobun's Bun-side RPC send proxy is the supported push channel. The
+// manager deliberately only knows this tiny interface, keeping terminal
+// process lifetime independent from the BrowserWindow implementation.
+terminalManager.setWebview({ rpc: { send: (name, payload) => rpc.send(name, payload) } })
+app.on("before-quit", () => terminalManager.cleanup())
 
 console.log(`[@chunky/app] window ready — harness ${baseUrl}`)
 console.log(`[@chunky/app] workspace ${workspace}`)

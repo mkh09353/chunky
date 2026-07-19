@@ -1,4 +1,5 @@
 import { Fragment, useCallback, useEffect, useRef, useState } from "react"
+import type { MouseEvent as ReactMouseEvent } from "react"
 import {
   ChatMessage,
   ChatMessageBubble,
@@ -12,6 +13,7 @@ import { CodeBlock } from "@astryxdesign/core/CodeBlock"
 import type { Item, ThreadNode, TranscriptState } from "../lib/transcript"
 import { MAIN } from "../lib/transcript"
 import { USER_ANCHOR_CLASS } from "../lib/minimap"
+import { isHttpUrl, useOpenInBrowser } from "../lib/browser"
 import {
   buildRenderPlan,
   childrenOf,
@@ -438,6 +440,29 @@ function ThreadBlock({
 export function TranscriptView({ state }: { state: TranscriptState }) {
   const stateRef = useRef(state)
   stateRef.current = state
+  const openInBrowser = useOpenInBrowser()
+
+  // Links in rendered markdown open in the built-in browser pane. Handled by
+  // delegation on the transcript root rather than a Markdown `components.a`
+  // override: MARKDOWN_COMPONENTS is frozen at module scope precisely because a
+  // changing identity re-parses every block on every streamed delta, and this
+  // handler would have to close over `openInBrowser`.
+  const onLinkClick = useCallback(
+    (e: ReactMouseEvent<HTMLDivElement>) => {
+      // Let modified clicks keep their platform meaning (new window, download,
+      // context menu) instead of hijacking them into the pane.
+      if (e.defaultPrevented || e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return
+      const anchor = (e.target as HTMLElement | null)?.closest?.("a[href]")
+      if (!(anchor instanceof HTMLAnchorElement)) return
+      // `href` resolves relative URLs against the document; only absolute
+      // http(s) links belong in the pane. Anything else (mailto:, in-page
+      // anchors) keeps its default behaviour.
+      if (!isHttpUrl(anchor.href)) return
+      e.preventDefault()
+      openInBrowser(anchor.href)
+    },
+    [openInBrowser],
+  )
   // Per-thread expand state so a fan-out of spawned threads can't flood the view:
   // every child renders as a one-line preview by default and expands on click.
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set())
@@ -484,7 +509,9 @@ export function TranscriptView({ state }: { state: TranscriptState }) {
   if (!main) return null
 
   return (
-    <div className="chunky-transcript">
+    // eslint-disable-next-line jsx-a11y/no-static-element-interactions -- delegation
+    // target for anchors, which are themselves focusable and keyboard-activatable.
+    <div className="chunky-transcript" onClick={onLinkClick}>
       <ChatMessageList gap={5}>
         <ParentBody
           items={main.items}

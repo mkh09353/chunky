@@ -3,9 +3,11 @@ import type { CacheCold, GoalSnapshot, ModeInfo, ModeSpec, SessionSummary, TodoS
 import { AppShell } from "@astryxdesign/core/AppShell"
 import { SideNav, SideNavItem, SideNavSection } from "@astryxdesign/core/SideNav"
 import { TopNav, TopNavHeading } from "@astryxdesign/core/TopNav"
-import { ChatBubbleLeftRightIcon, PlusIcon } from "@heroicons/react/24/outline"
+import { ChatBubbleLeftRightIcon, GlobeAltIcon, PlusIcon } from "@heroicons/react/24/outline"
 import { ChatPane } from "./components/ChatPane"
+import { BrowserPane } from "./components/BrowserPane"
 import { RepoTabs } from "./components/RepoTabs"
+import { WorkspacePanes } from "./components/WorkspacePanes"
 import {
   addRepo,
   applyMode,
@@ -50,6 +52,7 @@ import {
   type Repo,
 } from "./lib/api"
 import { openExternal } from "./lib/rpc"
+import { BrowserProvider, useBrowserPane } from "./lib/browser"
 import { sleep } from "./lib/sleep"
 import { isIntentionalAbort, reconnectDelay } from "./lib/reconnect"
 import { parseGoalArgs, parseSlashCommand, SLASH_COMMANDS } from "./lib/commands"
@@ -138,6 +141,9 @@ export default function App() {
   const [runningSince, setRunningSince] = useState<number | null>(null)
   // Bumped by /model and /advisor to open the corresponding composer menu.
   const [modelOpenSignal, setModelOpenSignal] = useState(0)
+  // The built-in browser pane (open/closed, width, current URL) — all of its
+  // state and persistence lives in the hook so this file only gains a line.
+  const browser = useBrowserPane()
   const [advisorOpenSignal, setAdvisorOpenSignal] = useState(0)
   // Bumped by bare /skills to open the composer's skills browser.
   const [skillsOpenSignal, setSkillsOpenSignal] = useState(0)
@@ -1081,6 +1087,10 @@ export default function App() {
   const groups = groupSessions(sessions)
 
   return (
+    // Provides openInBrowser() to the transcript's markdown links, which sit too
+    // deep (App → WorkspacePanes → ChatPane → TranscriptView) to thread another
+    // prop through.
+    <BrowserProvider openInBrowser={browser.openInBrowser}>
     <div className="chunky-shell">
       <AppShell
         height="fill"
@@ -1099,7 +1109,21 @@ export default function App() {
                 }
               />
             }
-            endContent={<ThemeToggle />}
+            endContent={
+              <>
+                <button
+                  type="button"
+                  className={`chunky-browser-toggle${browser.open ? " chunky-browser-toggle-on" : ""}`}
+                  onClick={browser.toggle}
+                  aria-pressed={browser.open}
+                  aria-label={browser.open ? "Hide browser" : "Show browser"}
+                  title={browser.open ? "Hide browser" : "Show browser"}
+                >
+                  <GlobeAltIcon />
+                </button>
+                <ThemeToggle />
+              </>
+            }
             startContent={
               <RepoTabs
                 repos={repos}
@@ -1237,6 +1261,12 @@ export default function App() {
             </div>
           </div>
         ) : null}
+        {/* Workspace left (chat + terminal tabs), browser right. The browser
+            docks beside whichever pane is active rather than only the chat, so
+            you can read docs next to a terminal too. With the pane closed this
+            is a plain full-width wrapper. */}
+        <div className="chunky-split">
+        <WorkspacePanes repoPath={activeRepo?.path}>
         <ChatPane
           state={transcript}
           workspaceName={workspaceName}
@@ -1295,7 +1325,22 @@ export default function App() {
           }}
           focusSignal={composerFocusSignal}
         />
+        </WorkspacePanes>
+        <BrowserPane
+          open={browser.open}
+          request={browser.request}
+          width={browser.width}
+          // A native overlay can outrank HTML for a frame or two while masks
+          // resync, so full-screen modals hide the webview outright rather than
+          // relying on the punch-through alone.
+          suppressed={onboardingOpen || confirmPrompt !== null || loginWait !== null}
+          onWidthChange={browser.setWidth}
+          onClose={browser.close}
+          onNavigate={browser.rememberUrl}
+        />
+        </div>
       </AppShell>
     </div>
+    </BrowserProvider>
   )
 }

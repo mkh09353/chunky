@@ -1334,6 +1334,7 @@ export default function App() {
           // resync, so full-screen modals hide the webview outright rather than
           // relying on the punch-through alone.
           suppressed={onboardingOpen || confirmPrompt !== null || loginWait !== null}
+          cefAvailable={config?.cefAvailable ?? false}
           onWidthChange={browser.setWidth}
           onClose={browser.close}
           onNavigate={browser.rememberUrl}

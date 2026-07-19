@@ -14,6 +14,9 @@ import {
   type RewindRequest,
   type ForkRequest,
   type ForkResponse,
+  type AppBrowserAnnounce,
+  type AppBrowserEndpoint,
+  type AppBrowserResponse,
 } from "@chunky/protocol"
 import { runAgent, type InputImage, type InterjectionBoundary } from "./run.ts"
 import { shipHandoffPrompt } from "./tools/ship.ts"
@@ -103,6 +106,7 @@ import {
   ServerLeaseTracker,
 } from "./launcher-discovery.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
+import { getAppBrowserEndpoint, setAppBrowserEndpoint } from "./app-browser.ts"
 
 type Subscriber = ReadableStreamDefaultController<Uint8Array>
 
@@ -124,6 +128,10 @@ const busTurns = new Map<string, number[]>()
 const encoder = new TextEncoder()
 
 let shuttingDown = false
+
+/** The desktop app's built-in browser pane (CDP endpoint), as announced over
+ *  POST ROUTES.appBrowser. Null until an app checks in. Process-local by
+ *  design — see the route handler for why this isn't persisted. */
 export async function shutdownServer(signal: NodeJS.Signals): Promise<never> {
   if (shuttingDown) return new Promise(() => {})
   shuttingDown = true
@@ -610,6 +618,20 @@ const server = Bun.serve({
       } catch (err) {
         return json({ error: (err as Error).message }, 400)
       }
+    }
+
+    // The desktop app's built-in browser pane announces its CDP endpoint here on
+    // startup, and agent tooling reads it back to drive that pane.
+    //
+    // In-memory and last-writer-wins on purpose: the endpoint is only meaningful
+    // while that app process is alive, so persisting it would hand out a dead
+    // port after a restart. If two apps point at one server, the most recent
+    // announcement wins — which is also the one the user is looking at.
+    if (pathname === ROUTES.appBrowser && (req.method === "GET" || req.method === "POST")) {
+      if (req.method === "GET") return json({ browser: getAppBrowserEndpoint() } satisfies AppBrowserResponse)
+      const body = (await req.json().catch(() => ({}))) as Partial<AppBrowserAnnounce>
+      try { return json({ browser: setAppBrowserEndpoint(body as AppBrowserAnnounce) } satisfies AppBrowserResponse) }
+      catch (err) { return json({ error: (err as Error).message }, 400) }
     }
 
     if (pathname === "/api/skills" && req.method === "GET") {

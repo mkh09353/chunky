@@ -381,7 +381,45 @@ export const ROUTES = {
   deleteMode: (name: string) => `/api/modes/${encodeURIComponent(name)}`,
   // GET list; POST ManageSkillReposRequest. Skill state is persisted per repo.
   skillRepos: `/api/skill-repos`,
+  // GET -> AppBrowserResponse. POST AppBrowserAnnounce -> AppBrowserResponse.
+  // The desktop app announces its built-in browser pane's CDP endpoint here on
+  // startup so agent tooling can drive that pane. Held in memory only — the
+  // endpoint dies with the app, and a persisted port would just be a lie after
+  // a restart.
+  appBrowser: `/api/app/browser`,
 } as const
+
+/** The desktop app's built-in browser pane, as a remotely drivable target.
+ *
+ *  The pane runs on CEF (Chromium) with a Chrome DevTools Protocol listener on
+ *  loopback, so a tool can attach and navigate/evaluate against exactly what the
+ *  user is looking at. */
+export interface AppBrowserEndpoint {
+  /** DevTools port on 127.0.0.1. */
+  cdpPort: number
+  /** Convenience base, e.g. `http://127.0.0.1:9223` — append /json/version. */
+  cdpUrl: string
+  /** Which renderer the pane actually got. Only "cef" is CDP-drivable. */
+  renderer: "cef" | "native"
+  /** False when the app fell back to the system WebView (pane still works, but
+   *  there is no CDP listener — tools should say so rather than hang). */
+  debuggable: boolean
+  /** Epoch ms of the announcement, so a stale entry is recognisable. */
+  announcedAt: number
+}
+
+/** Body for POST ROUTES.appBrowser. */
+export interface AppBrowserAnnounce {
+  cdpPort: number
+  renderer: "cef" | "native"
+  debuggable: boolean
+}
+
+/** GET/POST ROUTES.appBrowser: the last announced endpoint, or null when no
+ *  desktop app has checked in since the server started. */
+export interface AppBrowserResponse {
+  browser: AppBrowserEndpoint | null
+}
 
 /** Body for POST ROUTES.goal. Exactly one of `objective` (set + start the goal)
  *  or `action` (manage an existing goal) is expected. */

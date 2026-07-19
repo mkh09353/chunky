@@ -1,4 +1,5 @@
-import { BrowserWindow, Updater, createRPC, Utils, ApplicationMenu, app } from "electrobun/bun"
+import { BrowserWindow, Updater, createRPC, Utils, ApplicationMenu, app, BuildConfig } from "electrobun/bun"
+import { ROUTES, type AppBrowserAnnounce } from "@chunky/protocol"
 import { TerminalManager } from "./terminal-manager"
 import type { TerminalAckRequest, TerminalOpenRequest, TerminalResizeRequest, TerminalWriteRequest } from "../shared/terminal"
 
@@ -42,7 +43,26 @@ const workspaceName = workspace.split(/[\\/]/).filter(Boolean).pop() || "workspa
 // .app, so those writes landed in Resources/{src,dist}/ — paths neither Vite
 // HMR nor the views:// server ever reads. The static public/chunky-config.json
 // stays as a dev-browser fallback only.)
-const config = { baseUrl, workspace, workspaceName }
+// The browser pane's Chrome DevTools Protocol port. Must agree with the
+// `remote-debugging-port` chromiumFlag in electrobun.config.ts, which reads the
+// same env var at build time — they're baked separately, so overriding it means
+// rebuilding, not just relaunching.
+const cdpPort = Number(process.env.CHUNKY_CDP_PORT || 9223)
+
+// Whether this build actually shipped CEF. `availableRenderers` comes from the
+// bundle's Resources/build.json, which the electrobun CLI writes from
+// build.mac.bundleCEF — so it's the honest answer to "can a webview ask for the
+// cef renderer here?", rather than us assuming the config we wrote took effect.
+//
+// Falls back to native-only when build.json can't be read (BuildConfig's own
+// dev-mode fallback), which is the safe direction: the pane still works, it just
+// isn't CDP-drivable. CHUNKY_FORCE_CEF=1 overrides for debugging that case.
+const buildInfo = await BuildConfig.get().catch(() => null)
+const cefAvailable =
+  process.env.CHUNKY_FORCE_CEF === "1" ||
+  (buildInfo?.availableRenderers?.includes("cef") ?? false)
+
+const config = { baseUrl, workspace, workspaceName, cefAvailable, cdpPort }
 const terminalManager = new TerminalManager(workspace || process.env.HOME || process.cwd())
 
 // macOS routes ⌘C/⌘V/⌘X/⌘A through the app menu's key-equivalents — the standard
@@ -134,6 +154,11 @@ const window = new BrowserWindow({
   title: "Chunky",
   url,
   rpc,
+  // The app chrome stays on the system WebView even in CEF-bundled builds. Only
+  // the browser pane opts into Chromium (see components/BrowserPane.tsx); this
+  // is pinned rather than left to the build default so that flipping
+  // `defaultRenderer` later can't silently drag the whole UI onto CEF.
+  renderer: "native",
   // Codex-style chrome: no separate OS title bar. `hiddenInset` makes the
   // titlebar transparent and extends our webview to the very top of the window
   // (FullSizeContentView), so the app reads as one smooth surface. The native
@@ -160,3 +185,43 @@ app.on("before-quit", () => terminalManager.cleanup())
 
 console.log(`[@chunky/app] window ready — harness ${baseUrl}`)
 console.log(`[@chunky/app] workspace ${workspace}`)
+console.log(
+  cefAvailable
+    ? `[@chunky/app] browser pane: CEF, CDP on http://127.0.0.1:${cdpPort}`
+    : "[@chunky/app] browser pane: system WebView (no CEF in this build — CDP unavailable)",
+)
+
+/**
+ * Tell the harness where the browser pane's CDP endpoint is, so agent tooling
+ * can drive the pane the user is actually looking at.
+ *
+ * Retried with backoff because the app frequently wins the startup race against
+ * the server, and best-effort because a missing announcement must never stop the
+ * app from opening — the pane itself works regardless.
+ */
+async function announceBrowserEndpoint(): Promise<void> {
+  const body: AppBrowserAnnounce = {
+    cdpPort,
+    renderer: cefAvailable ? "cef" : "native",
+    debuggable: cefAvailable,
+  }
+  for (let attempt = 0; attempt < 5; attempt++) {
+    try {
+      const res = await fetch(`${baseUrl}${ROUTES.appBrowser}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      })
+      if (res.ok) {
+        console.log(`[@chunky/app] announced browser endpoint to ${baseUrl}`)
+        return
+      }
+    } catch {
+      /* server not up yet */
+    }
+    await new Promise((r) => setTimeout(r, 500 * 2 ** attempt))
+  }
+  console.log("[@chunky/app] could not announce browser endpoint (harness unreachable)")
+}
+
+void announceBrowserEndpoint()

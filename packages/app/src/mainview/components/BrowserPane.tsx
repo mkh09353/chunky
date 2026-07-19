@@ -83,6 +83,7 @@ export function BrowserPane({
   request,
   width,
   suppressed,
+  cefAvailable,
   onWidthChange,
   onClose,
   onNavigate,
@@ -90,6 +91,11 @@ export function BrowserPane({
   open: boolean
   request: BrowserRequest | null
   width: number
+  /** Run the pane on Chromium (CDP-drivable) instead of the system WebView.
+   *  Sourced from the bun process's build.json — false in native-only builds
+   *  and in the dev browser, where we fall back to "native" rather than asking
+   *  for a renderer this build can't provide. */
+  cefAvailable: boolean
   /** Hide the native overlay outright — used while a full-screen modal is up, so
    *  a slow mask sync can never leave the pane painted over a dialog. */
   suppressed: boolean
@@ -158,7 +164,15 @@ export function BrowserPane({
 
     const el = document.createElement("electrobun-webview")
     // All of these are read once, at connect time — set them before appending.
-    el.setAttribute("renderer", "native")
+    //
+    // CEF gives the pane a Chrome DevTools Protocol listener (see
+    // electrobun.config.ts), which is what makes it agent-drivable. The tag API
+    // is renderer-agnostic: electrobun passes `renderer` straight through to the
+    // native layer and only loadHTML() branches on it (we use loadURL/src), so
+    // events, masking and syncDimensions behave the same either way. Falling
+    // back to "native" when CEF wasn't bundled keeps the pane working — just
+    // without CDP.
+    el.setAttribute("renderer", cefAvailable ? "cef" : "native")
     el.setAttribute("partition", "persist:browser")
     // Untrusted remote content: no preload, no RPC to bun, events only.
     el.setAttribute("sandbox", "")
@@ -253,7 +267,7 @@ export function BrowserPane({
       // disconnectedCallback tells bun to tear down the native webview.
       el.remove()
     }
-  }, [open, supported, refreshHistory, navigateTo])
+  }, [open, supported, cefAvailable, refreshHistory, navigateTo])
 
   // ---- Apply navigation requests coming from outside (link clicks, toolbar) --
   useEffect(() => {

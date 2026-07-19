@@ -41,6 +41,13 @@ export interface AppConfig {
   baseUrl: string
   workspace: string
   workspaceName: string
+  /** True when this build bundled CEF, so the browser pane can run on Chromium
+   *  and be driven over CDP. False in the dev browser and in native-only builds;
+   *  the pane then falls back to the system WebView. */
+  cefAvailable: boolean
+  /** Chrome DevTools Protocol port for the browser pane (only meaningful when
+   *  `cefAvailable`). */
+  cdpPort: number
 }
 
 export interface ModelSelection {
@@ -74,6 +81,9 @@ const DEFAULT_CONFIG: AppConfig = {
   baseUrl: "http://localhost:4620",
   workspace: "",
   workspaceName: "chunky",
+  // No electrobun ⇒ no CEF. The dev browser gets the placeholder pane anyway.
+  cefAvailable: false,
+  cdpPort: 9223,
 }
 
 export async function loadConfig(): Promise<AppConfig> {
@@ -91,6 +101,8 @@ export async function loadConfig(): Promise<AppConfig> {
           baseUrl: data.baseUrl,
           workspace: data.workspace || DEFAULT_CONFIG.workspace,
           workspaceName: data.workspaceName || DEFAULT_CONFIG.workspaceName,
+          cefAvailable: data.cefAvailable ?? DEFAULT_CONFIG.cefAvailable,
+          cdpPort: data.cdpPort ?? DEFAULT_CONFIG.cdpPort,
         }
       }
     }
@@ -105,6 +117,8 @@ export async function loadConfig(): Promise<AppConfig> {
         baseUrl: data.baseUrl || DEFAULT_CONFIG.baseUrl,
         workspace: data.workspace || DEFAULT_CONFIG.workspace,
         workspaceName: data.workspaceName || DEFAULT_CONFIG.workspaceName,
+        cefAvailable: data.cefAvailable ?? DEFAULT_CONFIG.cefAvailable,
+        cdpPort: data.cdpPort ?? DEFAULT_CONFIG.cdpPort,
       }
     }
   } catch {

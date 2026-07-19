@@ -1,0 +1,2 @@
+import {describe,test,expect} from 'bun:test';import {encodeInput,KEY_BYTES} from '../src/keys.ts';
+describe('input encoding',()=>{for(const [k,v] of Object.entries(KEY_BYTES))test(k,()=>expect([...encodeInput(k)]).toEqual([...v]));for(let i=0;i<26;i++){const k=String.fromCharCode(97+i);test(`ctrl-${k}`,()=>expect([...encodeInput(`ctrl-${k}`)]).toEqual([i+1]));}test('text atom',()=>expect([...encodeInput('text:hello Ω')]).toEqual([...new TextEncoder().encode('hello Ω')]));});

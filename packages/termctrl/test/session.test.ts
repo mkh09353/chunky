@@ -1,0 +1,4 @@
+import {test,expect} from 'bun:test';import {Session} from '../src/session.ts';
+test('real native PTY capture and wait',async()=>{const s=new Session(['/usr/bin/printf','hello']);const c=await s.capture(10,1000);expect(['exited','idle']).toContain(c.reason);expect(s.text()).toContain('hello');});
+test('waitForText success and timeout',async()=>{const s=new Session(['/bin/sh','-c','printf ready; sleep 1']);await s.waitForText('ready',1000);const t=new Session(['/bin/sh','-c','sleep 1']);await expect(t.waitForText('never',30)).rejects.toThrow('timed out');t.stop();});
+test('ANSI cap truncates',async()=>{const s=new Session(['/usr/bin/printf','1234567890'],{maxBytes:4});await s.capture(10,1000);expect(s.logsTruncated).toBe(true);expect(s.ansi.length).toBe(4);expect(new TextDecoder().decode(s.ansi)).toBe('7890');});

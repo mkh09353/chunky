@@ -534,6 +534,24 @@ export function ItemView({ item }: { item: DisplayItem }) {
       )
 
     case "tool": {
+      // rate_delegate is bookkeeping, not work: render it as one dim annotation
+      // line (no dot, no bold header, no expandable output) so it reads as a
+      // footnote to the delegation above it rather than a peer tool call.
+      if (item.name === "rate_delegate") {
+        const input = (item.input ?? {}) as { rating?: number; rework?: boolean; reason?: string }
+        const rating = typeof input.rating === "number" ? `${input.rating}/10` : "…"
+        const reason = typeof input.reason === "string" ? input.reason : ""
+        return (
+          <box flexDirection="row" marginLeft={2}>
+            <text attributes={DIM}>
+              {"⭑ rated "}
+              {rating}
+              {input.rework ? " (rework)" : ""}
+              {reason ? ` · ${truncate(reason, TOOL_SUMMARY_MAX_LENGTH)}` : ""}
+            </text>
+          </box>
+        )
+      }
       const output = item.output ?? ""
       const lines = output.split("\n")
       // Expandable when there's more than the one-line summary shows.

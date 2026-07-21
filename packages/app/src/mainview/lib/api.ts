@@ -39,6 +39,7 @@ export type { FileSearchItem } from "@chunky/protocol"
 
 export interface AppConfig {
   baseUrl: string
+  serverToken?: string
   workspace: string
   workspaceName: string
   /** True when this build bundled CEF, so the browser pane can run on Chromium
@@ -86,6 +87,18 @@ const DEFAULT_CONFIG: AppConfig = {
   cdpPort: 9223,
 }
 
+let fetchInstalled = false
+function installAuthFetch(token?: string): void {
+  if (fetchInstalled || !token) return
+  fetchInstalled = true
+  const original = globalThis.fetch
+  globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+    const headers = new Headers(init?.headers)
+    headers.set("Authorization", `Bearer ${token}`)
+    return original(input, { ...init, headers })
+  }) as typeof fetch
+}
+
 export async function loadConfig(): Promise<AppConfig> {
   // Inside electrobun, ask the bun process — it knows the real harness URL
   // (CHUNKY_URL / CHUNKY_PORT / dev default). The static chunky-config.json
@@ -97,8 +110,10 @@ export async function loadConfig(): Promise<AppConfig> {
     if (fn) {
       const data = (await fn()) as Partial<AppConfig> | null
       if (data?.baseUrl) {
+        installAuthFetch(data.serverToken)
         return {
           baseUrl: data.baseUrl,
+          serverToken: data.serverToken,
           workspace: data.workspace || DEFAULT_CONFIG.workspace,
           workspaceName: data.workspaceName || DEFAULT_CONFIG.workspaceName,
           cefAvailable: data.cefAvailable ?? DEFAULT_CONFIG.cefAvailable,
@@ -113,8 +128,10 @@ export async function loadConfig(): Promise<AppConfig> {
     const res = await fetch("/chunky-config.json", { cache: "no-store" })
     if (res.ok) {
       const data = (await res.json()) as Partial<AppConfig>
+      installAuthFetch(data.serverToken)
       return {
         baseUrl: data.baseUrl || DEFAULT_CONFIG.baseUrl,
+        serverToken: data.serverToken,
         workspace: data.workspace || DEFAULT_CONFIG.workspace,
         workspaceName: data.workspaceName || DEFAULT_CONFIG.workspaceName,
         cefAvailable: data.cefAvailable ?? DEFAULT_CONFIG.cefAvailable,

@@ -359,16 +359,20 @@ installBackgroundDispatcher({
   changed(sessionId) { emitTo(sessionId, { type: "background.changed", sessionId, ...liveTaskCounts(sessionId) }) },
 })
 
-const CORS = {
-  "Access-Control-Allow-Origin": "*",
+const ALLOWED_ORIGINS = new Set(["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:4620", "http://127.0.0.1:4620", "views://mainview"])
+function corsHeaders(req?: Request): Record<string, string> {
+  const origin = req?.headers.get("origin")
+  return {
+    ...(origin && ALLOWED_ORIGINS.has(origin) ? { "Access-Control-Allow-Origin": origin, "Vary": "Origin" } : {}),
   "Access-Control-Allow-Methods": "GET, POST, PATCH, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  }
 }
 
-function json(body: unknown, status = 200): Response {
+function json(body: unknown, status = 200, req?: Request): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { "Content-Type": "application/json", ...CORS },
+    headers: { "Content-Type": "application/json", ...corsHeaders(req) },
   })
 }
 
@@ -386,20 +390,16 @@ const server = Bun.serve({
   port,
   idleTimeout: 0, // never time out SSE connections
   async fetch(req, server) {
-    // Bearer auth for anything NOT from loopback. Loopback is exempt because
-    // the TUI, the app, and the relay uplink all dial 127.0.0.1 — they keep
-    // working with zero setup, while the token gates direct LAN/remote access
-    // (remote clients go through the E2E relay instead; docs/relay-design.md).
-    const ip = server.requestIP(req)?.address
-    const loopback = ip === "127.0.0.1" || ip === "::1" || ip === "::ffff:127.0.0.1"
-    if (!loopback && req.headers.get("authorization") !== `Bearer ${getServerToken()}`) {
-      return json({ error: "unauthorized" }, 401)
-    }
-
-    const url = new URL(req.url)
-    const { pathname } = url
-
-    if (req.method === "GET" && pathname === SERVER_IDENTITY_PATH) {
+    // Authenticate every request, including loopback. Query-token auth keeps
+    // native EventSource-compatible clients working when headers are limited.
+    const requestUrl = new URL(req.url)
+    const origin = req.headers.get("origin")
+    if (origin && !ALLOWED_ORIGINS.has(origin)) return json({ error: "origin not allowed" }, 403, req)
+    // This managed-server discovery response contains only public identity
+    // metadata (workspace name, version/build identifiers, port, and nonce),
+    // never credentials or session data. Keep it readable by the launcher so
+    // it can discover an existing server before it has loaded its settings.
+    if (req.method === "GET" && requestUrl.pathname === SERVER_IDENTITY_PATH) {
       const workspace = process.env.CHUNKY_WORKSPACE
       const version = process.env.CHUNKY_VERSION
       const buildId = process.env.CHUNKY_BUILD_ID
@@ -408,6 +408,15 @@ const server = Bun.serve({
       if (!workspace || !version || !buildId || !nonce || !id) return json({ error: "launcher identity unavailable" }, 404)
       return json({ workspace, version, buildId, nonce, id, port: server.port })
     }
+    // CORS preflight cannot carry the actual bearer header. It is harmless on
+    // its own (no application route is dispatched) and lets real webviews make
+    // the subsequent authenticated request.
+    if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: corsHeaders(req) })
+    const token = getServerToken()
+    if (req.headers.get("authorization") !== `Bearer ${token}` && requestUrl.searchParams.get("token") !== token) return json({ error: "unauthorized" }, 401, req)
+
+    const url = requestUrl
+    const { pathname } = url
 
     if (pathname === SERVER_LEASES_PATH && serverLeases && (req.method === "POST" || req.method === "DELETE")) {
       const body = await req.json().catch(() => null) as { token?: unknown } | null
@@ -420,7 +429,7 @@ const server = Bun.serve({
     if (req.method === "GET" && pathname === ROUTES.updateStatus) return json(readPersistedCheck() ?? { current: "unknown", latest: null, available: false })
 
     if (req.method === "OPTIONS") {
-      return new Response(null, { status: 204, headers: CORS })
+      return new Response(null, { status: 204, headers: corsHeaders(req) })
     }
 
     // ---- Provider / OAuth routes (additive; independent of sessions) ----
@@ -1131,7 +1140,7 @@ const server = Bun.serve({
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache, no-transform",
             Connection: "keep-alive",
-            ...CORS,
+            ...corsHeaders(req),
           },
         })
       }
@@ -1190,7 +1199,7 @@ const server = Bun.serve({
           buffer.push({ id: randomUUID(), text: visibleText, images })
           interjections.set(sessionId, buffer)
           emitTo(sessionId, { type: "message.interjection", sessionId, text: visibleText, injected: false })
-          return new Response(null, { status: 202, headers: CORS })
+          return new Response(null, { status: 202, headers: corsHeaders(req) })
         }
         if (delivery === "steer") await abortForSteer(sessionId)
 
@@ -1224,7 +1233,7 @@ const server = Bun.serve({
           catch { return json({ error: "prompt queue is full" }, 429) }
           promptQueues.set(sessionId, queue)
           emitTo(sessionId, { type: "queue.changed", sessionId, entries: queue.snapshot(), running: running.has(sessionId) })
-          return new Response(null, { status: 202, headers: CORS })
+          return new Response(null, { status: 202, headers: corsHeaders(req) })
         }
 
         const turn = visibleText ? beginUserTurn(sessionId, visibleText) : undefined
@@ -1235,7 +1244,7 @@ const server = Bun.serve({
         // A force-confirmed send skips the redundant turn-start cache notice.
         dispatchRun(sessionId, text, images, { suppressCacheWarning: force }, turn)
 
-        return new Response(null, { status: 202, headers: CORS })
+        return new Response(null, { status: 202, headers: corsHeaders(req) })
       }
 
       // POST .../interrupt -> abort the session's in-flight turn (Esc).
@@ -1244,7 +1253,7 @@ const server = Bun.serve({
         if (ac) ac.abort()
         else reconcileStaleRun(sessionId)
         interjections.get(sessionId)?.clear()
-        return new Response(null, { status: 202, headers: CORS })
+        return new Response(null, { status: 202, headers: corsHeaders(req) })
       }
 
       // POST .../ship -> 202. Inject the handoff prompt into THIS session: its
@@ -1260,7 +1269,7 @@ const server = Bun.serve({
           // no/invalid body -> no notes
         }
         dispatchRun(sessionId, shipHandoffPrompt(notes))
-        return new Response(null, { status: 202, headers: CORS })
+        return new Response(null, { status: 202, headers: corsHeaders(req) })
       }
 
       // .../goal — GET the current goal, or POST to set / pause / resume / clear it.
@@ -1345,7 +1354,7 @@ const server = Bun.serve({
       if (kind === "todos" && req.method === "GET") return json(Store.getTodos(sessionId))
     }
 
-    return new Response("not found", { status: 404, headers: CORS })
+    return new Response("not found", { status: 404, headers: corsHeaders(req) })
   },
 })
 

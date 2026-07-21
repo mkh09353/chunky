@@ -1,4 +1,7 @@
 import { BrowserWindow, Updater, createRPC, Utils, ApplicationMenu, app, BuildConfig } from "electrobun/bun"
+import { readFileSync } from "node:fs"
+import { join } from "node:path"
+import { homedir } from "node:os"
 import { ROUTES, type AppBrowserAnnounce } from "@chunky/protocol"
 import { TerminalManager } from "./terminal-manager"
 import type { TerminalAckRequest, TerminalOpenRequest, TerminalResizeRequest, TerminalWriteRequest } from "../shared/terminal"
@@ -37,6 +40,12 @@ const baseUrl =
   process.env.CHUNKY_URL || `http://localhost:${process.env.CHUNKY_PORT || 4620}`
 const workspace = process.env.CHUNKY_WORKSPACE || process.cwd()
 const workspaceName = workspace.split(/[\\/]/).filter(Boolean).pop() || "workspace"
+function serverToken(): string | undefined {
+  try {
+    const raw = readFileSync(process.env.CHUNKY_SETTINGS || join(homedir(), ".chunky", "state", "settings.json"), "utf8")
+    return (JSON.parse(raw) as { serverToken?: unknown }).serverToken as string | undefined
+  } catch { return undefined }
+}
 
 // Served to the webview over the `getConfig` RPC below. (We used to also write
 // chunky-config.json copies at startup, but bundled bun runs from inside the
@@ -62,7 +71,7 @@ const cefAvailable =
   process.env.CHUNKY_FORCE_CEF === "1" ||
   (buildInfo?.availableRenderers?.includes("cef") ?? false)
 
-const config = { baseUrl, workspace, workspaceName, cefAvailable, cdpPort }
+const config = { baseUrl, workspace, workspaceName, cefAvailable, cdpPort, serverToken: serverToken() }
 const terminalManager = new TerminalManager(workspace || process.env.HOME || process.cwd())
 
 // macOS routes ⌘C/⌘V/⌘X/⌘A through the app menu's key-equivalents — the standard

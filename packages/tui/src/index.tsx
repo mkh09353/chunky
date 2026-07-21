@@ -4,6 +4,7 @@ import { createRoot } from "@opentui/react"
 import { DEFAULT_PORT } from "@chunky/protocol"
 import { App } from "./App.js"
 import { Flag } from "./flags.js"
+import { getServerToken } from "../../server/src/settings.ts"
 
 const argv = process.argv.slice(2)
 const wantMock = argv.includes("--mock")
@@ -13,6 +14,12 @@ const wantThreads = argv.includes("--threads")
 
 const port = Flag.port ?? String(DEFAULT_PORT)
 const baseUrl = `http://localhost:${port}`
+const nativeFetch = globalThis.fetch
+globalThis.fetch = ((input: RequestInfo | URL, init?: RequestInit) => {
+  const headers = new Headers(init?.headers)
+  headers.set("Authorization", `Bearer ${getServerToken()}`)
+  return nativeFetch(input, { ...init, headers })
+}) as typeof fetch
 
 async function serverIsUp(): Promise<boolean> {
   try {

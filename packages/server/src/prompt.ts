@@ -38,7 +38,6 @@ export function buildSystemPrompt(
   workspace: string = LAUNCH_WORKSPACE,
   opts: SystemPromptOpts = {},
 ): string {
-  const date = new Date().toISOString().slice(0, 10)
   const isEdit = activeEditToolName === "edit"
   const hashline = opts.fileToolProfile === "hashline"
   const nativeToolSearch = opts.nativeToolSearch === true
@@ -165,7 +164,6 @@ ${skillsGuideline}
 ${goalGuideline}
 ${todoGuideline}
 
-Current date: ${date}
 Working directory: ${workspace}${repoNotes}`
 }
 

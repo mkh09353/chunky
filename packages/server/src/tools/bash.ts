@@ -59,6 +59,19 @@ export const bashInputShape = {
   ready_pattern: z.string().optional().describe("Regex to notify once when a background task is ready; valid only with background=true."),
 }
 
+// Date awareness without cache misses: instead of putting the (mutable) current
+// date in the system prompt, stamp it onto a bash result only when it differs
+// from the last stamp this thread saw — once at session start, then again only
+// after crossing midnight. Keyed per thread so every session gets its stamp.
+const lastDateStamp = new Map<string, string>()
+export function dateStampFor(threadId: unknown): string {
+  const key = typeof threadId === "string" && threadId ? threadId : "default"
+  const today = new Intl.DateTimeFormat("sv-SE", { year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date())
+  if (lastDateStamp.get(key) === today) return ""
+  lastDateStamp.set(key, today)
+  return `\n[today: ${today}]`
+}
+
 async function readPipe(reader: ReadableStreamDefaultReader<Uint8Array>, onChunk?: (chunk: string) => void): Promise<string> {
   const decoder = new TextDecoder()
   let text = ""
@@ -222,7 +235,8 @@ export const bash = tool(
     const note = detached && !timedOut
       ? "\n[note: a background process is still running and holding the output pipe; its further output is not captured]"
       : ""
-    const promptText = `${out ? `${out}\n` : ""}[exit code: ${status}]${note}`
+    const dateStamp = dateStampFor(config?.configurable?.thread_id)
+    const promptText = `${out ? `${out}\n` : ""}[exit code: ${status}]${note}${dateStamp}`
     return toolResult(promptText, { raw: {
       kind: "bash", command, exitCode, timedOut, truncated, originalLines, reducer,
       rawBytes: Buffer.byteLength(combined), ...(spillPath ? { spillPath } : {}), ...(detached ? { detached: true } : {}),

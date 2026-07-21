@@ -140,7 +140,7 @@ leaseHeartbeat.unref()
 const tui = spawn("bun", ["run", join(APP, "packages/tui/src/index.tsx"), "--live"], {
   cwd: WORKSPACE,
   stdio: "inherit",
-  env: { ...process.env, CHUNKY_PORT: String(PORT) },
+  env: { ...process.env, CHUNKY_PORT: String(PORT), CHUNKY_SETTINGS: join(STATE, "settings.json") },
 })
 
 tui.on("exit", async (code) => {

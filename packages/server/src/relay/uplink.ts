@@ -20,6 +20,7 @@ import {
 } from "@chunky/protocol/relay"
 import { deriveSharedKey, fromB64, openJSON, sealJSON, toB64 } from "@chunky/protocol/relay-crypto"
 import type { RelayConfig } from "./config.ts"
+import { getServerToken } from "../settings.ts"
 
 /** An in-flight local request, tracked so http.cancel / peer-offline / stop()
  *  can abort the fetch AND tear down its SSE reader (a dead phone must not
@@ -103,7 +104,7 @@ export function startUplink(opts: {
     try {
       const res = await fetch(localBaseUrl + frame.path, {
         method: frame.method,
-        headers: frame.headers,
+        headers: { ...frame.headers, Authorization: `Bearer ${getServerToken()}` },
         // fromB64 types as Uint8Array<ArrayBufferLike>, but it is always backed
         // by a plain ArrayBuffer at runtime — which is what BodyInit requires.
         body: frame.body ? (fromB64(frame.body) as Uint8Array<ArrayBuffer>) : undefined,

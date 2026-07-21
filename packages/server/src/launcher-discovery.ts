@@ -11,6 +11,7 @@ import {
   writeFileSync,
 } from "node:fs"
 import { join, resolve } from "node:path"
+import { getServerToken } from "./settings.ts"
 
 export const SERVER_IDENTITY_PATH = "/_chunky/server-identity"
 export const SERVER_LEASES_PATH = "/_chunky/server-leases"
@@ -132,7 +133,10 @@ export class ServerLeaseTracker {
 export async function updateServerLease(port: number, token: string, action: "attach" | "release"): Promise<void> {
   const response = await fetch(`http://127.0.0.1:${port}${SERVER_LEASES_PATH}`, {
     method: action === "attach" ? "POST" : "DELETE",
-    headers: { "Content-Type": "application/json" },
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${getServerToken()}`,
+    },
     body: JSON.stringify({ token }),
     signal: AbortSignal.timeout(1_000),
   })

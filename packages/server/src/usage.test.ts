@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test"
 import {
   promptTokensOf,
+  usageForAnthropicCache,
   usageFromAnthropicResult,
   usageFromLangChainMessage,
 } from "./usage.ts"
@@ -118,5 +119,50 @@ describe("usageFromAnthropicResult", () => {
       cacheReadTokens: 10,
       reasoningTokens: 3,
     })
+  })
+})
+
+describe("usageForAnthropicCache", () => {
+  test("uses the configured primary model and excludes auxiliary prompt usage", () => {
+    const delta = usageForAnthropicCache(
+      {
+        modelUsage: {
+          "claude-haiku-4-5": {
+            inputTokens: 300_000,
+            outputTokens: 12_000,
+            cacheReadInputTokens: 80_000,
+          },
+          "claude-sonnet-4-5": {
+            inputTokens: 12_000,
+            outputTokens: 900,
+            cacheReadInputTokens: 40_000,
+            cacheCreationInputTokens: 2_000,
+            reasoningTokens: 300,
+          },
+        },
+      },
+      "claude-sonnet-4-5",
+    )
+    expect(delta).toEqual({
+      inputTokens: 12_000,
+      outputTokens: 900,
+      cacheReadTokens: 40_000,
+      cacheWriteTokens: 2_000,
+      reasoningTokens: 300,
+      model: "claude-sonnet-4-5",
+    })
+    expect(promptTokensOf(delta)).toBe(54_000)
+  })
+
+  test("uses a deterministic largest-prompt fallback when configured model is absent", () => {
+    const delta = usageForAnthropicCache({
+      modelUsage: {
+        "z-aux": { inputTokens: 10, cacheReadInputTokens: 20 },
+        "b-primary": { inputTokens: 100, cacheCreationInputTokens: 50 },
+        "a-tie": { inputTokens: 100, cacheCreationInputTokens: 50 },
+      },
+    }, "missing-model")
+    expect(delta.model).toBe("a-tie")
+    expect(promptTokensOf(delta)).toBe(150)
   })
 })

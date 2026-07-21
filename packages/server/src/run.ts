@@ -24,6 +24,16 @@ import { streamWithCheckpointRecovery } from "./checkpoint-recovery.ts"
 
 export type { Emit } from "./event-emitter.ts"
 
+/** Resolve the model a session will actually use for a run. A pinned selection
+ * wins while its provider is still registered; otherwise the session follows
+ * the global active selection. Keep cache preflight callers on this same rule
+ * so another instance changing the global selection cannot affect pinned
+ * sessions. */
+export function effectiveSessionSelection(sessionId: string): AgentSelection {
+  const pinned = Store.pinnedSelectionOf(sessionId)
+  return pinned && getProvider(pinned.provider) ? pinned : activeSelection()
+}
+
 export function mergeInterjectionBoundaries(
   pending: InterjectionBoundary,
   next: InterjectionBoundary,
@@ -366,8 +376,7 @@ export async function runAgent(
   // next root turn, never an in-flight root or any of its child threads. A
   // session with a PINNED selection (a shipped goal-orchestrator keeping its
   // model) uses that instead — unless its provider has since been unregistered.
-  const pinned = Store.pinnedSelectionOf(sessionId)
-  const selection = pinned && getProvider(pinned.provider) ? pinned : activeSelection()
+  const selection = effectiveSessionSelection(sessionId)
 
   // Freeze the run's workspace from the SESSION (not any global): every tool
   // call, child thread, and advisor consult in this run operates here, so

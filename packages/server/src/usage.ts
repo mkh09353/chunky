@@ -139,3 +139,42 @@ export function usageFromAnthropicResult(message: {
     ...(model ? { model } : {}),
   }
 }
+
+/**
+ * Extract only the prompt usage belonging to the configured conversation model.
+ * `modelUsage` may also contain SDK-owned auxiliary calls (for example title
+ * generation), which are valid billing/usage totals but are not part of the
+ * prompt that a cold conversation cache would resend.
+ *
+ * The configured id is preferred, with a case-insensitive exact match as a
+ * small compatibility concession. If the SDK does not expose that id, use a
+ * deterministic largest-prompt fallback: this is the best available proxy for
+ * the conversation request, and ties are resolved lexically rather than by
+ * object enumeration order. Flat usage is used when no model breakdown exists.
+ */
+export function usageForAnthropicCache(
+  message: Parameters<typeof usageFromAnthropicResult>[0],
+  configuredModel?: string,
+): UsageDelta {
+  const models = message.modelUsage ? Object.entries(message.modelUsage) : []
+  if (models.length === 0) return usageFromAnthropicResult(message)
+
+  const configured = configuredModel
+    ? models.find(([id]) => id === configuredModel) ??
+      models.find(([id]) => id.toLowerCase() === configuredModel.toLowerCase())
+    : undefined
+  const selected = configured ?? [...models].sort(([a, av], [b, bv]) => {
+    const ap = (av.inputTokens ?? 0) + (av.cacheReadInputTokens ?? 0) + (av.cacheCreationInputTokens ?? 0)
+    const bp = (bv.inputTokens ?? 0) + (bv.cacheReadInputTokens ?? 0) + (bv.cacheCreationInputTokens ?? 0)
+    return bp - ap || a.localeCompare(b)
+  })[0]
+  const [, usage] = selected
+  return {
+    inputTokens: usage.inputTokens ?? 0,
+    outputTokens: usage.outputTokens ?? 0,
+    ...(usage.cacheReadInputTokens ? { cacheReadTokens: usage.cacheReadInputTokens } : {}),
+    ...(usage.cacheCreationInputTokens ? { cacheWriteTokens: usage.cacheCreationInputTokens } : {}),
+    ...(usage.reasoningTokens ? { reasoningTokens: usage.reasoningTokens } : {}),
+    model: selected[0],
+  }
+}

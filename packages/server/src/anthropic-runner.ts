@@ -19,7 +19,7 @@ import { taggedEmitter, type Emit } from "./event-emitter.ts"
 import { buildSystemPrompt } from "./prompt.ts"
 import { listSidekickSeats, sidekickFor, type AgentSelection } from "./providers/registry.ts"
 import { ANTHROPIC_SDK_ISOLATION_OPTIONS, anthropicOAuthEnvironment } from "./providers/anthropic-sdk.ts"
-import { usageFromAnthropicResult } from "./usage.ts"
+import { usageForAnthropicCache, usageFromAnthropicResult } from "./usage.ts"
 import { noteRequest } from "./cache-watch.ts"
 import type { CacheContext, InputImage } from "./run.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
@@ -520,7 +520,7 @@ export async function translateAnthropicMessages(
         // haiku or API-format id here manufactures a false "model switch".
         const delta = usageFromAnthropicResult(message as any)
         if (cache) {
-          noteRequest(cache.conversationId, delta, cache.model, Date.now())
+          noteRequest(cache.conversationId, usageForAnthropicCache(message as any, cache.model), cache.model, Date.now())
         }
         emit({ type: "usage.update", usage: delta })
         if (usageContext) Store.logUsage({ sessionId: usageContext.sessionId, threadId: displayThreadId, role: usageContext.role,

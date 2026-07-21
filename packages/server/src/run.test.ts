@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test"
-import { mergeInterjectionBoundaries, onFirstStreamChunk, runAgent, translateStream } from "./run.ts"
+import { effectiveSessionSelection, mergeInterjectionBoundaries, onFirstStreamChunk, runAgent, translateStream } from "./run.ts"
 import { appendTaskOutput, createTask, finishTask, peekTaskReminders, resetTasks, taskSpillPath } from "./tasks.ts"
-import { getProvider, registerProvider } from "./providers/registry.ts"
+import { activeSelection, getProvider, registerProvider, setActiveProviderId, setSelection } from "./providers/registry.ts"
 import { Store } from "./store.ts"
 
 describe("translateStream", () => {
@@ -123,5 +123,31 @@ test("failed provider preflight leaves background-task reminders pending", async
     Store.pinSelection(sessionId, null)
     registerProvider(originalProvider)
     await resetTasks()
+  }
+})
+
+test("effective session selection keeps a valid pinned model across global changes", () => {
+  const sessionId = `selection-resolution-${process.pid}`
+  const originalProvider = getProvider("grok")!
+  const before = activeSelection()
+  registerProvider({
+    id: "grok",
+    label: "Selection resolution test",
+    billing: "unknown",
+    ready: () => true,
+    listModels: async () => [],
+    buildModel: () => { throw new Error("not used") },
+  })
+  Store.createSession(sessionId)
+  Store.pinSelection(sessionId, { provider: "grok", model: "pinned-model" })
+  try {
+    setActiveProviderId(before.provider)
+    setSelection(before.provider, { model: "another-instance-model", effort: before.effort, speed: before.speed })
+    expect(effectiveSessionSelection(sessionId)).toMatchObject({ provider: "grok", model: "pinned-model" })
+  } finally {
+    Store.pinSelection(sessionId, null)
+    registerProvider(originalProvider)
+    setActiveProviderId(before.provider)
+    setSelection(before.provider, { model: before.model, effort: before.effort, speed: before.speed })
   }
 })

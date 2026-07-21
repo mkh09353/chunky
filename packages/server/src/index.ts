@@ -18,7 +18,7 @@ import {
   type AppBrowserEndpoint,
   type AppBrowserResponse,
 } from "@chunky/protocol"
-import { runAgent, type InputImage, type InterjectionBoundary } from "./run.ts"
+import { effectiveSessionSelection, runAgent, type InputImage, type InterjectionBoundary } from "./run.ts"
 import { shipHandoffPrompt } from "./tools/ship.ts"
 import { Store } from "./store.ts"
 import { restoreSnapshot, snapshotWorkspace } from "./shadow-git.ts"
@@ -1168,7 +1168,7 @@ const server = Bun.serve({
       // GET .../cache -> CacheStatusResponse. Read-only preflight: would a send
       // right now rebuild a cold cache? Lets the TUI warn BEFORE the user sends.
       if (kind === "cache" && req.method === "GET") {
-        const model = activeSelection().model
+        const model = effectiveSessionSelection(sessionId).model
         const cold = model ? checkCacheCold(sessionId, model, Date.now()) : undefined
         return json({
           cold: cold ? cacheColdPayload(cold) : null,
@@ -1227,7 +1227,7 @@ const server = Bun.serve({
         // would rebuild a big cold cache. 409 carries the details; the client
         // asks the user and re-POSTs with force: true (or starts a fresh thread).
         if (!force && delivery !== "steer") {
-          const model = activeSelection().model
+          const model = effectiveSessionSelection(sessionId).model
           const guardTokens = getCacheGuardTokens()
           const cold = model ? checkCacheCold(sessionId, model, Date.now()) : undefined
           if (guardTokens != null && exceedsGuard(cold, guardTokens)) {

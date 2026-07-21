@@ -7,7 +7,7 @@ import type {
 import type { LoginInitiation, ProviderDef } from "./registry.ts"
 import type { ModelInfo } from "./models-catalog.ts"
 import { CHUNKY_USER_AGENT } from "./app-info.ts"
-import { existsSync } from "node:fs"
+import { existsSync, readFileSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
 
 interface ClaudeAuthStatus {
@@ -138,16 +138,28 @@ function toModelInfo(model: AnthropicModelInfo): ModelInfo {
   }
 }
 
-export async function listAnthropicModels(
-  dependencies: { query?: typeof import("@anthropic-ai/claude-agent-sdk").query } = {},
-): Promise<ModelInfo[]> {
-  if (!anthropicOAuthReady()) {
-    throw new Error("anthropic: Claude OAuth is not ready (run `claude auth login --claudeai`)")
-  }
+const ANTHROPIC_MODELS_CACHE_TTL_MS = 24 * 60 * 60 * 1000 // 24h
+function anthropicModelsCachePath(): string {
+  return process.env.CHUNKY_ANTHROPIC_MODELS_CACHE || "anthropic-models-cache.json"
+}
 
-  // supportedModels() is an SDK control request. It initializes the real
-  // bundled Claude runtime but sends no inference request before we close it.
-  const query = dependencies.query ?? (await import("@anthropic-ai/claude-agent-sdk")).query
+// supportedModels() starts the full Agent SDK runtime, so retain it across
+// requests and restarts where possible rather than paying that cost repeatedly.
+let anthropicModelsInFlight: Promise<ModelInfo[]> | undefined
+function readAnthropicModelsCache(): ModelInfo[] | undefined {
+  try {
+    const parsed = JSON.parse(readFileSync(anthropicModelsCachePath(), "utf8")) as { fetchedAt?: number; payload?: ModelInfo[] }
+    if (!Array.isArray(parsed?.payload) || typeof parsed.fetchedAt !== "number") return undefined
+    if (Date.now() - parsed.fetchedAt > ANTHROPIC_MODELS_CACHE_TTL_MS) return undefined
+    return parsed.payload
+  } catch { return undefined }
+}
+function writeAnthropicModelsCache(payload: ModelInfo[]): void {
+  try { writeFileSync(anthropicModelsCachePath(), JSON.stringify({ fetchedAt: Date.now(), payload })) } catch {
+    // best-effort; the in-memory memo still serves this process
+  }
+}
+async function queryAnthropicModels(query: typeof import("@anthropic-ai/claude-agent-sdk").query): Promise<ModelInfo[]> {
   async function* noInput(): AsyncGenerator<SDKUserMessage> {}
   const q = query({
     prompt: noInput(),
@@ -157,11 +169,35 @@ export async function listAnthropicModels(
       ...ANTHROPIC_SDK_ISOLATION_OPTIONS,
     } satisfies AnthropicOptions,
   })
-  try {
-    return (await q.supportedModels()).map(toModelInfo)
-  } finally {
-    q.close()
+  try { return (await q.supportedModels()).map(toModelInfo) } finally { q.close() }
+}
+
+export async function listAnthropicModels(
+  dependencies: { query?: typeof import("@anthropic-ai/claude-agent-sdk").query } = {},
+): Promise<ModelInfo[]> {
+  if (!anthropicOAuthReady()) {
+    throw new Error("anthropic: Claude OAuth is not ready (run `claude auth login --claudeai`)")
   }
+
+  // Injected queries are test scopes; don't use the production caches.
+  if (dependencies.query) return queryAnthropicModels(dependencies.query)
+  if (anthropicModelsInFlight) return anthropicModelsInFlight
+
+  // supportedModels() is an SDK control request. It initializes the real
+  // bundled Claude runtime but sends no inference request before we close it.
+  const promise = (async () => {
+    const disk = readAnthropicModelsCache()
+    if (disk) return disk
+    const query = (await import("@anthropic-ai/claude-agent-sdk")).query
+    const models = await queryAnthropicModels(query)
+    writeAnthropicModelsCache(models)
+    return models
+  })()
+  anthropicModelsInFlight = promise
+  void promise.catch(() => {
+    if (anthropicModelsInFlight === promise) anthropicModelsInFlight = undefined
+  })
+  return promise
 }
 
 async function loginWithClaudeOAuth(): Promise<LoginInitiation> {

@@ -39,11 +39,22 @@ export async function suggestedModes(ready: Set<string>): Promise<OnboardingSugg
   return result
 }
 
+// Keep this cheap name-only check in sync with the branches in suggestedModes.
+function suggestedModeNames(ready: Set<string>): string[] {
+  const names: string[] = []
+  if (ready.has("codex") && ready.has("anthropic")) names.push("fire")
+  else if (ready.has("codex") || ready.has("anthropic")) names.push("default")
+  if (ready.has("codex") || ready.has("anthropic")) names.push("cheap")
+  return names
+}
+
 /** Seed defaults without changing any active runtime configuration. */
 export async function ensureDefaultModes(ready: Set<string>): Promise<void> {
   const settings = loadSettings()
   const modes = settings.modes ?? {}
   const seeded = new Set(settings.seededModes ?? [])
+  const modeNames = new Set(Object.keys(modes).map((name) => name.toLowerCase()))
+  if (suggestedModeNames(ready).every((name) => modeNames.has(name) || seeded.has(name))) return
   let changed = false
   for (const suggestion of await suggestedModes(ready)) {
     if (Object.keys(modes).some((name) => name.toLowerCase() === suggestion.name.toLowerCase()) || seeded.has(suggestion.name)) continue

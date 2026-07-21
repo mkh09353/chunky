@@ -42,7 +42,7 @@ import {
 } from "./providers/registry.ts"
 import { detectClaudeCredentials } from "./providers/anthropic-sdk.ts"
 import { AuthStore } from "./providers/auth-store.ts"
-import { checkForUpdate, persistCheck, readPersistedCheck } from "./update/updater.ts"
+import { checkForUpdate, currentVersion, persistCheck, readPersistedCheck } from "./update/updater.ts"
 import { applyOnboardingMode, suggestedModes, ensureDefaultModes, saveCustomProvider } from "./onboarding.ts"
 import {
   currentModeSpec,
@@ -382,7 +382,9 @@ const serverLeases = launcherManaged ? new ServerLeaseTracker(() => Date.now(), 
 
 // This is deliberately fire-and-forget: a GitHub outage must never affect boot.
 const previousUpdateCheck = readPersistedCheck()
-if (!previousUpdateCheck?.checkedAt || Date.now() - previousUpdateCheck.checkedAt >= 24 * 60 * 60 * 1000) {
+// Re-check immediately if the persisted result predates the running version
+// (i.e. we just updated), not only when it is older than 24h.
+if (!previousUpdateCheck?.checkedAt || previousUpdateCheck.current !== currentVersion() || Date.now() - previousUpdateCheck.checkedAt >= 24 * 60 * 60 * 1000) {
   void checkForUpdate().then(persistCheck).catch(() => {})
 }
 
@@ -426,7 +428,13 @@ const server = Bun.serve({
       return json({ leases: serverLeases.size })
     }
 
-    if (req.method === "GET" && pathname === ROUTES.updateStatus) return json(readPersistedCheck() ?? { current: "unknown", latest: null, available: false })
+    if (req.method === "GET" && pathname === ROUTES.updateStatus) {
+      // A record persisted by an older build (e.g. before `chunky update`) may
+      // claim a version we already run — never surface that as an update.
+      const check = readPersistedCheck()
+      if (!check || check.current !== currentVersion()) return json({ current: currentVersion(), latest: null, available: false })
+      return json(check)
+    }
 
     if (req.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders(req) })

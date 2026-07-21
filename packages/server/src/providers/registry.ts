@@ -13,6 +13,7 @@ import { ChatOpenAI } from "@langchain/openai"
 import type { LoginInitiation } from "@chunky/protocol"
 import { enrichModels, type ModelInfo } from "./models-catalog.ts"
 import { chatOptionsFor } from "./model-options.ts"
+import { assertSelectionAllowed, incognitoAllowlistFor, isIncognitoSession, providerScope } from "../incognito.ts"
 import {
   getAdvisor,
   getSidekick,
@@ -174,9 +175,13 @@ export function registerProvider(def: ProviderDef): void {
   providers[def.id] = def
 }
 
-export function listProviders(): ProviderDef[] {
+export function listProviders(sessionId: string | null = null): ProviderDef[] {
   ensureCustomProviders()
-  return Object.values(providers)
+  return Object.values(providers).filter((p) => {
+    if (providerScope(p.id) === "incognito" && (!sessionId || !isIncognitoSession(sessionId))) return false
+    if (sessionId && isIncognitoSession(sessionId)) return incognitoAllowlistFor(sessionId)?.includes(p.id) ?? false
+    return true
+  })
 }
 
 /** Look up a single provider by id (undefined if unregistered). */
@@ -201,7 +206,8 @@ export function mergeModelCatalog(
 }
 
 /** List the models a provider can serve (throws if the provider is unknown). */
-export async function listModelsFor(id: string): Promise<ModelInfo[]> {
+export async function listModelsFor(id: string, sessionId: string | null = null): Promise<ModelInfo[]> {
+  assertSelectionAllowed(sessionId, { provider: id })
   const all = await listAllKnownModelsFor(id)
   const hidden = new Set(modelCatalogFor(id).hidden ?? [])
   return all.filter((model) => !hidden.has(model.id))
@@ -307,7 +313,8 @@ export function selectionSignature(selection: AgentSelection = activeSelection()
 }
 
 /** Build a chat model for one explicit agent selection. */
-export function resolveModel(selection: AgentSelection = activeSelection()): BaseChatModel {
+export function resolveModel(selection: AgentSelection = activeSelection(), sessionId?: string): BaseChatModel {
+  assertSelectionAllowed(sessionId ?? null, selection)
   ensureCustomProviders()
   const p = providers[selection.provider]
   if (!p) throw new Error(`unknown provider "${selection.provider}"`)

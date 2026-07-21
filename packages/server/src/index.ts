@@ -1,6 +1,9 @@
 // Chunky CLI server: Bun.serve HTTP + SSE. Model via the provider registry;
 // sessions + event history persisted to sqlite so reconnecting resumes.
 import { randomUUID } from "node:crypto"
+import { rmSync } from "node:fs"
+import { join } from "node:path"
+import { tmpdir } from "node:os"
 import { AsyncLocalStorageProviderSingleton } from "@langchain/core/singletons"
 import {
   DEFAULT_PORT,
@@ -21,6 +24,7 @@ import {
 import { effectiveSessionSelection, runAgent, type InputImage, type InterjectionBoundary } from "./run.ts"
 import { shipHandoffPrompt } from "./tools/ship.ts"
 import { Store } from "./store.ts"
+import { markSessionIncognito, validateIncognitoMode } from "./incognito.ts"
 import { restoreSnapshot, snapshotWorkspace } from "./shadow-git.ts"
 import { createForkWorktree, removeForkWorktree } from "./worktree-fork.ts"
 import { anchorLatestCheckpoint, cloneThreadAtCheckpoint, rewindCheckpoints } from "./bun-sqlite-saver.ts"
@@ -60,6 +64,7 @@ import {
   listModes,
   resetSidekickSeat,
   saveMode,
+  setActiveMode,
   saveCustomProviders,
   setAdvisor,
   setCacheGuardTokens,
@@ -93,6 +98,7 @@ import {
 import { loadRelayConfig } from "./relay/config.ts"
 import { startUplink } from "./relay/uplink.ts"
 import { getModelAvailability, manageModelCatalog, setModelAvailability, type ModelCatalogAction } from "./model-catalog.ts"
+import { assertSelectionAllowed, isIncognitoSession, incognitoAllowlistFor, providerScope } from "./incognito.ts"
 import { manageSkillRepos, type SkillRepoMutationAction } from "./skill-repos.ts"
 import { resetTasks, liveTaskCounts } from "./tasks.ts"
 import { installBackgroundDispatcher } from "./background-dispatch.ts"
@@ -388,6 +394,10 @@ if (!previousUpdateCheck?.checkedAt || previousUpdateCheck.current !== currentVe
   void checkForUpdate().then(persistCheck).catch(() => {})
 }
 
+// Incognito sessions and their registry are memory-only and intentionally vanish
+// on restart; no durable-session rehydration is performed.
+rmSync(join(tmpdir(), "chunky-incognito"), { recursive: true, force: true })
+
 const server = Bun.serve({
   port,
   idleTimeout: 0, // never time out SSE connections
@@ -479,7 +489,7 @@ const server = Bun.serve({
     if (req.method === "GET" && pathname === "/api/providers") {
       const active = activeProviderId()
       return json({
-        providers: listProviders().map((p) => ({
+        providers: listProviders(new URL(req.url).searchParams.get("session")).map((p) => ({
           id: p.id,
           label: p.label,
           billing: p.billing,
@@ -602,7 +612,7 @@ const server = Bun.serve({
       const id = modelsMatch[1]!
       if (!getProvider(id)) return json({ error: `unknown provider "${id}"` }, 404)
       try {
-        return json({ models: await listModelsFor(id) })
+        return json({ models: await listModelsFor(id, new URL(req.url).searchParams.get("session")) })
       } catch (err) {
         return json({ error: (err as Error)?.message ?? String(err) }, 502)
       }
@@ -712,6 +722,10 @@ const server = Bun.serve({
       if (!getProvider(provider)) return json({ error: `unknown provider "${provider}"` }, 404)
       const model = typeof body.model === "string" && body.model.length > 0 ? body.model : undefined
       if (!model) return json({ error: "missing model" }, 400)
+      // This global route has no target session; root turns enforce pinned and
+      // effective selections. Reject incognito-only providers here as well so
+      // normal-session picker changes cannot silently select one.
+      try { assertSelectionAllowed(null, { provider, model }) } catch (err) { return json({ error: (err as Error).message }, 400) }
 
       const EFFORTS = ["low", "medium", "high", "xhigh", "max"]
       const SPEEDS = ["standard", "fast"]
@@ -722,6 +736,7 @@ const server = Bun.serve({
 
       setActiveProviderId(provider)
       setSelection(provider, { model, effort, speed })
+      setActiveMode(undefined)
       invalidateAgent()
       const sel = selectionOf(provider)
       return json({ provider, model: sel.model ?? null, effort: sel.effort ?? null, speed: sel.speed ?? null })
@@ -831,6 +846,7 @@ const server = Bun.serve({
         return json({ error: "no model selected — pick one with /model before saving a mode" }, 400)
       }
       if (!getProvider(spec.provider)) return json({ error: `unknown provider "${spec.provider}"` }, 404)
+      try { validateIncognitoMode(spec) } catch (err) { return json({ error: (err as Error).message }, 400) }
       saveMode(name, spec)
       return json({ modes: listModes(), current: currentModeSpec() })
     }
@@ -845,6 +861,8 @@ const server = Bun.serve({
         const spec = getMode(name)
         if (!spec) return json({ error: `unknown mode "${name}"` }, 404)
         if (!getProvider(spec.provider)) return json({ error: `mode "${name}" uses unknown provider "${spec.provider}"` }, 400)
+        try { validateIncognitoMode(spec) } catch (err) { return json({ error: (err as Error).message }, 400) }
+        setActiveMode(spec.incognito ? name : undefined)
         setActiveProviderId(spec.provider)
         setSelection(spec.provider, { model: spec.model, effort: spec.effort, speed: spec.speed })
         if (spec.advisor) {
@@ -1002,6 +1020,7 @@ const server = Bun.serve({
       const sessions = Store.list(cwd ? canonicalWorkspace(cwd) : repo?.path).map((session) => ({
         ...session,
         attached: (live.get(session.sessionId)?.size ?? 0) > 0,
+        incognito: isIncognitoSession(session.sessionId),
       }))
       return json({ sessions })
     }
@@ -1026,13 +1045,19 @@ const server = Bun.serve({
       const repo = repoId ? repoById(repoId) : activeRepo()
       if (repoId && !repo) return json({ error: `unknown repo "${repoId}"` }, 404)
       const sessionId = randomUUID()
+      const activeMode = loadSettings().activeMode
+      const mode = activeMode ? getMode(activeMode) : undefined
+      if (mode?.incognito) {
+        markSessionIncognito(sessionId, mode.incognito.allow)
+      }
       Store.createSession(sessionId, undefined, clientCwd ?? repo?.path)
+      if (mode?.incognito) Store.setIncognito(sessionId, mode.incognito.allow)
       // Warm FFF without delaying session creation; FileFinder's native watcher
       // keeps the index incrementally current. Its public API has no manual
       // update/rescan hook, so do not add a redundant JS watcher.
       void getFinder(repo?.path).catch(() => {})
       subscribers(sessionId) // pre-create the fan-out set
-      return json({ sessionId })
+      return json({ sessionId, incognito: isIncognitoSession(sessionId) })
     }
 
     // PATCH /api/sessions/:id { title } -> rename a session. Session deletion
@@ -1067,6 +1092,7 @@ const server = Bun.serve({
       }
 
       if (kind === "fork" && req.method === "POST") {
+        if (isIncognitoSession(sessionId)) return json({ error: "cannot fork an incognito session" }, 403)
         let body: ForkRequest
         try { body = await req.json() as ForkRequest } catch { return json({ error: "invalid JSON body" }, 400) }
         if (body.worktree != null && typeof body.worktree !== "boolean") return json({ error: "invalid worktree" }, 400)

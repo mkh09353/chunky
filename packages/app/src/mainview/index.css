@@ -122,6 +122,81 @@ body,
   --color-focus: var(--chunky-purple);
 }
 
+/* INCOGNITO — the attached thread is off the record, so the brand purple is
+   swapped wholesale for a bright red. App.tsx puts `chunky-incognito` on the
+   shell; this re-declares the SAME token block above with the red family, both on
+   the shell itself and on every nested Astryx theme scope inside it (AppShell
+   re-opens one, and a plain `[data-astryx-theme]` rule would out-cascade a merely
+   inherited override). The structure mirrors the purple palette one-for-one — a
+   solid accent, a deep variant for text on white, a soft one for text on black,
+   and a faint wash — so every accent surface follows without further rules.
+   Nothing here applies unless the class is present: a normal thread renders
+   exactly as it did before. */
+.chunky-incognito,
+.chunky-incognito [data-astryx-theme] {
+  --chunky-purple: #ff3b30;
+  --chunky-purple-deep: #c81e14;
+  --chunky-purple-soft: #ff8e88;
+  --chunky-purple-circle: #ff6a60;
+  --chunky-purple-text: light-dark(var(--chunky-purple-deep), var(--chunky-purple-soft));
+  --chunky-purple-wash: light-dark(#fdeceb, #3a1a18);
+
+  --color-accent: var(--chunky-purple);
+  --color-accent-muted: var(--chunky-purple-wash);
+  --color-on-accent: #ffffff;
+  --color-text-accent: var(--chunky-purple-text);
+  --color-icon-accent: var(--chunky-purple-text);
+  --color-focus: var(--chunky-purple);
+}
+
+/* The mascot in the TopNav is a purple PNG — rotate its hue onto the red so the
+   header isn't still flying brand colours while everything else has gone red. */
+.chunky-incognito .chunky-mark {
+  filter: hue-rotate(98deg) saturate(1.15);
+}
+
+/* Header badge: the loudest thing in the top nav, so "off the record" is never a
+   detail you have to hunt for. Solid red with white text in BOTH modes — this one
+   must not soften on light backgrounds. */
+.chunky-incognito-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.15rem 0.5rem;
+  border-radius: 999px;
+  background: #ff3b30;
+  color: #ffffff;
+  font-size: 0.6875rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+/* Sidebar rows for incognito threads: identifiable before you open one. The reds
+   are FIXED, not the accent tokens — these rows must read red even while the
+   attached thread is a normal, still-purple one. `.chunky-thread-row` is
+   `display: contents`, so the tint has to land on the row's own <button>
+   (SideNavItem's element), not on the wrapper. */
+.chunky-thread-incognito button,
+.chunky-thread-incognito button * {
+  color: light-dark(#c81e14, #ff8e88);
+}
+
+.chunky-thread-incognito button {
+  border-inline-start: 2px solid light-dark(#c81e14, #ff8e88);
+  background: light-dark(#fdeceb, #2a1614);
+}
+
+/* The little "incognito" tag inside such a row, before the timestamp. */
+.chunky-thread-tag {
+  margin-inline-end: var(--spacing-1);
+  font-size: var(--font-size-2xs);
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
 .chunky-shell {
   height: 100%;
   min-height: 0;

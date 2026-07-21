@@ -23,6 +23,7 @@ import { usageForAnthropicCache, usageFromAnthropicResult } from "./usage.ts"
 import { noteRequest } from "./cache-watch.ts"
 import type { CacheContext, InputImage } from "./run.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
+import { assertSelectionAllowed } from "./incognito.ts"
 import { bash, bashInputShape } from "./tools/bash.ts"
 import { monitor, monitorInputShape } from "./tools/monitor.ts"
 import { editInputShape, editTool } from "./tools/edit.ts"
@@ -586,6 +587,7 @@ export async function runAnthropicAgent(
   request: AnthropicRunRequest,
   dependencies: AnthropicRunnerDependencies = defaultDependencies,
 ): Promise<string> {
+  assertSelectionAllowed(request.usageContext?.sessionId ?? null, request.selection)
   const options = await buildAnthropicOptions(request, dependencies)
   const q: Query = dependencies.query({ prompt: anthropicPrompt(request.prompt, request.images), options })
   request.onSubmitted?.()

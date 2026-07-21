@@ -195,6 +195,7 @@ export interface SessionSummary {
   workspace: string
   /** True while at least one live SSE client is attached to this session. */
   attached?: boolean
+  incognito?: boolean
 }
 export interface ListSessionsResponse {
   sessions: SessionSummary[]

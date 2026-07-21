@@ -10,6 +10,7 @@ import { randomUUID } from "node:crypto"
 import { tool } from "@langchain/core/tools"
 import { z } from "zod"
 import { Store } from "../store.ts"
+import { isIncognitoSession } from "../incognito.ts"
 import { sessionForThread } from "../thread-context.ts"
 import { busInstalled, deliverToSession, emitToSession } from "../session-bus.ts"
 import { DEFAULT_MAX_TURNS, firstLine, goalKickoffPrompt, toSnapshot, type Goal } from "../goal.ts"
@@ -88,6 +89,7 @@ export const shipGoalInputShape = {
 export async function runShipGoal(input: ShipGoalInput, callerThreadId: string | undefined): Promise<string> {
   const fromSessionId = sessionForThread(callerThreadId)
   if (!fromSessionId) return "error: ship_goal is only available inside an active session run."
+  if (isIncognitoSession(fromSessionId)) return "error: ship_goal is unavailable from an incognito session because it creates a non-incognito session."
   if (!busInstalled()) return "error: shipping is not available in this run (no session bus)."
 
   const title = input.title.trim().slice(0, 80) || "Shipped goal"

@@ -12,6 +12,7 @@ import {
   addRepo,
   applyMode,
   createSession,
+  type CreatedSession,
   deleteMode,
   fetchAdvisor,
   fetchCacheGuard,
@@ -57,6 +58,7 @@ import { openExternal } from "./lib/rpc"
 import { BrowserProvider, useBrowserPane } from "./lib/browser"
 import { sleep } from "./lib/sleep"
 import { isIntentionalAbort, reconnectDelay } from "./lib/reconnect"
+import { activeIncognito } from "./lib/incognito"
 import { parseGoalArgs, parseSlashCommand, SLASH_COMMANDS } from "./lib/commands"
 import { renderScoreboard, renderUsage, usageTotalsLine } from "./lib/stats"
 import { fmtTokens } from "./lib/format"
@@ -162,6 +164,11 @@ export default function App() {
   const { setMode: setThemeMode, cycleMode: cycleTheme } = useThemeMode()
 
   const sessionIdRef = useRef<string | null>(null)
+  // The incognito flag off the last create response, so a brand-new thread is
+  // marked from its first paint instead of waiting for the session list to come
+  // back. The list stays the source of truth (see `incognito` below); this only
+  // covers the gap, and a ref is enough because attaching re-renders anyway.
+  const createdIncognito = useRef<CreatedSession | null>(null)
   const streamAbort = useRef<AbortController | null>(null)
   const activeRepoIdRef = useRef<string | null>(null)
   // Latest run state for handleSubmit, which picks the send's delivery. A ref, so
@@ -345,9 +352,10 @@ export default function App() {
         return
       }
       try {
-        const id = await createSession(baseUrl, repoId)
+        const created = await createSession(baseUrl, repoId)
+        createdIncognito.current = created
         await refreshSessions(baseUrl, repoId)
-        void attachSession(baseUrl, id, true)
+        void attachSession(baseUrl, created.sessionId, true)
       } catch (err) {
         setTranscriptLoading(false)
         setConnError(
@@ -443,9 +451,10 @@ export default function App() {
   const handleNewThread = useCallback(async () => {
     if (!config) return
     try {
-      const id = await createSession(config.baseUrl, activeRepoIdRef.current)
+      const created = await createSession(config.baseUrl, activeRepoIdRef.current)
+      createdIncognito.current = created
       await refreshSessions(config.baseUrl)
-      void attachSession(config.baseUrl, id, true)
+      void attachSession(config.baseUrl, created.sessionId, true)
     } catch (err) {
       setConnError((err as Error).message)
     }
@@ -1111,13 +1120,16 @@ export default function App() {
   const activeRepo = repos.find((r) => r.id === activeRepoId) ?? null
   const workspaceName = activeRepo?.name || config?.workspaceName || "chunky"
   const groups = groupSessions(sessions)
+  // Is the ATTACHED thread off the record? Drives the red accent (via
+  // `chunky-incognito` on the shell) and the header badge.
+  const incognito = activeIncognito(sessions, sessionId, createdIncognito.current)
 
   return (
     // Provides openInBrowser() to the transcript's markdown links, which sit too
     // deep (App → WorkspacePanes → ChatPane → TranscriptView) to thread another
     // prop through.
     <BrowserProvider openInBrowser={browser.openInBrowser}>
-    <div className="chunky-shell">
+    <div className={`chunky-shell${incognito ? " chunky-incognito" : ""}`}>
       <AppShell
         height="fill"
         variant="elevated"
@@ -1137,6 +1149,17 @@ export default function App() {
             }
             endContent={
               <>
+                {/* Off-the-record threads say so in the header, next to the
+                    thread's own chrome — the accent alone shouldn't have to
+                    carry the message. */}
+                {incognito && (
+                  <span
+                    className="chunky-incognito-badge"
+                    title="This thread is off the record: it never touches disk and is gone when the server stops."
+                  >
+                    Incognito
+                  </span>
+                )}
                 <button
                   type="button"
                   className={`chunky-browser-toggle${browser.open ? " chunky-browser-toggle-on" : ""}`}
@@ -1212,7 +1235,7 @@ export default function App() {
                       // dblclick/F2 bubble up from the row's own button.
                       <div
                         key={s.sessionId}
-                        className="chunky-thread-row"
+                        className={`chunky-thread-row${s.incognito === true ? " chunky-thread-incognito" : ""}`}
                         onDoubleClick={() => setRenamingId(s.sessionId)}
                         onKeyDown={(e) => {
                           // F2 is the platform-standard rename key (Finder, VS
@@ -1230,9 +1253,14 @@ export default function App() {
                           isSelected={s.sessionId === sessionId}
                           onClick={() => handleSelectSession(s.sessionId)}
                           endContent={
-                            <span className="chunky-thread-time">
-                              {relativeTime(s.lastActivity)}
-                            </span>
+                            <>
+                              {s.incognito === true && (
+                                <span className="chunky-thread-tag">Incognito</span>
+                              )}
+                              <span className="chunky-thread-time">
+                                {relativeTime(s.lastActivity)}
+                              </span>
+                            </>
                           }
                         />
                       </div>

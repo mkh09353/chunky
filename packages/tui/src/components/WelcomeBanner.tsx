@@ -1,6 +1,6 @@
 import { TextAttributes } from "@opentui/core"
 import { ChunkyLogo } from "./ChunkyLogo.js"
-import { ACCENT } from "../theme.js"
+import { ACCENT, INCOGNITO_LABEL } from "../theme.js"
 
 /** Shorten a path to Claude Code's `/…/parent/dir` form. */
 function shortCwd(cwd: string): string {
@@ -18,11 +18,14 @@ export function WelcomeBanner({
   mode,
   cwd,
   model,
+  incognito = false,
 }: {
   mode: "mock" | "live"
   cwd: string
   /** The active model label (real selection, not hardcoded). */
   model: string
+  /** This session is off the record — say so, loudly, in the (red) accent. */
+  incognito?: boolean
 }) {
   return (
     <box
@@ -40,6 +43,11 @@ export function WelcomeBanner({
       <box marginY={1}>
         <ChunkyLogo />
       </box>
+      {incognito && (
+        <text fg={ACCENT} attributes={TextAttributes.BOLD}>
+          {INCOGNITO_LABEL} — off the record
+        </text>
+      )}
       <text attributes={TextAttributes.DIM}>{model}</text>
       <text attributes={TextAttributes.DIM}>{shortCwd(cwd)}</text>
       <text attributes={TextAttributes.DIM}>

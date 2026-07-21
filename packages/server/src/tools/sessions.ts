@@ -9,6 +9,7 @@ import { Store } from "../store.ts"
 import { sessionForThread } from "../thread-context.ts"
 import { busInstalled, deliverToSession, queuedCount, sessionIsRunning } from "../session-bus.ts"
 import { firstLine } from "../goal.ts"
+import { isIncognitoSession } from "../incognito.ts"
 
 function threadIdOf(config: unknown): string | undefined {
   return (config as any)?.configurable?.thread_id as string | undefined
@@ -102,6 +103,12 @@ export const sendToSessionTool = tool(
     }
     if (targetId === selfId) {
       return "error: that is this session. Messaging yourself would just queue a turn behind this one — do the work here instead."
+    }
+    if (selfId && isIncognitoSession(selfId)) {
+      return "error: incognito sessions cannot message other sessions because handoff to non-incognito sessions is unsafe."
+    }
+    if (isIncognitoSession(targetId)) {
+      return "error: send_to_session cannot target an incognito session."
     }
 
     const fromLabel = selfId ? sessionLabel(selfId, Store.titleOf(selfId)) : "unknown session"

@@ -325,6 +325,28 @@ export class BunSqliteSaver extends BaseCheckpointSaver {
   }
 }
 
+/** Routes checkpoint threads to the process-local saver for incognito roots. */
+const incognitoThreads = new Set<string>()
+export function registerIncognitoThread(threadId: string): void { incognitoThreads.add(threadId) }
+export function isRegisteredIncognitoThread(threadId: string): boolean { return incognitoThreads.has(threadId) }
+
+export class IncognitoCheckpointSaver extends BaseCheckpointSaver {
+  private readonly durable: BunSqliteSaver
+  private readonly memory: BunSqliteSaver
+  constructor(durable: BunSqliteSaver, memory = BunSqliteSaver.fromConnString(":memory:"), serde?: SerializerProtocol) {
+    super(serde); this.durable = durable; this.memory = memory
+  }
+  private saver(config: RunnableConfig): BunSqliteSaver {
+    const id = String(config.configurable?.thread_id ?? "")
+    return incognitoThreads.has(id) || [...incognitoThreads].some((root) => id === root || id.startsWith(`${root}:`)) ? this.memory : this.durable
+  }
+  getTuple(c: RunnableConfig) { return this.saver(c).getTuple(c) }
+  list(c: RunnableConfig, o?: CheckpointListOptions) { return this.saver(c).list(c, o) }
+  put(c: RunnableConfig, cp: Checkpoint, m: CheckpointMetadata, _versions: unknown) { return this.saver(c).put(c, cp, m) }
+  putWrites(c: RunnableConfig, w: PendingWrite[], t: string) { return this.saver(c).putWrites(c, w, t) }
+  deleteThread(id: string) { return this.saver({ configurable: { thread_id: id } }).deleteThread(id) }
+}
+
 /** The rewind API uses the same graph DB, even when no saver instance happens
  * to be active in this request. */
 function graphDb(): Database {

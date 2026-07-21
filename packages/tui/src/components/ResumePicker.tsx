@@ -2,7 +2,7 @@ import { TextAttributes } from "@opentui/core"
 import { basename, relative } from "node:path"
 import { realpathSync } from "node:fs"
 import type { SessionSummary } from "@chunky/protocol"
-import { ACCENT, BORDER } from "../theme.js"
+import { ACCENT, BORDER, INCOGNITO_ACCENT, INCOGNITO_LABEL } from "../theme.js"
 
 /** Rows visible at once; longer lists scroll this window around the selection. */
 export const RESUME_WINDOW = 10
@@ -45,6 +45,7 @@ export function ResumePicker({ sessions, selected }: { sessions: SessionSummary[
             <text fg={on ? ACCENT : undefined} attributes={on ? TextAttributes.BOLD : 0}>
               {s.title}
             </text>
+            {s.incognito === true && <text fg={INCOGNITO_ACCENT}>{"  " + INCOGNITO_LABEL}</text>}
             <text attributes={TextAttributes.DIM}>{"  — " + ago(s.lastActivity)}</text>
             {s.attached && <text attributes={TextAttributes.DIM}>{"  · attached"}</text>}
             {showWorkspace && <text attributes={TextAttributes.DIM}>{`  [${basename(s.workspace) || relative(cwd, s.workspace) || "."}]`}</text>}

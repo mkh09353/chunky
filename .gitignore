@@ -17,3 +17,4 @@ repos.json
 .chunky-notes/
 relay.json
 .playwright-mcp/
+anthropic-models-cache.json

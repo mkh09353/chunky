@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react"
 import { TextAttributes } from "@opentui/core"
-import { ACCENT, SPINNER_FRAMES, SPINNER_VERBS } from "../theme.js"
+import { ACCENT, INCOGNITO_LABEL, SPINNER_FRAMES, SPINNER_VERBS } from "../theme.js"
+import type { StatusSegment } from "./PromptInput.js"
 
 /**
  * Claude Code's running status line: an animated violet sparkle, a
@@ -36,6 +37,17 @@ export function StatusLine({ startedAt, reconnecting = false }: { startedAt?: nu
 
 function pickVerb(): string {
   return SPINNER_VERBS[Math.floor(Math.random() * SPINNER_VERBS.length)]!
+}
+
+/**
+ * The INCOGNITO chip for the input's bottom-rule status row — first chip, so it
+ * reads before the model. It takes no explicit color: ACCENT is ALREADY the
+ * bright red while the attached session is incognito (see setIncognitoTheme),
+ * which is exactly the state that makes this chip appear. A normal session gets
+ * null and the status row is byte-for-byte what it was before.
+ */
+export function incognitoSegment(incognito: boolean): StatusSegment | null {
+  return incognito ? { text: INCOGNITO_LABEL, color: ACCENT } : null
 }
 
 /**

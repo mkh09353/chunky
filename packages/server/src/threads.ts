@@ -28,6 +28,8 @@ import {
 } from "./providers/registry.ts"
 import { registerThread, unregisterThread, type ThreadSpawner } from "./thread-context.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
+import { assertSelectionAllowed, isIncognitoSession } from "./incognito.ts"
+import { registerIncognitoThread } from "./bun-sqlite-saver.ts"
 import { runWorkflowScript, workflowConcurrency, type WorkflowHost, type WorkflowTier } from "./workflow/engine.ts"
 import { workflowRouteResolver } from "./workflow/router.ts"
 import { streamWithCheckpointRecovery } from "./checkpoint-recovery.ts"
@@ -48,7 +50,7 @@ export interface StreamableAgent {
   stream(...args: any[]): Promise<AsyncIterable<unknown>>
 }
 
-export type AgentForSelection = (selection: AgentSelection, workspace: string, agentsMd?: string | null) => StreamableAgent
+export type AgentForSelection = (selection: AgentSelection, workspace: string, agentsMd?: string | null, sessionId?: string) => StreamableAgent
 
 /** Per-session advisor-consult tally, keyed by root session id. A fresh
  *  ThreadManager is built per turn (run.ts), so this lives module-level to
@@ -166,12 +168,14 @@ export class ThreadManager implements ThreadSpawner {
     kind?: "child" | "workflow_agent"
   }): Promise<string> {
     const childThreadId = randomUUID()
+    if (isIncognitoSession(this.rootId)) registerIncognitoThread(childThreadId)
     const parentThreadId = opts.callerThreadId === this.rootId ? null : opts.callerThreadId
     const parentSelection = this.selections.get(opts.callerThreadId)
     if (!parentSelection) {
       throw new Error(`missing model selection for caller thread ${opts.callerThreadId}`)
     }
     const selection = childSelection(parentSelection, opts.selection)
+    assertSelectionAllowed(this.rootId, selection)
     const delegationId = randomUUID()
     Store.createDelegation({ id: delegationId, sessionId: this.rootId, kind: opts.kind ?? "child", provider: selection.provider, model: selection.model ?? "unknown", effort: selection.effort ?? undefined, briefSnippet: opts.instructions })
 
@@ -227,7 +231,7 @@ export class ThreadManager implements ThreadSpawner {
       // stream with a cleared async-local store so it is fully isolated: the
       // child streams only through its OWN iterator, tagged with its threadId.
       const stream = await AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () =>
-        this.agentFor(selection, this.workspace).stream(
+        this.agentFor(selection, this.workspace, undefined, this.rootId).stream(
           { messages: [{ role: "user", content: opts.instructions }] },
           {
             configurable: { thread_id: childThreadId, workspace: this.workspace },
@@ -278,9 +282,21 @@ export class ThreadManager implements ThreadSpawner {
       emit: this.emit,
       spawn: ({ title, instructions, selection }) =>
         this.spawn({ callerThreadId: opts.callerThreadId, title, instructions, selection, kind: "workflow_agent" }),
-      routeOverride: async (request) => (await router()).resolve(request),
-      validateExplicit: async (selection) => (await router()).validateExplicit(selection),
-      tierOverride: (tier) => this.tierOverride(tier),
+      routeOverride: async (request) => {
+        const selection = await router().then((r) => r.resolve(request))
+        if (selection.provider) assertSelectionAllowed(this.rootId, selection as AgentSelection)
+        return selection
+      },
+      validateExplicit: async (selection) => {
+        const validated = await router().then((r) => r.validateExplicit(selection))
+        if (validated.provider) assertSelectionAllowed(this.rootId, validated as AgentSelection)
+        return validated
+      },
+      tierOverride: (tier) => {
+        const selection = this.tierOverride(tier)
+        if (selection?.provider) assertSelectionAllowed(this.rootId, selection as AgentSelection)
+        return selection
+      },
     }
     return runWorkflowScript(host, opts.script, opts.args)
   }
@@ -328,6 +344,7 @@ export class ThreadManager implements ThreadSpawner {
     if (!advisorSel) {
       return "error: no advisor is configured — ask the user to set one (/advisor)."
     }
+    assertSelectionAllowed(this.rootId, advisorSel)
 
     // Tally the consult before running it — measures how often the model reaches
     // for the advisor, independent of whether the consult itself succeeds.
@@ -348,6 +365,7 @@ export class ThreadManager implements ThreadSpawner {
     }
 
     const advisorThreadId = `${this.rootId}:advisor`
+    if (isIncognitoSession(this.rootId)) registerIncognitoThread(this.rootId)
     const content = opts.pointers
       ? `${opts.question}\n\nWhere to look / context:\n${opts.pointers}`
       : opts.question
@@ -380,7 +398,7 @@ export class ThreadManager implements ThreadSpawner {
         // instead of leaking (untagged) into the caller's messages stream.
         const stream = await AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () =>
           streamWithCheckpointRecovery(
-            this.advisorAgentFor(advisorSel, this.workspace),
+            this.advisorAgentFor(advisorSel, this.workspace, undefined, this.rootId),
             { messages: [{ role: "user", content }] },
             {
               configurable: { thread_id: advisorThreadId, workspace: this.workspace },
@@ -431,6 +449,7 @@ export class ThreadManager implements ThreadSpawner {
       }
       return "error: the sidekick is disabled — ask the user to enable it (/sidekick)."
     }
+    assertSelectionAllowed(this.rootId, sidekickSel)
     const delegationId = randomUUID()
     Store.createDelegation({ id: delegationId, sessionId: this.rootId, kind: "sidekick", seat, provider: sidekickSel.provider, model: sidekickSel.model ?? "unknown", effort: sidekickSel.effort ?? undefined, briefSnippet: opts.brief })
 
@@ -454,6 +473,7 @@ export class ThreadManager implements ThreadSpawner {
 
     const isNamedSeat = seat !== undefined && seat !== "default"
     const sidekickThreadId = isNamedSeat ? `${this.rootId}:sidekick:${seat}` : `${this.rootId}:sidekick`
+    if (isIncognitoSession(this.rootId)) registerIncognitoThread(this.rootId)
     const title = isNamedSeat ? `Sidekick (${seat})` : "Sidekick"
     const sidekickKey = isNamedSeat ? seat! : "default"
     let sessionSidekicks = activeSidekicks.get(this.rootId)
@@ -466,7 +486,7 @@ export class ThreadManager implements ThreadSpawner {
     let finalText = ""
     const dog = createDelegateWatchdog({ emit: this.emit, label: "sidekick", parent: this.abort })
     try {
-      const agentsMd = await distilledAgentsMd(this.workspace, rootSelection)
+      const agentsMd = await distilledAgentsMd(this.workspace, rootSelection, this.rootId)
       if (providerRuntime(sidekickSel.provider) === "anthropic-sdk") {
         // Anthropic sidekicks run via the SDK runtime with the worker prompt +
         // the hands-on toolset (read/bash/search/write/edit — no delegation
@@ -497,7 +517,7 @@ export class ThreadManager implements ThreadSpawner {
         // tokens stream only through its OWN iterator, tagged with its threadId.
         const stream = await AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () =>
           streamWithCheckpointRecovery(
-            this.sidekickAgentFor(sidekickSel, this.workspace, agentsMd),
+            this.sidekickAgentFor(sidekickSel, this.workspace, agentsMd, this.rootId),
             { messages: [{ role: "user", content: opts.brief }] },
             {
               configurable: { thread_id: sidekickThreadId, workspace: this.workspace },

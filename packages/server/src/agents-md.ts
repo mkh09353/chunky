@@ -5,6 +5,7 @@ import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import { repoId, stateDir } from "./repos.ts"
 import { resolveModel, sidekickFor, type AgentSelection } from "./providers/registry.ts"
 import { agentsMdEnabled } from "./settings.ts"
+import { assertSelectionAllowed, isIncognitoSession } from "./incognito.ts"
 
 const DISTILL_SYSTEM = "Extract only actionable repository rules from the supplied instructions. Output terse plain bullet text, or exactly NONE if there is nothing actionable. Keep only: commands to run/build/test locally, commit/PR rules, security constraints, and non-obvious gotchas. Drop architecture tours, directory maps, and style philosophy."
 
@@ -58,7 +59,8 @@ function textOf(value: unknown): string {
   return typeof value === "string" ? value : ""
 }
 
-export async function distilledAgentsMd(workspace: string, selection: AgentSelection): Promise<string | null> {
+export async function distilledAgentsMd(workspace: string, selection: AgentSelection, sessionId?: string): Promise<string | null> {
+  assertSelectionAllowed(sessionId ?? null, selection)
   try {
     const { root, paths } = instructionSources(workspace)
     const repoKey = repoId(root)
@@ -78,14 +80,14 @@ export async function distilledAgentsMd(workspace: string, selection: AgentSelec
 
     // Distill with the sidekick model when configured; a disabled sidekick
     // just means we fall back to the lead selection for this one-shot call.
-    const result = await invokeModel(resolveModel(modelSelection), [
+    const result = await invokeModel(resolveModel(modelSelection, sessionId), [
       { role: "system", content: DISTILL_SYSTEM },
       { role: "user", content: sources.map((s) => `<!-- ${relative(root, s.path)} -->\n${s.content}`).join("\n\n") },
     ])
     const distilled = textOf(result).trim()
     const useful = distilled === "NONE" ? "" : distilled
     mkdirSync(join(stateDir(), "agents-md"), { recursive: true })
-    writeFileSync(cachePath, JSON.stringify({ sourcePaths: paths, sourceHash, distilled: useful, model, enabled: true, createdAt: Date.now() }, null, 2))
+    if (!isIncognitoSession(sessionId ?? "")) writeFileSync(cachePath, JSON.stringify({ sourcePaths: paths, sourceHash, distilled: useful, model, enabled: true, createdAt: Date.now() }, null, 2))
     return useful || null
   } catch (err) {
     console.warn(`[@chunky/server] could not distill AGENTS.md: ${(err as Error)?.message ?? String(err)}`)

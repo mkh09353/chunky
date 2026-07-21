@@ -29,10 +29,10 @@ import { mockRun } from "@chunky/protocol/mock"
 import { mockThreadsRun } from "./mockThreads.js"
 import { initialState, pushUser, reduce, type TranscriptState } from "./transcript.js"
 import { abortableSleep, isIntentionalAbort, reconnectDelay, retryableHttpMessage } from "./reconnect.js"
-import { ACCENT, BORDER, WARNING } from "./theme.js"
+import { ACCENT, BORDER, setIncognitoTheme, WARNING } from "./theme.js"
 import { WelcomeBanner } from "./components/WelcomeBanner.js"
 import { Transcript, fmtTokens } from "./components/Transcript.js"
-import { StatusLine, WatchingLine } from "./components/StatusLine.js"
+import { incognitoSegment, StatusLine, WatchingLine } from "./components/StatusLine.js"
 import { PromptInput, type StatusSegment } from "./components/PromptInput.js"
 import { LoginPicker, type ProviderRow } from "./components/LoginPicker.js"
 import { ResumePicker } from "./components/ResumePicker.js"
@@ -67,6 +67,20 @@ interface Props {
   autoDemo?: boolean
   /** Which mock generator the auto-demo drives ("threads" shows the nested-thread view). */
   demo?: "basic" | "threads"
+}
+
+/** Is this (existing) session off the record? Read from the session list, which
+ *  carries the server-owned flag. Advisory: any failure — old server, no field,
+ *  unreachable — reads as a normal session rather than throwing at attach time. */
+async function fetchIncognito(baseUrl: string, sessionId: string): Promise<boolean> {
+  try {
+    const res = await fetch(`${baseUrl + ROUTES.listSessions}?cwd=${encodeURIComponent(process.cwd())}`)
+    if (!res.ok) return false
+    const body = (await res.json()) as ListSessionsResponse
+    return body.sessions.find((s) => s.sessionId === sessionId)?.incognito === true
+  } catch {
+    return false
+  }
 }
 
 // Model ids that read better fully uppercased in the status line.
@@ -237,6 +251,10 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   // Bumped by /clear so the live-session effect creates a brand-new server
   // session (fresh prompt cache + empty transcript) instead of only wiping UI.
   const [sessionKey, setSessionKey] = useState(0)
+  // True while the ATTACHED session is off the record. Server-owned and fixed at
+  // session creation, so it's read once per attach (create response, or the
+  // session list when resuming) and never mutated locally.
+  const [incognito, setIncognito] = useState(false)
   const sessionIdRef = useRef<string | null>(null)
   const workspaceWarningShownRef = useRef(false)
   // Set by /resume before bumping sessionKey: the live effect ATTACHES to this
@@ -352,6 +370,15 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     [mode],
   )
 
+  // Retint the whole UI for an off-the-record session and re-render so every
+  // component re-reads the accent (theme.ts exports LIVE bindings, so nothing
+  // else has to know). Also runs with `false` when attaching to a normal
+  // session, which is what restores the lavender after leaving an incognito one.
+  const applyIncognito = useCallback((on: boolean) => {
+    setIncognitoTheme(on)
+    setIncognito(on)
+  }, [])
+
   // ---- live wiring: open the SSE stream BEFORE any message is sent ----
   // `sessionKey` re-runs this on /clear (fresh server session) and on /resume
   // (resumeTargetRef set → attach to that EXISTING session; the SSE history
@@ -364,9 +391,14 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     ;(async () => {
       try {
         let sessionId = resumeTargetRef.current
+        // The server owns the flag; older servers omit it, so anything but an
+        // explicit `true` means a normal session.
+        let sessionIncognito: boolean | null = null
         if (!sessionId) {
           const res = await fetch(baseUrl + ROUTES.createSession, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ cwd: process.cwd() }) })
-          ;({ sessionId } = (await res.json()) as CreateSessionResponse)
+          const created = (await res.json()) as CreateSessionResponse & { incognito?: boolean }
+          sessionId = created.sessionId
+          sessionIncognito = created.incognito === true
         }
         if (cancelled) return
         if (!resumeTargetRef.current) {
@@ -380,6 +412,12 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           } catch { /* handshake is advisory */ }
         }
         sessionIdRef.current = sessionId
+        // Resuming an existing session: the create response never happened, so
+        // the flag comes off the session list instead. Advisory — a failure just
+        // leaves the normal palette.
+        if (sessionIncognito == null) sessionIncognito = await fetchIncognito(baseUrl, sessionId)
+        if (cancelled) return
+        applyIncognito(sessionIncognito)
         // Only a resumed thread has history: render its replayed user turns.
         resumeReplayRef.current = resumeTargetRef.current != null
         // New conversation: nothing tracked yet, so the cold banner must go.
@@ -423,7 +461,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       streamAbort.abort()
       setConnection("connecting")
     }
-  }, [mode, baseUrl, apply, sessionKey])
+  }, [mode, baseUrl, apply, sessionKey, applyIncognito])
 
   // ---- live: load the current model selection so the status line is accurate ----
   useEffect(() => {
@@ -1819,6 +1857,9 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     if (mode !== "live") return [{ text: "mock", dim: true }]
     if (!currentSel?.model) return undefined // connecting — plain full-width rule
     const chips: StatusSegment[] = []
+    // INCOGNITO first, in the (now red) accent — the loudest thing on the rule.
+    const ghost = incognitoSegment(incognito)
+    if (ghost) chips.push(ghost)
     // Executor: `<model> <effort>` in ACCENT, effort without parens.
     chips.push({
       text: `${prettyModel(currentSel.model)}${currentSel.effort ? ` ${currentSel.effort}` : ""}`,
@@ -1888,7 +1929,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         scrollY
         contentOptions={{ flexDirection: "column" }}
       >
-        <WelcomeBanner mode={mode} cwd={cwd} model={bannerModel} />
+        <WelcomeBanner mode={mode} cwd={cwd} model={bannerModel} incognito={incognito} />
         <Transcript state={state} collapsed={threadsCollapsed} />
       </scrollbox>
       {(running && startedAt != null) || connection === "reconnecting" ? (

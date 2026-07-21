@@ -201,18 +201,27 @@ export async function setRepositoryInstructions(baseUrl: string, id: string, ena
   return data
 }
 
+/** A freshly created session: its id, plus whether the server made it incognito
+ *  (a mode with an incognito allowlist was active at creation). The flag is
+ *  server-owned and fixed for the session's life. */
+export interface CreatedSession {
+  sessionId: string
+  incognito: boolean
+}
+
 /** Create a session pinned to `repoId`'s workspace (server default when omitted).
  *  Which repo is "current" is purely this client's UI state — the server no
  *  longer has a global active workspace. */
-export async function createSession(baseUrl: string, repoId?: string | null): Promise<string> {
+export async function createSession(baseUrl: string, repoId?: string | null): Promise<CreatedSession> {
   const res = await fetch(baseUrl + ROUTES.createSession, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(repoId ? { repoId } : {}),
   })
   if (!res.ok) throw new Error(`create session failed (${res.status})`)
-  const data = (await res.json()) as CreateSessionResponse
-  return data.sessionId
+  const data = (await res.json()) as CreateSessionResponse & { incognito?: boolean }
+  // Older servers omit the flag; anything but an explicit true is a normal session.
+  return { sessionId: data.sessionId, incognito: data.incognito === true }
 }
 
 /** A pasted image attached to a message (mirrors the TUI's ClipboardImage). */

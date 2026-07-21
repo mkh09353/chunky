@@ -154,8 +154,8 @@ const advisor = tool(
  */
 function makeCheckpointer() {
   try {
-    const { BunSqliteSaver } = require("./bun-sqlite-saver.ts")
-    return BunSqliteSaver.fromConnString(process.env.CHUNKY_GRAPH_DB || "chunky-graph.db")
+    const { BunSqliteSaver, IncognitoCheckpointSaver } = require("./bun-sqlite-saver.ts")
+    return new IncognitoCheckpointSaver(BunSqliteSaver.fromConnString(process.env.CHUNKY_GRAPH_DB || "chunky-graph.db"))
   } catch (err) {
     const { MemorySaver } = require("@langchain/langgraph")
     console.warn(`[@chunky/server] durable checkpointer unavailable (${(err as Error).message}); using in-memory`)
@@ -287,10 +287,11 @@ export function buildAgent(
   workspace: string = LAUNCH_WORKSPACE,
   _opts: BuildAgentOpts = {},
   agentsMd?: string | null,
+  sessionId?: string,
 ) {
   const providerId = selection.provider
   const modelId = selection.model
-  const model = resolveModel(selection)
+  const model = resolveModel(selection, sessionId)
   const plan = agentPlanFor(selection)
   // TODO: prompt-caching middleware. langchain exports anthropicPromptCachingMiddleware,
   // but every current provider builds an OpenAI-compatible ChatOpenAI (zen/grok/codex),
@@ -356,11 +357,12 @@ export function getAgent(
   selection: AgentSelection = activeSelection(),
   workspace: string = LAUNCH_WORKSPACE,
   agentsMd?: string | null,
+  sessionId?: string,
 ): ReturnType<typeof buildAgent> {
-  const sig = `${selectionSignature(selection)}@@${workspace}@@${agentsMd ?? ""}@@${resolveFileToolProfile()}`
+  const sig = `${selectionSignature(selection)}@@${workspace}@@${agentsMd ?? ""}@@${resolveFileToolProfile()}@@${sessionId ?? ""}`
   let a = agentCache.get(sig)
   if (!a) {
-    a = buildAgent(selection, workspace, {}, agentsMd)
+    a = buildAgent(selection, workspace, {}, agentsMd, sessionId)
     agentCache.set(sig, a)
   }
   return a
@@ -380,8 +382,8 @@ export function invalidateAgent(): void {
  * persistent side thread on a stable thread_id, so the checkpointer gives it
  * continuity across consults.
  */
-export function buildAdvisorAgent(selection: AgentSelection) {
-  const model = resolveModel(selection)
+export function buildAdvisorAgent(selection: AgentSelection, sessionId?: string) {
+  const model = resolveModel(selection, sessionId)
   return createAgent({
     model,
     tools: [resolveFileToolProfile() === "hashline" ? hashlineRead : read, bash, fffind, ffgrep, goto_definition, find_references],
@@ -402,11 +404,11 @@ export function buildAdvisorAgent(selection: AgentSelection) {
  *  working directory (tools resolve the run's workspace per-call), so one
  *  instance per selection serves every repo. ThreadManager's default
  *  advisorAgentFor injectable. */
-export function getAdvisorAgent(selection: AgentSelection = activeSelection()): ReturnType<typeof buildAgent> {
-  const sig = "advisor::" + selectionSignature(selection) + "@@" + resolveFileToolProfile()
+export function getAdvisorAgent(selection: AgentSelection = activeSelection(), sessionId?: string): ReturnType<typeof buildAgent> {
+  const sig = "advisor::" + selectionSignature(selection) + "@@" + resolveFileToolProfile() + "@@" + (sessionId ?? "")
   let a = agentCache.get(sig)
   if (!a) {
-    a = buildAdvisorAgent(selection) as unknown as ReturnType<typeof buildAgent>
+    a = buildAdvisorAgent(selection, sessionId) as unknown as ReturnType<typeof buildAgent>
     agentCache.set(sig, a)
   }
   return a
@@ -420,8 +422,8 @@ export function getAdvisorAgent(selection: AgentSelection = activeSelection()): 
  * persistent side thread on a stable thread_id, so the checkpointer gives it
  * continuity across handoffs — that's what makes follow-up briefs cheap.
  */
-export function buildSidekickAgent(selection: AgentSelection, agentsMd?: string | null) {
-  const model = resolveModel(selection)
+export function buildSidekickAgent(selection: AgentSelection, agentsMd?: string | null, sessionId?: string) {
+  const model = resolveModel(selection, sessionId)
   const [fileRead, fileEdit] = sidekickFileToolsFor(selection.model, selection.provider)
   return createAgent({
     model,
@@ -441,15 +443,15 @@ export function buildSidekickAgent(selection: AgentSelection, agentsMd?: string 
 /** The sidekick agent for one selection, cached in the SAME agentCache (keyed
  *  "sidekick::<sig>") so invalidateAgent() clears it too. ThreadManager's default
  *  sidekickAgentFor injectable. */
-export function getSidekickAgent(selection: AgentSelection = activeSelection(), _workspace?: string, agentsMd?: string | null): ReturnType<typeof buildAgent> {
+export function getSidekickAgent(selection: AgentSelection = activeSelection(), _workspace?: string, agentsMd?: string | null, sessionId?: string): ReturnType<typeof buildAgent> {
   // Include the session workspace as well as the instruction text: identical
   // repo notes must not make a tool-bearing agent instance cross repository
   // boundaries (tools resolve cwd at runtime, but the prompt/checkpointer do
   // not represent that boundary).
-  const sig = "sidekick::" + selectionSignature(selection) + "@@" + (_workspace ?? LAUNCH_WORKSPACE) + "@@" + resolveFileToolProfile() + "@@" + (agentsMd ?? "")
+  const sig = "sidekick::" + selectionSignature(selection) + "@@" + (_workspace ?? LAUNCH_WORKSPACE) + "@@" + resolveFileToolProfile() + "@@" + (agentsMd ?? "") + "@@" + (sessionId ?? "")
   let a = agentCache.get(sig)
   if (!a) {
-    a = buildSidekickAgent(selection, agentsMd) as unknown as ReturnType<typeof buildAgent>
+    a = buildSidekickAgent(selection, agentsMd, sessionId) as unknown as ReturnType<typeof buildAgent>
     agentCache.set(sig, a)
   }
   return a

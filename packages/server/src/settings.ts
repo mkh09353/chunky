@@ -73,6 +73,8 @@ export interface ModeSpec {
   /** Named sidekick seats; null = clear all named seats in this mode;
    *  absent (undefined) = mode predates seats, leave them alone. */
   sidekickSeats?: Record<string, SidekickSeat> | null
+  /** Optional incognito session policy. Provider ids in `allow` are permitted. */
+  incognito?: { allow: string[] }
 }
 
 export interface Settings {
@@ -100,6 +102,8 @@ export interface Settings {
   modes?: Record<string, ModeSpec>
   /** Builtin modes already seeded; deletion of one is permanent. */
   seededModes?: string[]
+  /** Name of the currently applied mode, when it was applied by the server. */
+  activeMode?: string
   /** Global provider catalog overlays. Added ids supplement provider discovery;
    *  hidden ids disappear from pickers without invalidating existing sessions. */
   modelCatalog?: Record<string, ModelCatalogOverlay>
@@ -136,6 +140,8 @@ export interface CustomProvider {
   baseURL: string
   billing?: "subscription" | "metered"
   defaultModel?: string
+  /** Availability outside/inside incognito sessions. Defaults to both. */
+  scope?: "normal" | "incognito" | "both"
 }
 
 export interface WorkflowTargetOverride {
@@ -254,6 +260,13 @@ export function persistedProvider(): string | undefined {
 export function setPersistedProvider(id: string): void {
   const s = loadSettings()
   save({ ...s, provider: id })
+}
+
+/** Record the mode used for new session defaults; absent means manual settings. */
+export function setActiveMode(name: string | undefined): void {
+  const s = loadSettings()
+  if (name === undefined) { const next = { ...s }; delete next.activeMode; save(next) }
+  else save({ ...s, activeMode: name })
 }
 
 export function getOnboardedAt(): number | undefined { return loadSettings().onboardedAt }

@@ -1,5 +1,5 @@
 import { SyntaxStyle } from "@opentui/core"
-import { ACCENT_DEEP, BORDER, CODE, CODE_MUTED, HEADING, MARKER_BULLET } from "./theme.js"
+import { ACCENT_DEEP, BORDER, CODE, CODE_MUTED, HEADING, isIncognitoTheme, MARKER_BULLET } from "./theme.js"
 
 // Syntax palette for fenced code inside assistant markdown. Chunky's chrome
 // palette (theme.ts) is lavender + teal on dark; a code theme needs a few more
@@ -19,7 +19,9 @@ const BUILTIN = "#e06c75" // coral — language builtins
 // typescript, javascript, zig). Other languages fall back to plain text — no
 // parser is fetched from the network unless one is registered with a URL, which
 // we never do.
-const RULES = [
+// Built per call, not once at module load: the markdown markup rules read the
+// accent tokens, and those retint when the attached session is incognito.
+const rules = () => [
   // ── code ──
   { scope: ["comment", "comment.documentation"], style: { foreground: CODE_MUTED, italic: true } },
   { scope: ["string", "symbol", "character", "character.special", "string.special"], style: { foreground: STRING } },
@@ -86,11 +88,17 @@ const RULES = [
   { scope: ["conceal"], style: { foreground: BORDER } },
 ]
 
-// One SyntaxStyle for the whole process. It wraps a native handle; Chunky has a
-// single hardcoded palette (no runtime theme switching), so a lazily-created
-// singleton is correct and there's nothing to destroy() before exit. Created
+// One SyntaxStyle per accent palette (lavender / incognito red). Each wraps a
+// native handle, but there are only ever two and they live for the process, so
+// caching them is correct and there's nothing to destroy() before exit. Created
 // lazily so the first call lands after the renderer's native lib is initialized.
-let cached: SyntaxStyle | undefined
+const cached = new Map<string, SyntaxStyle>()
 export function getSyntaxStyle(): SyntaxStyle {
-  return (cached ??= SyntaxStyle.fromTheme(RULES))
+  const key = isIncognitoTheme() ? "incognito" : "normal"
+  let style = cached.get(key)
+  if (!style) {
+    style = SyntaxStyle.fromTheme(rules())
+    cached.set(key, style)
+  }
+  return style
 }

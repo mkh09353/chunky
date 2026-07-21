@@ -8,8 +8,9 @@
 // still shortened vs the full cleaned output, the FULL original is spilled to a
 // temp file the model can `read`/grep.
 import { randomBytes } from "node:crypto"
-import { writeFileSync } from "node:fs"
+import { mkdirSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
+import { isIncognitoSession } from "../incognito.ts"
 import { join } from "node:path"
 import { tool } from "@langchain/core/tools"
 import { z } from "zod"
@@ -86,6 +87,7 @@ async function readPipe(reader: ReadableStreamDefaultReader<Uint8Array>, onChunk
 
 export const bash = tool(
   async ({ command, timeout, background, description, ready_pattern }: { command: string; timeout?: number; background?: boolean; description?: string; ready_pattern?: string }, config?: any) => {
+    const threadId = config?.configurable?.thread_id
     if (ready_pattern && !background) return toolResult("ready_pattern is only valid with background=true.", { ok: false })
     let readyRegex: RegExp | undefined
     if (ready_pattern) try { readyRegex = new RegExp(ready_pattern) } catch { return toolResult("ready_pattern must be a valid regular expression.", { ok: false }) }
@@ -98,7 +100,6 @@ export const bash = tool(
     })
 
     if (background) {
-      const threadId = config?.configurable?.thread_id
       const { sessionForThread } = await import("../thread-context.ts")
       const sessionId = sessionForThread(threadId) ?? threadId
       if (!sessionId) return toolResult("Background tasks require an active session.", { ok: false })
@@ -222,7 +223,12 @@ export const bash = tool(
     // nothing meaningful was lost (ANSI only), still fine to skip spill when equal
     // enough; we spill whenever `truncated` is set by compress.
     if (truncated && combined.length > 0 && content.length < combined.length) {
-      const tmp = join(tmpdir(), `chunky-bash-${Date.now()}-${randomBytes(4).toString("hex")}.txt`)
+      const { sessionForThread } = await import("../thread-context.ts")
+      const owner = sessionForThread(threadId)
+      const tmp = isIncognitoSession(owner ?? "")
+        ? join(tmpdir(), "chunky-incognito", `chunky-bash-${Date.now()}-${randomBytes(4).toString("hex")}.txt`)
+        : join(tmpdir(), `chunky-bash-${Date.now()}-${randomBytes(4).toString("hex")}.txt`)
+      if (isIncognitoSession(owner ?? "")) mkdirSync(join(tmpdir(), "chunky-incognito"), { recursive: true })
       spillPath = tmp
       writeFileSync(tmp, combined, "utf-8")
       const bits = [`full output: ${tmp}`]

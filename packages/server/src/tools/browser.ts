@@ -6,6 +6,8 @@ import { tmpdir } from "node:os"
 import { getAppBrowserEndpoint } from "../app-browser.ts"
 import { CdpClient, validateHttpUrl, type CdpNode } from "../cdp.ts"
 import { toolResult } from "./result.ts"
+import { isIncognitoSession } from "../incognito.ts"
+import { sessionForThread } from "../thread-context.ts"
 
 let client: CdpClient | undefined
 let url = "", title = ""
@@ -24,6 +26,6 @@ const browser_scroll = tool(async ({ direction = "down", ref }: { direction?: st
 async function history(delta: number) { const c = getClient(); const h = await c.command<any>("Page.getNavigationHistory"); const i = h.currentIndex + delta; if (i < 0 || i >= h.entries.length) throw new Error("No browser history entry in that direction."); await c.command("Page.navigateToHistoryEntry", { entryId: h.entries[i].id }); return toolResult(await snapshot(c)) }
 const browser_back = tool(async () => { try { return await history(-1) } catch (e) { return fail(e) } }, { name: "browser_back", description: "Go back in the browser pane history.", schema: z.object({}) })
 const browser_forward = tool(async () => { try { return await history(1) } catch (e) { return fail(e) } }, { name: "browser_forward", description: "Go forward in the browser pane history.", schema: z.object({}) })
-const browser_screenshot = tool(async () => { try { const data = await getClient().command<any>("Page.captureScreenshot", { format: "png" }); const dir = join(tmpdir(), "chunky-browser"); await mkdir(dir, { recursive: true }); const path = join(dir, `screenshot-${Date.now()}.png`); await Bun.write(path, Uint8Array.from(atob(data.data), c => c.charCodeAt(0))); return toolResult(`Screenshot saved to ${path}`, { raw: { path } }) } catch (e) { return fail(e) } }, { name: "browser_screenshot", description: "Capture the user's browser pane to a PNG file.", schema: z.object({}) })
+const browser_screenshot = tool(async (_args, config?: any) => { try { const data = await getClient().command<any>("Page.captureScreenshot", { format: "png" }); const owner = sessionForThread(config?.configurable?.thread_id); const dir = isIncognitoSession(owner ?? "") ? join(tmpdir(), "chunky-incognito") : join(tmpdir(), "chunky-browser"); await mkdir(dir, { recursive: true }); const path = join(dir, `screenshot-${Date.now()}.png`); await Bun.write(path, Uint8Array.from(atob(data.data), c => c.charCodeAt(0))); return toolResult(`Screenshot saved to ${path}`, { raw: { path } }) } catch (e) { return fail(e) } }, { name: "browser_screenshot", description: "Capture the user's browser pane to a PNG file.", schema: z.object({}) })
 const browser_evaluate = tool(async ({ expression }: { expression: string }) => { try { const r = await getClient().command<any>("Runtime.evaluate", { expression, returnByValue: true, awaitPromise: true }, 10000); const out = JSON.stringify(r.result?.value ?? r.result?.description ?? null); return toolResult(out.length > 18000 ? `${out.slice(0, 18000)}\n[truncated]` : out) } catch (e) { return fail(e) } }, { name: "browser_evaluate", description: "Evaluate JavaScript in the browser pane and return its value.", schema: z.object({ expression: z.string() }) })
 export const browserTools = [browser_navigate, browser_snapshot, browser_click, browser_type, browser_press_key, browser_scroll, browser_back, browser_forward, browser_screenshot, browser_evaluate]

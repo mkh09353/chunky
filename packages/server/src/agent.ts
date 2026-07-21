@@ -60,6 +60,7 @@ import { updateTodos } from "./tools/todos.ts"
 import { resolveFileToolProfile } from "./settings.ts"
 import { hashlineRead, hashlineEdit } from "./tools/hashline/index.ts"
 import { browserTools } from "./tools/browser.ts"
+import { rateDelegate } from "./tools/rate-delegate.ts"
 
 export function makePostCompactionReminder() {
   let handledSummaryId: string | undefined
@@ -228,6 +229,7 @@ export function executorToolsFor(selection: AgentSelection) {
     write,
     ...(sidekickSel ? [sidekick] : []),
     spawnThread,
+    rateDelegate,
     ...goalTools,
     // DeepAgents' write_todos was deliberately removed; this is its intentional lead-only replacement.
     updateTodos,

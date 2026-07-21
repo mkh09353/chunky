@@ -684,6 +684,75 @@ export async function toggleSkill(
   }
 }
 
+// ---- Scoreboard + usage (read-only stats) ------------------------------------
+
+export interface ScoreboardRow {
+  provider: string
+  model: string
+  effort: string | null
+  kind: string
+  samples: number
+  avgRating: number | null
+  ratedCount: number
+  reworkRate: number | null
+  totalCost: number | null
+  totalTokens: number
+  ratingPerDollar: number | null
+}
+
+export interface ScoreboardResponse {
+  rows: ScoreboardRow[]
+}
+
+export type UsageRole = "lead" | "sidekick" | "advisor" | "child"
+
+export interface UsageRoleRow {
+  role: UsageRole
+  provider: string
+  model: string
+  effort: string | null
+  inputTokens: number
+  outputTokens: number
+  reasoningTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  cost: number | null
+  requests: number
+}
+
+export interface UsageResponse {
+  roles: UsageRoleRow[]
+  totals: {
+    inputTokens: number
+    outputTokens: number
+    cost: number | null
+  }
+}
+
+/** Model leaderboard. Omit `sessionId` for every session on this server. */
+export async function getScoreboard(baseUrl: string, sessionId?: string | null): Promise<ScoreboardRow[]> {
+  const url = new URL(baseUrl + "/api/scoreboard")
+  if (sessionId) url.searchParams.set("session", sessionId)
+  const res = await fetch(url)
+  if (!res.ok) {
+    throw new Error(res.status === 404 ? "this server build doesn't serve /api/scoreboard yet" : `scoreboard failed (${res.status})`)
+  }
+  const body = (await res.json()) as ScoreboardResponse
+  return body.rows ?? []
+}
+
+/** One session's token + cost spend, grouped by role. */
+export async function getUsage(baseUrl: string, sessionId: string): Promise<UsageResponse> {
+  const url = new URL(baseUrl + "/api/usage")
+  url.searchParams.set("session", sessionId)
+  const res = await fetch(url)
+  if (!res.ok) {
+    throw new Error(res.status === 404 ? "this server build doesn't serve /api/usage yet" : `usage failed (${res.status})`)
+  }
+  const body = (await res.json()) as UsageResponse
+  return { roles: body.roles ?? [], totals: body.totals ?? { inputTokens: 0, outputTokens: 0, cost: null } }
+}
+
 // ---- Managed skill repositories ---------------------------------------------
 
 export type { SkillRepoStatus } from "@chunky/protocol"

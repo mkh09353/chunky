@@ -13,6 +13,7 @@ import { ThreadManager } from "./threads.ts"
 import { usageFromLangChainMessage, promptTokensOf } from "./usage.ts"
 import { checkCacheCold, cacheWarningEvent, noteRequest } from "./cache-watch.ts"
 import { Store } from "./store.ts"
+import type { AgentSelection } from "./providers/registry.ts"
 import { databaseErrorMessage, isSqliteBusy } from "./sqlite.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { classifyGoalError, decideGoalStep, firstLine, goalContinuationPrompt, toSnapshot, type GoalStep } from "./goal.ts"
@@ -100,6 +101,7 @@ export async function translateStream(
   emit: Emit,
   cache?: CacheContext,
   onToolBoundary?: () => InterjectionBoundary | undefined,
+  usageContext?: { sessionId: string; selection?: AgentSelection; role?: "lead" | "sidekick" | "advisor" | "child"; delegationId?: string | null },
 ): Promise<string> {
   // Tag message/tool/error events with the owning threadId (omitted for main).
   const emitT = taggedEmitter(emit, threadId)
@@ -258,7 +260,14 @@ export async function translateStream(
   if (cache && lastRequestUsage) {
     noteRequest(cache.conversationId, lastRequestUsage, cache.model, Date.now())
   }
-  if (lastRequestUsage) emitT({ type: "usage.update", usage: lastRequestUsage })
+  if (lastRequestUsage) {
+    emitT({ type: "usage.update", usage: lastRequestUsage })
+    if (usageContext) Store.logUsage({ sessionId: usageContext.sessionId, threadId, role: usageContext.role ?? "lead",
+      provider: usageContext.selection?.provider ?? "unknown", model: usageContext.selection?.model ?? lastRequestUsage.model ?? "unknown",
+      effort: usageContext.selection?.effort, delegationId: usageContext.delegationId, inputTokens: lastRequestUsage.inputTokens,
+      outputTokens: lastRequestUsage.outputTokens, reasoningTokens: lastRequestUsage.reasoningTokens,
+      cacheReadTokens: lastRequestUsage.cacheReadTokens, cacheWriteTokens: lastRequestUsage.cacheWriteTokens })
+  }
 
   if (!sawAssistantOrTool) {
     throw new Error("provider returned an empty response — retry the turn or switch models")
@@ -403,6 +412,7 @@ export async function runAgent(
       const { runAnthropicAgent } = await import("./anthropic-runner.ts")
       await runAnthropicAgent({
         selection, threadId: sessionId, prompt, images: turnImages, emit, cache, abort, workspace, agentsMd,
+        usageContext: { sessionId, role: "lead" },
         onSubmitted: () => consumeTaskReminders(sessionId, pendingReminder.ids),
       })
     } else {
@@ -428,6 +438,7 @@ export async function runAgent(
         emit,
         cache,
         options?.onToolBoundary,
+        { sessionId, selection, role: "lead" },
       )
     }
   }

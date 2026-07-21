@@ -20,6 +20,8 @@ export const COMMANDS: Command[] = [
   { name: "/skills", description: "Browse & run skills; add/remove/update repos" },
   { name: "/provider", description: "Configure available models for a provider" },
   { name: "/workers", description: "Inspect or tune automatic workflow model routing" },
+  { name: "/scoreboard", description: "Model leaderboard by rating (`/scoreboard session` scopes it)" },
+  { name: "/usage", description: "This session's tokens and cost, grouped by role" },
   { name: "/advisor", description: "Set the advisor model (a stronger model, on tap)" },
   { name: "/sidekick", description: "Configure sidekick seats (default + named, e.g. frontend/backend)" },
   { name: "/mode", description: "Named model+sidekick+advisor trios (/mode <name>, /mode save <name>)" },

@@ -31,7 +31,9 @@ import {
   loginStatus,
   fetchOnboarding,
   completeOnboarding,
+  getScoreboard,
   getSkills,
+  getUsage,
   manageSkillRepos,
   openEventStream,
   postGoal,
@@ -56,6 +58,7 @@ import { BrowserProvider, useBrowserPane } from "./lib/browser"
 import { sleep } from "./lib/sleep"
 import { isIntentionalAbort, reconnectDelay } from "./lib/reconnect"
 import { parseGoalArgs, parseSlashCommand, SLASH_COMMANDS } from "./lib/commands"
+import { renderScoreboard, renderUsage, usageTotalsLine } from "./lib/stats"
 import { fmtTokens } from "./lib/format"
 import { OnboardingWizard } from "./components/OnboardingWizard"
 import { ConfirmModal, WaitModal } from "./components/Modals"
@@ -947,6 +950,29 @@ export default function App() {
             )
             return
           }
+          case "/scoreboard": {
+            // Bare = every session on this server; `session` scopes to this thread.
+            const scoped = /^session\b/i.test(rest.trim())
+            const rows = await getScoreboard(config.baseUrl, scoped ? sessionId : null)
+            const table = renderScoreboard(rows)
+            const scope = scoped ? "this thread" : "all threads"
+            notice(
+              table
+                ? `Scoreboard · ${scope}\n${table}`
+                : `Scoreboard · ${scope}: no rated work yet — rate a turn and models start showing up here.`,
+            )
+            return
+          }
+          case "/usage": {
+            const usage = await getUsage(config.baseUrl, sessionId)
+            const table = renderUsage(usage)
+            notice(
+              table
+                ? `Usage · this thread\n${table}\n${usageTotalsLine(usage.totals)}`
+                : "Usage: nothing spent in this thread yet.",
+            )
+            return
+          }
           case "/cacheguard":
             await doCacheGuard(rest)
             return
@@ -955,7 +981,7 @@ export default function App() {
             return
           case "/help":
             notice(
-              "Commands: /clear, /resume, /help, /login, /model, /skills, /advisor, /mode, /goal, /shipit, /cacheguard. `/skills add <git-url>` installs a skill pack; `/skills list|remove|update` manages them. `/resume [title]` reopens a previous thread. `/goal <objective>` works autonomously until done (`--workflows` orchestrates). `/shipit [notes]` hands this plan to a fresh orchestrator. `/mode <name>` switches a saved pairing. `/cacheguard <tokens|off>` sets cold-cache confirm. Paste an image to attach it.",
+              "Commands: /clear, /resume, /help, /login, /model, /skills, /advisor, /mode, /goal, /shipit, /scoreboard, /usage, /cacheguard. `/scoreboard` ranks models by rating (add `session` to scope it); `/usage` shows this thread's tokens and cost by role. `/skills add <git-url>` installs a skill pack; `/skills list|remove|update` manages them. `/resume [title]` reopens a previous thread. `/goal <objective>` works autonomously until done (`--workflows` orchestrates). `/shipit [notes]` hands this plan to a fresh orchestrator. `/mode <name>` switches a saved pairing. `/cacheguard <tokens|off>` sets cold-cache confirm. Paste an image to attach it.",
             )
             return
         }

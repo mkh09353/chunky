@@ -481,6 +481,26 @@ const server = Bun.serve({
       })
     }
 
+    if (req.method === "GET" && pathname === "/api/usage") {
+      const session = new URL(req.url).searchParams.get("session")
+      if (!session) return json({ error: "session is required" }, 400)
+      const roles = Store.usageRows(session).map((r) => ({ role: r.role, provider: r.provider, model: r.model,
+        effort: r.effort ?? null, inputTokens: r.inputTokens ?? 0, outputTokens: r.outputTokens ?? 0,
+        reasoningTokens: r.reasoningTokens ?? 0, cacheReadTokens: r.cacheReadTokens ?? 0,
+        cacheWriteTokens: r.cacheWriteTokens ?? 0, cost: r.cost == null ? null : Number(r.cost), requests: r.requests }))
+      const known = roles.every((r) => r.cost != null)
+      return json({ roles, totals: { inputTokens: roles.reduce((n, r) => n + r.inputTokens, 0), outputTokens: roles.reduce((n, r) => n + r.outputTokens, 0), cost: known ? roles.reduce((n, r) => n + (r.cost ?? 0), 0) : null } })
+    }
+    if (req.method === "GET" && pathname === "/api/scoreboard") {
+      const session = new URL(req.url).searchParams.get("session") ?? undefined
+      return json({ rows: Store.scoreboardRows(session).map((r) => {
+        const cost = r.totalCost == null ? null : Number(r.totalCost), avg = r.avgRating == null ? null : Number(r.avgRating)
+        return { provider: r.provider, model: r.model, effort: r.effort ?? null, kind: r.kind, samples: r.samples, avgRating: avg,
+          ratedCount: r.ratedCount, reworkRate: r.reworkRate == null ? null : Number(r.reworkRate), totalCost: cost, totalTokens: r.totalTokens ?? 0,
+          ratingPerDollar: avg != null && cost != null && cost > 0 ? avg / (cost / r.samples) : null }
+      }) })
+    }
+
     // Workflow worker routing: zero-config effective targets plus optional user exceptions.
     if (pathname === "/api/workflow-targets" && req.method === "GET") {
       return json({ targets: await availableWorkflowTargets() })

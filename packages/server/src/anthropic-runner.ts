@@ -14,6 +14,7 @@ import {
 import { createHash, randomUUID } from "node:crypto"
 import { z } from "zod"
 import type { MessageEndReason } from "@chunky/protocol"
+import { Store } from "./store.ts"
 import { taggedEmitter, type Emit } from "./event-emitter.ts"
 import { buildSystemPrompt } from "./prompt.ts"
 import { listSidekickSeats, sidekickFor, type AgentSelection } from "./providers/registry.ts"
@@ -39,6 +40,7 @@ import {
 import { read, readInputShape } from "./tools/read.ts"
 import { shipGoal, shipGoalInputShape } from "./tools/ship.ts"
 import { sidekick, sidekickInputShape } from "./tools/sidekick.ts"
+import { rateDelegate } from "./tools/rate-delegate.ts"
 import { spawnThread, spawnThreadInputShape } from "./tools/spawn-thread.ts"
 import { workflow, workflowInputShape } from "./tools/workflow.ts"
 import { manageModels, manageModelsInputShape } from "./tools/manage-models.ts"
@@ -72,6 +74,7 @@ const CHUNKY_TOOLS = [
   write,
   editTool,
   sidekick,
+  rateDelegate,
   spawnThread,
   workflow,
   manageModels,
@@ -246,6 +249,7 @@ export function createChunkySdkMcpServer(
         (args) => sidekick.invoke(args, runConfig),
         emit,
       ),
+      wrapChunkyTool(rateDelegate.name, rateDelegate.description, { delegation: z.string(), rating: z.number().int().min(1).max(10), rework: z.boolean().optional(), reason: z.string() }, (args) => rateDelegate.invoke(args, runConfig), emit),
       wrapChunkyTool(
         spawnThread.name,
         spawnThread.description,
@@ -358,6 +362,7 @@ export interface AnthropicRunRequest {
   agentsMd?: string | null
   /** Called once the SDK query has been constructed and provider submission has begun. */
   onSubmitted?: () => void
+  usageContext?: { sessionId: string; role: "lead" | "sidekick" | "advisor" | "child"; delegationId?: string | null }
 }
 
 export async function buildAnthropicOptions(
@@ -412,6 +417,7 @@ export async function translateAnthropicMessages(
   displayThreadId: string | undefined,
   emitRoot: Emit,
   cache?: CacheContext,
+  usageContext?: AnthropicRunRequest["usageContext"],
 ): Promise<string> {
   const emit = taggedEmitter(emitRoot, displayThreadId)
   let assistantOpen = false
@@ -517,6 +523,9 @@ export async function translateAnthropicMessages(
           noteRequest(cache.conversationId, delta, cache.model, Date.now())
         }
         emit({ type: "usage.update", usage: delta })
+        if (usageContext) Store.logUsage({ sessionId: usageContext.sessionId, threadId: displayThreadId, role: usageContext.role,
+          provider: "anthropic", model: delta.model ?? "unknown", delegationId: usageContext.delegationId,
+          inputTokens: delta.inputTokens, outputTokens: delta.outputTokens, reasoningTokens: delta.reasoningTokens, cacheReadTokens: delta.cacheReadTokens, cacheWriteTokens: delta.cacheWriteTokens })
       }
     }
   } catch (error) {
@@ -590,6 +599,7 @@ export async function runAnthropicAgent(
       request.eventThreadId,
       request.emit,
       request.cache,
+      request.usageContext,
     )
     knownSessions.add(request.threadId)
     return finalText

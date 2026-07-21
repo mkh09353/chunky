@@ -1219,6 +1219,20 @@ body,
   white-space: nowrap;
 }
 
+/* Table output from read-only slash commands (/scoreboard, /usage): monospace,
+   whitespace preserved, left-aligned inside the centered system line. */
+.chunky-notice-block {
+  margin: 0;
+  text-align: left;
+  white-space: pre;
+  overflow-x: auto;
+  max-width: 100%;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: var(--font-size-xs);
+  line-height: 1.5;
+  color: var(--color-text-secondary);
+}
+
 .chunky-image-notice {
   display: inline-flex;
   align-items: center;

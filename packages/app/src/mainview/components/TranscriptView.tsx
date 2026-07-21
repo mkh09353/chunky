@@ -293,7 +293,17 @@ function MessageGroups({ groups, isMain }: { groups: Group[]; isMain: boolean })
               </ChatSystemMessage>
             )
           case "notice":
-            return <ChatSystemMessage key={`n-${i}`}>{item.text}</ChatSystemMessage>
+            // Multi-line notices are tables (/scoreboard, /usage) — the default
+            // system line is centered + nowrap, so those get a monospace block.
+            return (
+              <ChatSystemMessage key={`n-${i}`}>
+                {item.text.includes("\n") ? (
+                  <pre className="chunky-notice-block">{item.text}</pre>
+                ) : (
+                  item.text
+                )}
+              </ChatSystemMessage>
+            )
           case "workflow-phase":
             return (
               <ChatSystemMessage key={`wp-${i}`} variant="divider">

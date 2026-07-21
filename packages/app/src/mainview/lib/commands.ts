@@ -69,6 +69,16 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     insert: "/cacheguard ",
   },
   {
+    name: "/scoreboard",
+    description: "Model leaderboard by rating (`/scoreboard session` scopes it to this thread)",
+    insert: "/scoreboard",
+  },
+  {
+    name: "/usage",
+    description: "This thread's tokens and cost, grouped by role",
+    insert: "/usage",
+  },
+  {
     name: "/help",
     description: "List the available commands",
     insert: "/help",

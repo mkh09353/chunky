@@ -46,6 +46,13 @@ import { AdvisorPicker, type AdvisorSelectionResult } from "./components/Advisor
 import { SidekickSeatMenu } from "./components/SidekickSeatMenu.js"
 import { ModeMenu, type ModeApplyPayload } from "./components/ModeMenu.js"
 import { COMMANDS, builtinCommandNames, savedModeForCommand, type Command } from "./components/SlashMenu.js"
+import {
+  renderScoreboard,
+  renderUsage,
+  usageTotalsLine,
+  type ScoreboardResponse,
+  type UsageResponse,
+} from "./stats.js"
 import { openBrowser } from "./openBrowser.js"
 import { grabClipboardImage, type ClipboardImage } from "./clipboardImage.js"
 import { writeClipboard } from "./clipboard.js"
@@ -572,6 +579,14 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         void doWorkers(command.slice("/workers".length).trim())
         return
       }
+      if (command === "/scoreboard" || command.startsWith("/scoreboard ")) {
+        void doScoreboard(command.slice("/scoreboard".length).trim())
+        return
+      }
+      if (command === "/usage" || command.startsWith("/usage ")) {
+        void doUsage()
+        return
+      }
       if (command === "/sidekick" || command.startsWith("/sidekick ")) {
         doSidekick(command.slice("/sidekick".length).trim())
         return
@@ -1082,6 +1097,60 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     },
     [mode, baseUrl, printLine],
   )
+
+  // /scoreboard — read-only model leaderboard (rated work per model+kind).
+  // Bare = every session on this server; `/scoreboard session` scopes to this one.
+  const doScoreboard = useCallback(
+    async (rest: string) => {
+      if (mode !== "live") { printLine("The scoreboard needs the live server."); return }
+      const scoped = /^session\b/i.test(rest.trim())
+      const sid = sessionIdRef.current
+      if (scoped && !sid) { printLine("No session yet — send a message first, then `/scoreboard session`."); return }
+      const scope = scoped ? "this session" : "all sessions"
+      try {
+        const url = new URL(baseUrl + "/api/scoreboard")
+        if (scoped && sid) url.searchParams.set("session", sid)
+        const res = await fetch(url)
+        if (!res.ok) {
+          throw new Error(res.status === 404 ? "this server build doesn't serve /api/scoreboard yet" : `HTTP ${res.status}`)
+        }
+        const body = (await res.json()) as ScoreboardResponse
+        const table = renderScoreboard(body.rows ?? [])
+        printLine(
+          table
+            ? `Scoreboard · ${scope}\n\n\`\`\`\n${table}\n\`\`\``
+            : `Scoreboard · ${scope}: no rated work yet — rate a turn and models start showing up here.`,
+        )
+      } catch (err) {
+        printLine(`Scoreboard: ${(err as Error).message}`)
+      }
+    },
+    [mode, baseUrl, printLine],
+  )
+
+  // /usage — this session's token + cost spend, grouped by role.
+  const doUsage = useCallback(async () => {
+    if (mode !== "live") { printLine("Usage needs the live server."); return }
+    const sid = sessionIdRef.current
+    if (!sid) { printLine("No session yet — send a message first, then `/usage`."); return }
+    try {
+      const url = new URL(baseUrl + "/api/usage")
+      url.searchParams.set("session", sid)
+      const res = await fetch(url)
+      if (!res.ok) {
+        throw new Error(res.status === 404 ? "this server build doesn't serve /api/usage yet" : `HTTP ${res.status}`)
+      }
+      const body = (await res.json()) as UsageResponse
+      const table = renderUsage({ roles: body.roles ?? [], totals: body.totals })
+      if (!table) {
+        printLine("Usage: nothing spent in this session yet.")
+        return
+      }
+      printLine(`Usage · this session\n\n\`\`\`\n${table}\n\`\`\`\n${usageTotalsLine(body.totals)}`)
+    } catch (err) {
+      printLine(`Usage: ${(err as Error).message}`)
+    }
+  }, [mode, baseUrl, printLine])
 
   const doModelCatalog = useCallback(
     async (rest: string) => {
@@ -1658,7 +1727,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           break
         case "/help":
           printLine(
-            "Commands: /clear, /resume, /rewind, /fork, /help, /login, /model, /skills, /provider, /workers, /advisor, /sidekick, /mode, /goal, /shipit, /cacheguard, /quit. `/rewind` restores files and conversation to an earlier turn; `/fork [--worktree|--no-worktree] [directive]` branches this session, optionally into a Git worktree. `/workers` shows automatic workflow routes; `/workers tag|auto|reset` changes exceptions. Input: enter to send (queues during a running turn), option+enter to steer a running turn, ctrl+v to attach a clipboard image.",
+            "Commands: /clear, /resume, /rewind, /fork, /help, /login, /model, /skills, /provider, /workers, /scoreboard, /usage, /advisor, /sidekick, /mode, /goal, /shipit, /cacheguard, /quit. `/scoreboard` ranks models by rating (add `session` to scope it); `/usage` shows this session's tokens and cost by role. `/rewind` restores files and conversation to an earlier turn; `/fork [--worktree|--no-worktree] [directive]` branches this session, optionally into a Git worktree. `/workers` shows automatic workflow routes; `/workers tag|auto|reset` changes exceptions. Input: enter to send (queues during a running turn), option+enter to steer a running turn, ctrl+v to attach a clipboard image.",
           )
           break
         case "/login":
@@ -1678,6 +1747,12 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           break
         case "/workers":
           void doWorkers("")
+          break
+        case "/scoreboard":
+          void doScoreboard("")
+          break
+        case "/usage":
+          void doUsage()
           break
         case "/advisor":
           doAdvisor()
@@ -1707,7 +1782,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         }
       }
     },
-    [printLine, doLogin, doModel, doSkills, doProvider, doWorkers, doAdvisor, doSidekick, doGoal, doShipIt, doCacheGuard, doMode, doResume, exit, mode, baseUrl, slashModes],
+    [printLine, doLogin, doModel, doSkills, doProvider, doWorkers, doScoreboard, doUsage, doAdvisor, doSidekick, doGoal, doShipIt, doCacheGuard, doMode, doResume, exit, mode, baseUrl, slashModes],
   )
 
   // Mock demo turn so the transcript streams even without a TTY.

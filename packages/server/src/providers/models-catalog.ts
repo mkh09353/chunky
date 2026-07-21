@@ -26,6 +26,19 @@ export interface ModelInfo {
   verified?: boolean
 }
 
+/** USD per million tokens.  This deliberately remains a small, conservative
+ * table: unknown models are recorded without a guessed price. */
+export interface ModelPricing { input: number; output: number; cacheRead: number; cacheWrite: number }
+export const MODEL_PRICING: Record<string, ModelPricing> = {
+  "gpt-4o": { input: 2.5, output: 10, cacheRead: 1.25, cacheWrite: 1.25 },
+  "claude-3-5-sonnet": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+  "claude-sonnet-4": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+  "gemini-2.5-pro": { input: 1.25, output: 10, cacheRead: 0.3125, cacheWrite: 0.3125 },
+}
+export function pricingFor(model: string): ModelPricing | undefined {
+  return MODEL_PRICING[model] ?? Object.entries(MODEL_PRICING).find(([id]) => model.includes(id))?.[1]
+}
+
 const MODELS_DEV_URL = "https://models.dev/api.json"
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000 // 24h
 

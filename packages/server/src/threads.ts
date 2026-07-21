@@ -32,6 +32,7 @@ import { runWorkflowScript, workflowConcurrency, type WorkflowHost, type Workflo
 import { workflowRouteResolver } from "./workflow/router.ts"
 import { streamWithCheckpointRecovery } from "./checkpoint-recovery.ts"
 import { createDelegateWatchdog } from "./watchdog.ts"
+import { Store } from "./store.ts"
 
 /** Reasoning-effort cap for `big`-tier workflow agents: keep a lower configured
  *  effort, clamp anything at/above medium (or unset) to medium. */
@@ -162,6 +163,7 @@ export class ThreadManager implements ThreadSpawner {
     title: string
     instructions: string
     selection?: AgentSelectionOverride
+    kind?: "child" | "workflow_agent"
   }): Promise<string> {
     const childThreadId = randomUUID()
     const parentThreadId = opts.callerThreadId === this.rootId ? null : opts.callerThreadId
@@ -170,6 +172,8 @@ export class ThreadManager implements ThreadSpawner {
       throw new Error(`missing model selection for caller thread ${opts.callerThreadId}`)
     }
     const selection = childSelection(parentSelection, opts.selection)
+    const delegationId = randomUUID()
+    Store.createDelegation({ id: delegationId, sessionId: this.rootId, kind: opts.kind ?? "child", provider: selection.provider, model: selection.model ?? "unknown", effort: selection.effort ?? undefined, briefSnippet: opts.instructions })
 
     // Fail fast if the child's provider sign-in is expired: a stalled auth would
     // otherwise hang the child stream with no clear cause. Mirrors run.ts's
@@ -211,6 +215,7 @@ export class ThreadManager implements ThreadSpawner {
             freshSession: true,
             workspace: this.workspace,
             abort: dog.abort,
+            usageContext: { sessionId: this.rootId, role: "child", delegationId },
           }),
           "child thread",
         )
@@ -232,12 +237,13 @@ export class ThreadManager implements ThreadSpawner {
           } as any,
         ),
       )
-      return ThreadManager.nonEmptyReport(await translateStream(stream, childThreadId, dog.emit), "child thread")
+      return `${ThreadManager.nonEmptyReport(await translateStream(stream, childThreadId, dog.emit, undefined, undefined, { sessionId: this.rootId, selection, role: "child", delegationId }), "child thread")}\n\n[delegation: ${delegationId}]`
     } catch (err) {
       const message = dog.timedOut() ? dog.timeoutMessage() : ((err as Error)?.message ?? String(err))
       this.emit({ type: "error", message, threadId: childThreadId } as AgentEvent)
       return `error: ${message}`
     } finally {
+      Store.completeDelegation(delegationId, true)
       dog.dispose()
       this.emit({ type: "thread.status", threadId: childThreadId, status: "idle", title: opts.title })
       unregisterThread(childThreadId)
@@ -271,7 +277,7 @@ export class ThreadManager implements ThreadSpawner {
       concurrency: workflowConcurrency(),
       emit: this.emit,
       spawn: ({ title, instructions, selection }) =>
-        this.spawn({ callerThreadId: opts.callerThreadId, title, instructions, selection }),
+        this.spawn({ callerThreadId: opts.callerThreadId, title, instructions, selection, kind: "workflow_agent" }),
       routeOverride: async (request) => (await router()).resolve(request),
       validateExplicit: async (selection) => (await router()).validateExplicit(selection),
       tierOverride: (tier) => this.tierOverride(tier),
@@ -384,7 +390,7 @@ export class ThreadManager implements ThreadSpawner {
             } as any,
           ),
         )
-        finalText = await translateStream(stream, advisorThreadId, dog.emit)
+        finalText = await translateStream(stream, advisorThreadId, dog.emit, undefined, undefined, { sessionId: this.rootId, selection: advisorSel, role: "advisor" })
       }
     } catch (err) {
       const message = dog.timedOut() ? dog.timeoutMessage() : ((err as Error)?.message ?? String(err))
@@ -425,6 +431,8 @@ export class ThreadManager implements ThreadSpawner {
       }
       return "error: the sidekick is disabled — ask the user to enable it (/sidekick)."
     }
+    const delegationId = randomUUID()
+    Store.createDelegation({ id: delegationId, sessionId: this.rootId, kind: "sidekick", seat, provider: sidekickSel.provider, model: sidekickSel.model ?? "unknown", effort: sidekickSel.effort ?? undefined, briefSnippet: opts.brief })
 
     // Tally the handoff before running it — measures how often the lead
     // delegates, independent of whether the handoff itself succeeds.
@@ -482,6 +490,7 @@ export class ThreadManager implements ThreadSpawner {
           workspace: this.workspace,
           agentsMd,
           abort: dog.abort,
+          usageContext: { sessionId: this.rootId, role: "sidekick", delegationId },
         })
       } else {
         // Same async-local isolation as spawn(): a cleared store so the sidekick's
@@ -498,19 +507,20 @@ export class ThreadManager implements ThreadSpawner {
             } as any,
           ),
         )
-        finalText = await translateStream(stream, sidekickThreadId, dog.emit)
+        finalText = await translateStream(stream, sidekickThreadId, dog.emit, undefined, undefined, { sessionId: this.rootId, selection: sidekickSel, role: "sidekick", delegationId })
       }
     } catch (err) {
       const message = dog.timedOut() ? dog.timeoutMessage() : ((err as Error)?.message ?? String(err))
       this.emit({ type: "error", message, threadId: sidekickThreadId } as AgentEvent)
       finalText = `error: ${message}`
     } finally {
+      Store.completeDelegation(delegationId, !finalText.startsWith("error:"))
       dog.dispose()
       this.emit({ type: "thread.status", threadId: sidekickThreadId, status: "idle", title })
       sessionSidekicks.delete(sidekickKey)
       if (sessionSidekicks.size === 0) activeSidekicks.delete(this.rootId)
     }
 
-    return ThreadManager.nonEmptyReport(finalText, "sidekick")
+    return `${ThreadManager.nonEmptyReport(finalText, "sidekick")}\n\n[delegation: ${delegationId}]`
   }
 }

@@ -7,10 +7,18 @@ import type { Goal } from "./goal.ts"
 import type { TodoSnapshot } from "./todos.ts"
 import type { AgentSelection } from "./providers/registry.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
+import { pricingFor } from "./providers/models-catalog.ts"
 
 /** A session's pinned model choice (type-only alias — the import is erased, so
  *  the store keeps zero runtime provider dependencies). */
 export type PinnedSelection = AgentSelection
+export type UsageLedgerInput = {
+  sessionId: string; threadId?: string; role: "lead" | "sidekick" | "advisor" | "child"
+  provider: string; model: string; effort?: string | null; delegationId?: string | null
+  inputTokens?: number; outputTokens?: number; reasoningTokens?: number
+  cacheReadTokens?: number; cacheWriteTokens?: number; ts?: number
+}
+export type DelegationInput = { id: string; sessionId: string; kind: "sidekick" | "child" | "workflow_agent"; seat?: string; provider: string; model: string; effort?: string; briefSnippet: string }
 
 const DB_PATH = process.env.CHUNKY_DB || "chunky.db"
 const db = openSqlite(DB_PATH)
@@ -56,6 +64,22 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS session_workspaces (
     session_id TEXT PRIMARY KEY, kind TEXT NOT NULL CHECK(kind IN ('directory', 'worktree')), path TEXT NOT NULL,
     git_common_dir TEXT, branch TEXT, parent_session_id TEXT, created_at INTEGER NOT NULL
+  );
+  CREATE TABLE IF NOT EXISTS usage_log (
+    id INTEGER PRIMARY KEY, session_id TEXT NOT NULL, thread_id TEXT, role TEXT NOT NULL,
+    provider TEXT NOT NULL, model TEXT NOT NULL, effort TEXT, delegation_id TEXT, ts INTEGER NOT NULL,
+    input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
+    reasoning_tokens INTEGER NOT NULL DEFAULT 0, cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0, cost REAL
+  );
+  CREATE TABLE IF NOT EXISTS delegations (
+    id TEXT PRIMARY KEY, session_id TEXT NOT NULL, kind TEXT NOT NULL, seat TEXT,
+    provider TEXT NOT NULL, model TEXT NOT NULL, effort TEXT, brief_snippet TEXT NOT NULL,
+    started_at INTEGER NOT NULL, completed_at INTEGER, ok INTEGER
+  );
+  CREATE TABLE IF NOT EXISTS ratings (
+    delegation_id TEXT PRIMARY KEY, rating INTEGER NOT NULL, rework INTEGER NOT NULL DEFAULT 0,
+    reason TEXT NOT NULL, judge_provider TEXT NOT NULL, judge_model TEXT NOT NULL, ts INTEGER NOT NULL
   );
 `)
 
@@ -131,6 +155,9 @@ const stmtBranch = db.query("INSERT INTO session_branches VALUES (?, ?, ?, ?, ?,
 const stmtWorktree = db.query("INSERT INTO session_workspaces VALUES (?, 'worktree', ?, ?, ?, ?, ?)")
 const stmtBranchOf = db.query("SELECT * FROM session_branches WHERE child_session_id = ?")
 const stmtWorkspaceMeta = db.query("SELECT * FROM session_workspaces WHERE session_id = ?")
+const stmtUsage = db.query(`INSERT INTO usage_log
+ (session_id,thread_id,role,provider,model,effort,delegation_id,ts,input_tokens,output_tokens,reasoning_tokens,cache_read_tokens,cache_write_tokens,cost)
+ VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
 const appendEventTx = (sessionId: string, ev: AgentEvent, now: number) => {
   const row = stmtNextSeq.get(sessionId) as { n: number }
   stmtInsertEvent.run(sessionId, row.n, JSON.stringify(ev))
@@ -166,6 +193,23 @@ function rowToGoal(row: GoalRow): Goal {
 }
 
 export const Store = {
+  createDelegation(d: DelegationInput): void { try { db.query("INSERT INTO delegations (id,session_id,kind,seat,provider,model,effort,brief_snippet,started_at) VALUES (?,?,?,?,?,?,?,?,?)").run(d.id,d.sessionId,d.kind,d.seat??null,d.provider,d.model,d.effort ?? null,d.briefSnippet.slice(0,200),Date.now()) } catch {} },
+  completeDelegation(id: string, ok: boolean): void { try { db.query("UPDATE delegations SET completed_at=?,ok=? WHERE id=?").run(Date.now(),ok?1:0,id) } catch {} },
+  rateDelegation(id: string, rating: number, rework: boolean, reason: string, judge: AgentSelection): void { db.query("INSERT INTO ratings (delegation_id,rating,rework,reason,judge_provider,judge_model,ts) VALUES (?,?,?,?,?,?,?) ON CONFLICT(delegation_id) DO UPDATE SET rating=excluded.rating,rework=excluded.rework,reason=excluded.reason,judge_provider=excluded.judge_provider,judge_model=excluded.judge_model,ts=excluded.ts").run(...([id,rating,rework?1:0,reason,judge.provider,judge.model,Date.now()] as any)) },
+  resolveDelegation(sessionId: string, ref: string): string | null { const seat = ref.startsWith("last:") ? ref.slice(5) : null; const row = db.query(`SELECT id FROM delegations WHERE session_id=? AND completed_at IS NOT NULL ${seat ? "AND seat=?" : ""} ORDER BY completed_at DESC LIMIT 1`).get(...(seat ? [sessionId,seat] : [sessionId])) as {id:string}|null; return ref !== "last" && !ref.startsWith("last:") ? (db.query("SELECT id FROM delegations WHERE session_id=? AND id=?").get(sessionId,ref) as {id:string}|null)?.id ?? null : row?.id ?? null },
+  /** Best effort by design: accounting must never affect an agent run. */
+  logUsage(u: UsageLedgerInput): void {
+    try {
+      const input = u.inputTokens ?? 0, output = u.outputTokens ?? 0
+      const read = u.cacheReadTokens ?? 0, write = u.cacheWriteTokens ?? 0
+      const p = pricingFor(u.model)
+      const cost = p ? (input * p.input + output * p.output + read * p.cacheRead + write * p.cacheWrite) / 1_000_000 : null
+      stmtUsage.run(u.sessionId, u.threadId ?? null, u.role, u.provider, u.model, u.effort ?? null, u.delegationId ?? null,
+        u.ts ?? Date.now(), input, output, u.reasoningTokens ?? 0, read, write, cost)
+    } catch { /* intentionally swallowed */ }
+  },
+  usageRows(sessionId: string) { return db.query("SELECT role,provider,model,effort,SUM(input_tokens) inputTokens,SUM(output_tokens) outputTokens,SUM(reasoning_tokens) reasoningTokens,SUM(cache_read_tokens) cacheReadTokens,SUM(cache_write_tokens) cacheWriteTokens,SUM(cost) cost,COUNT(*) requests FROM usage_log WHERE session_id = ? GROUP BY role,provider,model,effort").all(sessionId) as any[] },
+  scoreboardRows(sessionId?: string) { return db.query(`SELECT d.provider,d.model,d.effort,d.kind,COUNT(*) samples,AVG(r.rating) avgRating,COUNT(r.rating) ratedCount,AVG(r.rework) reworkRate,SUM(u.cost) totalCost,SUM(COALESCE(u.input_tokens,0)+COALESCE(u.output_tokens,0)) totalTokens FROM delegations d LEFT JOIN ratings r ON r.delegation_id=d.id LEFT JOIN usage_log u ON u.delegation_id=d.id ${sessionId ? "WHERE d.session_id = ?" : ""} GROUP BY d.provider,d.model,d.effort,d.kind`).all(...(sessionId ? [sessionId] : [])) as any[] },
   getTodos(sessionId: string): TodoSnapshot[] {
     const row = stmtGetTodos.get(sessionId) as { json: string } | null
     return row ? JSON.parse(row.json) as TodoSnapshot[] : []

@@ -22,6 +22,7 @@ import {
   updateServerLease,
   type LauncherServerIdentity,
 } from "./packages/server/src/launcher-discovery.ts"
+import { getServerToken } from "./packages/server/src/settings.ts"
 
 const APP = dirname(fileURLToPath(import.meta.url))
 const PACKAGE = JSON.parse(readFileSync(join(APP, "package.json"), "utf8")) as { version: string }
@@ -46,6 +47,8 @@ if (process.argv[2] === "update") {
 }
 
 const STATE = process.env.CHUNKY_HOME || join(homedir(), ".chunky", "state")
+const SETTINGS = join(STATE, "settings.json")
+process.env.CHUNKY_SETTINGS = SETTINGS
 const WORKSPACE = canonicalWorkspace(process.cwd())
 const BUILD_ID = computeAppBuildId(APP)
 mkdirSync(STATE, { recursive: true })
@@ -82,7 +85,12 @@ function freePort(): Promise<number> {
 const dotenv = loadEnv(join(STATE, ".env"))
 for (const k of Object.keys(dotenv)) if (k.startsWith("CHUNKY_")) delete dotenv[k]
 
+let startedServerToken: string | undefined
 async function startServer(identity: LauncherServerIdentity): Promise<{ pid: number; stop(): void }> {
+  // This callback runs under the launcher lock. Persist the shared token before
+  // the server boots so first installs and concurrent launchers cannot mint
+  // competing credentials from an initially empty settings file.
+  startedServerToken = getServerToken()
   // The server is detached from this launcher: closing the TUI that happened to
   // create it must not disconnect TUIs that subsequently reused it.
   const log = openSync(join(STATE, "server.log"), "a")
@@ -103,7 +111,7 @@ async function startServer(identity: LauncherServerIdentity): Promise<{ pid: num
         CHUNKY_DISCOVERY_RECORD: join(STATE, "servers", `${serverIdentityKey(identity.workspace, identity.version, identity.buildId)}.json`),
         CHUNKY_DB: join(STATE, "chunky.db"),
         CHUNKY_GRAPH_DB: join(STATE, "chunky-graph.db"),
-        CHUNKY_SETTINGS: join(STATE, "settings.json"),
+        CHUNKY_SETTINGS: SETTINGS,
         CHUNKY_AUTH: join(STATE, "auth.json"),
       },
     })
@@ -129,9 +137,10 @@ const shared = await ensureWorkspaceServer({
 })
 const PORT = shared.record.port
 const leaseToken = randomUUID()
-await updateServerLease(PORT, leaseToken, "attach")
+const serverToken = startedServerToken ?? getServerToken()
+await updateServerLease(PORT, leaseToken, "attach", serverToken)
 const leaseHeartbeat = setInterval(() => {
-  void updateServerLease(PORT, leaseToken, "attach").catch(() => {})
+  void updateServerLease(PORT, leaseToken, "attach", serverToken).catch(() => {})
 }, 10_000)
 leaseHeartbeat.unref()
 
@@ -140,12 +149,12 @@ leaseHeartbeat.unref()
 const tui = spawn("bun", ["run", join(APP, "packages/tui/src/index.tsx"), "--live"], {
   cwd: WORKSPACE,
   stdio: "inherit",
-  env: { ...process.env, CHUNKY_PORT: String(PORT), CHUNKY_SETTINGS: join(STATE, "settings.json") },
+  env: { ...process.env, CHUNKY_PORT: String(PORT), CHUNKY_SETTINGS: SETTINGS },
 })
 
 tui.on("exit", async (code) => {
   clearInterval(leaseHeartbeat)
-  await updateServerLease(PORT, leaseToken, "release").catch(() => {})
+  await updateServerLease(PORT, leaseToken, "release", serverToken).catch(() => {})
   process.exit(code ?? 0)
 })
 process.on("SIGINT", () => tui.kill("SIGINT"))

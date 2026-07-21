@@ -9,6 +9,7 @@ import {
   computeAppBuildId,
   ensureWorkspaceServer,
   serverIdentityKey,
+  updateServerLease,
   type LauncherServerIdentity,
 } from "./launcher-discovery.ts"
 
@@ -58,6 +59,23 @@ function harness(stateDir: string) {
 }
 
 describe("launcher server discovery", () => {
+  test("authenticates lease updates with the launcher's state token", async () => {
+    const originalFetch = globalThis.fetch
+    const authorizations: Array<string | null> = []
+    globalThis.fetch = (async (_input: RequestInfo | URL, init?: RequestInit) => {
+      authorizations.push(new Headers(init?.headers).get("authorization"))
+      return new Response(JSON.stringify({ leases: 1 }), { status: 200 })
+    }) as typeof fetch
+
+    try {
+      await updateServerLease(5100, "lease-token", "attach", "state-token")
+    } finally {
+      globalThis.fetch = originalFetch
+    }
+
+    expect(authorizations).toEqual(["Bearer state-token"])
+  })
+
   test("uses one server for concurrent launchers with the same workspace and version", async () => {
     const h = harness(tempDir())
     const [first, second] = await Promise.all([

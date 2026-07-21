@@ -58,7 +58,15 @@ import { openExternal } from "./lib/rpc"
 import { BrowserProvider, useBrowserPane } from "./lib/browser"
 import { sleep } from "./lib/sleep"
 import { isIntentionalAbort, reconnectDelay } from "./lib/reconnect"
-import { activeIncognito } from "./lib/incognito"
+import {
+  activeIncognito,
+  incognitoAppliedLine,
+  NO_INCOGNITO_MODES,
+  notIncognitoLine,
+  resolveIncognitoCommand,
+  unknownModeLine,
+  type SavedMode,
+} from "./lib/incognito"
 import { parseGoalArgs, parseSlashCommand, SLASH_COMMANDS } from "./lib/commands"
 import { renderScoreboard, renderUsage, usageTotalsLine } from "./lib/stats"
 import { fmtTokens } from "./lib/format"
@@ -707,6 +715,26 @@ export default function App() {
     [config, notice],
   )
 
+  // Apply a saved mode by name and fold the response into the model pill +
+  // advisor state — the shared half of `/mode <name>` and `/incognito`, so both
+  // take exactly the same path. Throws on a server refusal (runCommand reports it).
+  const applyModeNamed = useCallback(
+    async (name: string) => {
+      if (!config) return null
+      const body = await applyMode(config.baseUrl, name)
+      setModel({
+        provider: body.provider,
+        model: body.model,
+        effort: body.effort ?? null,
+        speed: body.speed ?? null,
+      })
+      void fetchAdvisor(config.baseUrl).then((a) => a && setAdvisorState(a))
+      void refreshModes()
+      return body
+    },
+    [config, refreshModes],
+  )
+
   // /mode — named executor+advisor pairings:
   //   ""          -> list saved modes + the current pairing
   //   <name>      -> apply that mode (model + advisor switch as one unit)
@@ -759,18 +787,45 @@ export default function App() {
       }
 
       // Anything else is a mode name to apply.
-      const body = await applyMode(config.baseUrl, trimmed)
-      setModel({
-        provider: body.provider,
-        model: body.model,
-        effort: body.effort ?? null,
-        speed: body.speed ?? null,
-      })
-      void fetchAdvisor(config.baseUrl).then((a) => a && setAdvisorState(a))
-      void refreshModes()
+      const body = await applyModeNamed(trimmed)
+      if (!body) return
       notice(`Mode "${body.applied}" applied: ${prettyModel(body.model)}${effortParen(body.effort)} · ${body.provider}.`)
     },
-    [config, notice, refreshModes],
+    [config, notice, refreshModes, applyModeNamed],
+  )
+
+  // /incognito — sugar over the mode-apply flow: apply an INCOGNITO mode (a saved
+  // mode with a provider allowlist) so the NEXT thread runs off the record.
+  //   ""     -> one incognito mode: apply it; several: list them; none: explain
+  //   <name> -> apply that mode, but only if it IS an incognito mode
+  const doIncognito = useCallback(
+    async (rest: string) => {
+      if (!config) return
+      const body = await fetchModes(config.baseUrl)
+      const action = resolveIncognitoCommand((body.modes ?? []) as SavedMode[], rest)
+      if (action.kind === "none") return notice(NO_INCOGNITO_MODES)
+      if (action.kind === "unknown") return notice(unknownModeLine(action.name))
+      if (action.kind === "not-incognito") return notice(notIncognitoLine(action.name))
+      if (action.kind === "pick") {
+        // No mode picker in the app (the TUI has one) — list them the way bare
+        // /mode lists saved modes, so naming one is the obvious next step.
+        const lines = action.modes.map((m) => {
+          const allow = m.incognito?.allow ?? []
+          return `${m.name} — ${prettyModel(m.model)}${allow.length > 0 ? ` (allow: ${allow.join(", ")})` : ""}`
+        })
+        notice(`Incognito modes: ${lines.join("  ·  ")}. Apply one with \`/incognito <name>\`.`)
+        return
+      }
+      const applied = await applyModeNamed(action.name)
+      if (!applied) return
+      notice(
+        incognitoAppliedLine(
+          applied.applied,
+          `${prettyModel(applied.model)}${applied.effort ? ` (${applied.effort})` : ""} · ${applied.provider}`,
+        ),
+      )
+    },
+    [config, notice, applyModeNamed],
   )
 
   // /skills — manage git skill repositories (add/remove/update/list).
@@ -988,9 +1043,12 @@ export default function App() {
           case "/mode":
             await doMode(rest)
             return
+          case "/incognito":
+            await doIncognito(rest)
+            return
           case "/help":
             notice(
-              "Commands: /clear, /resume, /help, /login, /model, /skills, /advisor, /mode, /goal, /shipit, /scoreboard, /usage, /cacheguard. `/scoreboard` ranks models by rating (add `session` to scope it); `/usage` shows this thread's tokens and cost by role. `/skills add <git-url>` installs a skill pack; `/skills list|remove|update` manages them. `/resume [title]` reopens a previous thread. `/goal <objective>` works autonomously until done (`--workflows` orchestrates). `/shipit [notes]` hands this plan to a fresh orchestrator. `/mode <name>` switches a saved pairing. `/cacheguard <tokens|off>` sets cold-cache confirm. Paste an image to attach it.",
+              "Commands: /clear, /resume, /help, /login, /model, /skills, /advisor, /mode, /incognito, /goal, /shipit, /scoreboard, /usage, /cacheguard. `/incognito [name]` applies an incognito mode so NEW threads run off the record. `/scoreboard` ranks models by rating (add `session` to scope it); `/usage` shows this thread's tokens and cost by role. `/skills add <git-url>` installs a skill pack; `/skills list|remove|update` manages them. `/resume [title]` reopens a previous thread. `/goal <objective>` works autonomously until done (`--workflows` orchestrates). `/shipit [notes]` hands this plan to a fresh orchestrator. `/mode <name>` switches a saved pairing. `/cacheguard <tokens|off>` sets cold-cache confirm. Paste an image to attach it.",
             )
             return
         }
@@ -1008,6 +1066,7 @@ export default function App() {
       doLogin,
       doCacheGuard,
       doMode,
+      doIncognito,
       doSkills,
       cycleTheme,
       setThemeMode,

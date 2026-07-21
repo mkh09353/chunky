@@ -3,6 +3,7 @@ import { TextAttributes } from "@opentui/core"
 import figures from "figures"
 import { ROUTES, type ModeInfo, type ModeSpec, type ModesResponse } from "@chunky/protocol"
 import { ACCENT, BORDER, WARNING } from "../theme.js"
+import { incognitoAppliedLine, isIncognitoMode, type SavedMode } from "../incognitoModes.js"
 import { rawModeSupported, useInput } from "../useInput.js"
 
 const { BOLD, DIM } = TextAttributes
@@ -38,6 +39,13 @@ export function previewSpec(spec: ModeSpec): string {
   }
   parts.push(`✦ ${spec.advisor ? `${prettyModel(spec.advisor.model)}${eff(spec.advisor.effort)}` : "off"}`)
   return parts.join(" · ")
+}
+
+/** ` · allow ollama, local` — the providers an incognito mode may use. Shown
+ *  only in the /incognito picker, where the allowlist IS the point. */
+function allowSuffix(mode: SavedMode): string {
+  const allow = mode.incognito?.allow ?? []
+  return allow.length > 0 ? ` · allow ${allow.join(", ")}` : ""
 }
 
 /** Verbose trio (matches App.tsx `doMode`'s save summary). */
@@ -77,6 +85,10 @@ interface Props {
   /** Saved/deleted/error: echo the summary line + close. */
   onNotice: (summary: string) => void
   onCancel: () => void
+  /** /incognito's picker: show ONLY incognito modes, as a pure chooser — no
+   *  current-pairing row, no save row, no delete. Off (the default) is /mode's
+   *  menu, unchanged. */
+  incognitoOnly?: boolean
 }
 
 /**
@@ -85,7 +97,7 @@ interface Props {
  * that flips into inline name entry. Enter applies a saved mode; `d` deletes it
  * behind a one-keystroke confirm. Mirrors SidekickSeatMenu's visual language.
  */
-export function ModeMenu({ baseUrl, onApplied, onNotice, onCancel }: Props) {
+export function ModeMenu({ baseUrl, onApplied, onNotice, onCancel, incognitoOnly = false }: Props) {
   const [current, setCurrent] = useState<ModeSpec | null>(null)
   const [modes, setModes] = useState<ModeInfo[]>([])
   const [loading, setLoading] = useState(true)
@@ -105,9 +117,10 @@ export function ModeMenu({ baseUrl, onApplied, onNotice, onCancel }: Props) {
         if (!res.ok) throw new Error("could not load modes")
         if (!cancelled) {
           setCurrent(body.current)
-          setModes(body.modes ?? [])
-          // Default the cursor to the first saved mode, else the "Save" row.
-          setSelected(1)
+          setModes((body.modes ?? []).filter((m) => !incognitoOnly || isIncognitoMode(m as SavedMode)))
+          // Default the cursor to the first saved mode, else the "Save" row. The
+          // incognito picker has no pinned current row, so its first mode is 0.
+          setSelected(incognitoOnly ? 0 : 1)
           setLoading(false)
         }
       } catch (err) {
@@ -120,15 +133,18 @@ export function ModeMenu({ baseUrl, onApplied, onNotice, onCancel }: Props) {
     return () => {
       cancelled = true
     }
-  }, [baseUrl])
+  }, [baseUrl, incognitoOnly])
 
   const rows = useMemo<Row[]>(
-    () => [
-      ...(current ? [{ kind: "current" as const, spec: current }] : []),
-      ...modes.map((info) => ({ kind: "mode" as const, info })),
-      { kind: "save" as const },
-    ],
-    [current, modes],
+    () =>
+      incognitoOnly
+        ? modes.map((info) => ({ kind: "mode" as const, info }))
+        : [
+            ...(current ? [{ kind: "current" as const, spec: current }] : []),
+            ...modes.map((info) => ({ kind: "mode" as const, info })),
+            { kind: "save" as const },
+          ],
+    [current, modes, incognitoOnly],
   )
 
   // Keep the selection in-bounds when the row set changes.
@@ -145,7 +161,11 @@ export function ModeMenu({ baseUrl, onApplied, onNotice, onCancel }: Props) {
         onNotice(`Mode: ${body.error} — \`/mode\` lists what's saved.`)
         return
       }
-      onApplied(body, `Mode "${body.applied}" applied: ${prettyModel(body.model)}${effortParen(body.effort)} · ${body.provider}.`)
+      const trio = `${prettyModel(body.model)}${effortParen(body.effort)} · ${body.provider}`
+      onApplied(
+        body,
+        incognitoOnly ? incognitoAppliedLine(body.applied, trio) : `Mode "${body.applied}" applied: ${trio}.`,
+      )
     } catch (err) {
       onNotice(`Mode request failed: ${String(err)}`)
     }
@@ -251,7 +271,8 @@ export function ModeMenu({ baseUrl, onApplied, onNotice, onCancel }: Props) {
         // "current" row is a non-actionable display row.
         return
       }
-      if (input === "d" || input === "D") {
+      // Delete is a /mode affordance; the incognito picker only picks.
+      if (!incognitoOnly && (input === "d" || input === "D")) {
         if (rows[selected]?.kind === "mode") setSub("confirm")
       }
     },
@@ -294,7 +315,9 @@ export function ModeMenu({ baseUrl, onApplied, onNotice, onCancel }: Props) {
   const help =
     sub === "confirm"
       ? "Confirm delete · y delete · n/esc cancel"
-      : "Modes · ↑/↓ move · enter apply · d delete · esc close"
+      : incognitoOnly
+        ? "Incognito modes · ↑/↓ move · enter apply (new sessions go off the record) · esc close"
+        : "Modes · ↑/↓ move · enter apply · d delete · esc close"
   return (
     <box flexDirection="column" border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
       <text attributes={DIM}>{help}</text>
@@ -331,15 +354,19 @@ export function ModeMenu({ baseUrl, onApplied, onNotice, onCancel }: Props) {
             <text fg={on ? ACCENT : undefined} attributes={on ? BOLD : 0}>
               {prefix}{row.info.name}
             </text>
-            <text attributes={DIM}>  {previewSpec(row.info)}</text>
+            <text attributes={DIM}>  {previewSpec(row.info)}{incognitoOnly ? allowSuffix(row.info as SavedMode) : ""}</text>
           </box>
         )
       })}
-      {modes.length === 0 && (
+      {modes.length === 0 && !incognitoOnly && (
         <text attributes={DIM}>No saved modes yet — pick &quot;Save current as…&quot; to snapshot this pairing.</text>
       )}
       <text attributes={DIM}>
-        {rows.length > WINDOW ? `${selected + 1}/${rows.length}` : `${modes.length} saved mode${modes.length === 1 ? "" : "s"}`}
+        {rows.length > WINDOW
+          ? `${selected + 1}/${rows.length}`
+          : incognitoOnly
+            ? `${modes.length} incognito mode${modes.length === 1 ? "" : "s"}`
+            : `${modes.length} saved mode${modes.length === 1 ? "" : "s"}`}
         {busy ? "  · saving…" : ""}
       </text>
     </box>

@@ -45,6 +45,14 @@ import { OnboardingWizard } from "./components/OnboardingWizard.js"
 import { AdvisorPicker, type AdvisorSelectionResult } from "./components/AdvisorPicker.js"
 import { SidekickSeatMenu } from "./components/SidekickSeatMenu.js"
 import { ModeMenu, type ModeApplyPayload } from "./components/ModeMenu.js"
+import {
+  incognitoAppliedLine,
+  NO_INCOGNITO_MODES,
+  notIncognitoLine,
+  resolveIncognitoCommand,
+  unknownModeLine,
+  type SavedMode,
+} from "./incognitoModes.js"
 import { COMMANDS, builtinCommandNames, savedModeForCommand, type Command } from "./components/SlashMenu.js"
 import {
   renderScoreboard,
@@ -201,6 +209,8 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   const [sidekickSeatMenuOpen, setSidekickSeatMenuOpen] = useState(false)
   // When true, the interactive /mode menu is open (owns the keyboard while shown).
   const [modeMenuOpen, setModeMenuOpen] = useState(false)
+  // Same menu, filtered to incognito modes: /incognito's "which one?" picker.
+  const [incognitoMenuOpen, setIncognitoMenuOpen] = useState(false)
   const [slashModes, setSlashModes] = useState<Command[]>([])
   const doModeRef = useRef<(rest: string) => void>(() => {})
   // When set, the /resume thread picker is open (owns the keyboard while shown).
@@ -297,6 +307,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     sidekickPicker != null ||
     sidekickSeatMenuOpen ||
     modeMenuOpen ||
+    incognitoMenuOpen ||
     resumePicker != null ||
     rewindPicker != null ||
     forkPicker != null ||
@@ -598,6 +609,10 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       }
       if (command === "/mode" || command.startsWith("/mode ")) {
         void doMode(command.slice("/mode".length).trim())
+        return
+      }
+      if (command === "/incognito" || command.startsWith("/incognito ")) {
+        void doIncognito(command.slice("/incognito".length).trim())
         return
       }
       if (command === "/model" || command.startsWith("/model ")) {
@@ -1573,6 +1588,33 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     [mode, baseUrl, printLine],
   )
 
+  // Apply a saved mode by name and fold the response into the status line
+  // (executor) + advisor/sidekick chips — the shared half of `/mode <name>` and
+  // `/incognito`, so both take exactly the same path. Returns the apply payload,
+  // or null when the server refused (the caller's user has already been told why).
+  const applyModeNamed = useCallback(
+    async (name: string) => {
+      const res = await fetch(baseUrl + ROUTES.applyMode(name), { method: "POST" })
+      const body = (await res.json()) as
+        | { applied: string; provider: string; model: string | null; effort?: string | null; speed?: string | null }
+        | { error: string }
+      if ("error" in body) {
+        printLine(`Mode: ${body.error} — \`/mode\` lists what's saved.`)
+        return null
+      }
+      setCurrentSel({
+        provider: body.provider,
+        model: body.model,
+        effort: body.effort ?? null,
+        speed: body.speed ?? null,
+      })
+      void refreshAdvisor()
+      void refreshSidekick()
+      return body
+    },
+    [baseUrl, printLine, refreshAdvisor, refreshSidekick],
+  )
+
   // /mode — named executor+sidekick+advisor trios. `rest` is everything after "/mode":
   //   ""             -> list saved modes + the current trio
   //   <name>         -> apply that mode (model + sidekick + advisor switch as one unit)
@@ -1638,30 +1680,53 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         }
 
         // Anything else is a mode name to apply.
-        const res = await fetch(baseUrl + ROUTES.applyMode(trimmed), { method: "POST" })
-        const body = (await res.json()) as
-          | { applied: string; provider: string; model: string | null; effort?: string | null; speed?: string | null }
-          | { error: string }
-        if ("error" in body) {
-          printLine(`Mode: ${body.error} — \`/mode\` lists what's saved.`)
-          return
-        }
-        setCurrentSel({
-          provider: body.provider,
-          model: body.model,
-          effort: body.effort ?? null,
-          speed: body.speed ?? null,
-        })
-        void refreshAdvisor()
-        void refreshSidekick()
+        const body = await applyModeNamed(trimmed)
+        if (!body) return
         printLine(`Mode "${body.applied}" applied: ${prettyModel(body.model)}${effortParen(body.effort)} · ${body.provider}.`)
       } catch (err) {
         printLine(`Mode request failed: ${String(err)}`)
       }
     },
-    [mode, baseUrl, printLine, refreshAdvisor, refreshSidekick],
+    [mode, baseUrl, printLine, applyModeNamed],
   )
   doModeRef.current = doMode
+
+  // /incognito — sugar over the mode-apply flow: apply an INCOGNITO mode (a
+  // saved mode with a provider allowlist) so the NEXT session runs off the
+  // record. `rest` is everything after "/incognito":
+  //   ""     -> one incognito mode: apply it; several: pick; none: explain
+  //   <name> -> apply that mode, but only if it IS an incognito mode
+  const doIncognito = useCallback(
+    async (rest: string) => {
+      if (mode !== "live") {
+        printLine("/incognito needs the live server (run the server, then the TUI with --live).")
+        return
+      }
+      try {
+        const res = await fetch(baseUrl + ROUTES.modes)
+        const body = (await res.json()) as ModesResponse
+        const action = resolveIncognitoCommand((body.modes ?? []) as SavedMode[], rest)
+        if (action.kind === "none") return printLine(NO_INCOGNITO_MODES)
+        if (action.kind === "unknown") return printLine(unknownModeLine(action.name))
+        if (action.kind === "not-incognito") return printLine(notIncognitoLine(action.name))
+        if (action.kind === "pick") {
+          setIncognitoMenuOpen(true)
+          return
+        }
+        const applied = await applyModeNamed(action.name)
+        if (!applied) return
+        printLine(
+          incognitoAppliedLine(
+            applied.applied,
+            `${prettyModel(applied.model)}${applied.effort ? ` (${applied.effort})` : ""} · ${applied.provider}`,
+          ),
+        )
+      } catch (err) {
+        printLine(`Incognito request failed: ${String(err)}`)
+      }
+    },
+    [mode, baseUrl, printLine, applyModeNamed],
+  )
 
   useEffect(() => {
     if (mode !== "live") return
@@ -1684,6 +1749,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   const onModeApplied = useCallback(
     (payload: ModeApplyPayload, summary: string) => {
       setModeMenuOpen(false)
+      setIncognitoMenuOpen(false)
       setCurrentSel({
         provider: payload.provider,
         model: payload.model,
@@ -1721,6 +1787,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   const onModeNotice = useCallback(
     (summary: string) => {
       setModeMenuOpen(false)
+      setIncognitoMenuOpen(false)
       printLine(summary)
     },
     [printLine],
@@ -1765,7 +1832,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           break
         case "/help":
           printLine(
-            "Commands: /clear, /resume, /rewind, /fork, /help, /login, /model, /skills, /provider, /workers, /scoreboard, /usage, /advisor, /sidekick, /mode, /goal, /shipit, /cacheguard, /quit. `/scoreboard` ranks models by rating (add `session` to scope it); `/usage` shows this session's tokens and cost by role. `/rewind` restores files and conversation to an earlier turn; `/fork [--worktree|--no-worktree] [directive]` branches this session, optionally into a Git worktree. `/workers` shows automatic workflow routes; `/workers tag|auto|reset` changes exceptions. Input: enter to send (queues during a running turn), option+enter to steer a running turn, ctrl+v to attach a clipboard image.",
+            "Commands: /clear, /resume, /rewind, /fork, /help, /login, /model, /skills, /provider, /workers, /scoreboard, /usage, /advisor, /sidekick, /mode, /incognito, /goal, /shipit, /cacheguard, /quit. `/incognito [name]` applies an incognito mode so NEW sessions run off the record. `/scoreboard` ranks models by rating (add `session` to scope it); `/usage` shows this session's tokens and cost by role. `/rewind` restores files and conversation to an earlier turn; `/fork [--worktree|--no-worktree] [directive]` branches this session, optionally into a Git worktree. `/workers` shows automatic workflow routes; `/workers tag|auto|reset` changes exceptions. Input: enter to send (queues during a running turn), option+enter to steer a running turn, ctrl+v to attach a clipboard image.",
           )
           break
         case "/login":
@@ -1810,6 +1877,9 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         case "/mode":
           void doMode("")
           break
+        case "/incognito":
+          void doIncognito("")
+          break
         default: {
           // Saved modes double as slash commands (/fire applies the "fire"
           // mode). The menu fires them here, not through submit() — without this
@@ -1820,7 +1890,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         }
       }
     },
-    [printLine, doLogin, doModel, doSkills, doProvider, doWorkers, doScoreboard, doUsage, doAdvisor, doSidekick, doGoal, doShipIt, doCacheGuard, doMode, doResume, exit, mode, baseUrl, slashModes],
+    [printLine, doLogin, doModel, doSkills, doProvider, doWorkers, doScoreboard, doUsage, doAdvisor, doSidekick, doGoal, doShipIt, doCacheGuard, doMode, doIncognito, doResume, exit, mode, baseUrl, slashModes],
   )
 
   // Mock demo turn so the transcript streams even without a TTY.
@@ -2004,6 +2074,15 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
             onApplied={onModeApplied}
             onNotice={onModeNotice}
             onCancel={() => setModeMenuOpen(false)}
+          />
+        )}
+        {incognitoMenuOpen && (
+          <ModeMenu
+            incognitoOnly
+            baseUrl={baseUrl}
+            onApplied={onModeApplied}
+            onNotice={onModeNotice}
+            onCancel={() => setIncognitoMenuOpen(false)}
           />
         )}
         {pendingSend ? (

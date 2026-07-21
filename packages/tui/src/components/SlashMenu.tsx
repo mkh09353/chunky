@@ -25,6 +25,7 @@ export const COMMANDS: Command[] = [
   { name: "/advisor", description: "Set the advisor model (a stronger model, on tap)" },
   { name: "/sidekick", description: "Configure sidekick seats (default + named, e.g. frontend/backend)" },
   { name: "/mode", description: "Named model+sidekick+advisor trios (/mode <name>, /mode save <name>)" },
+  { name: "/incognito", description: "Go off the record: apply an incognito mode (/incognito [name])" },
   { name: "/goal", description: "Work autonomously toward a goal (/goal [--workflows] <objective>)" },
   { name: "/shipit", description: "Hand this plan off to a fresh goal-orchestrator session (/shipit [notes])" },
   { name: "/cacheguard", description: "Confirm before re-sending a big cold cache (/cacheguard 100k|off)" },

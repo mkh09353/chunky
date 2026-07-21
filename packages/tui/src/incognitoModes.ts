@@ -1,30 +1,4 @@
-import type { ModeInfo, SessionSummary } from "@chunky/protocol"
-import type { CreatedSession } from "./api"
-
-/**
- * Is the ATTACHED thread off the record?
- *
- * The server owns the flag and fixes it when the session is created, so the
- * session list is the source of truth — it carries `incognito` for every thread.
- * `created` seeds the answer for a thread we just made, whose row hasn't come
- * back from the list yet, and is ignored once the ids no longer match.
- *
- * Deliberately `=== true`: a server that doesn't send the field yet means "not
- * incognito", never "maybe" — an undefined flag must never paint the UI red, and
- * must never leave it purple when the server said true.
- */
-export function activeIncognito(
-  sessions: SessionSummary[],
-  sessionId: string | null,
-  created: CreatedSession | null,
-): boolean {
-  if (!sessionId) return false
-  const row = sessions.find((s) => s.sessionId === sessionId)
-  if (row) return row.incognito === true
-  return created?.sessionId === sessionId && created.incognito === true
-}
-
-// ---- /incognito: sugar over the mode-apply flow ----------------------------
+import type { ModeInfo } from "@chunky/protocol"
 
 /**
  * A saved mode as the server actually sends it. `/api/modes` forwards each
@@ -35,8 +9,9 @@ export function activeIncognito(
 export type SavedMode = ModeInfo & { incognito?: { allow?: string[] } | null }
 
 /** Is this an INCOGNITO mode — one whose spec carries an allowlist, so applying
- *  it makes new threads off the record? The server keys its own behaviour off
- *  exactly this field, so "has the field" is the whole test. */
+ *  it makes new sessions off the record? The server keys its own behaviour off
+ *  exactly this field (an active mode with `incognito` marks each session it
+ *  creates), so "has the field" is the whole test. */
 export function isIncognitoMode(mode: SavedMode): boolean {
   return mode.incognito != null
 }
@@ -45,7 +20,7 @@ export function isIncognitoMode(mode: SavedMode): boolean {
  * What `/incognito [name]` should do, given the saved modes.
  *
  * - `apply` — exactly one incognito mode exists (or the named one is incognito).
- * - `pick`  — several: list them so the user can name one.
+ * - `pick`  — several: let the user choose.
  * - `none`  — none saved: explain how to make one.
  * - `not-incognito` / `unknown` — the named argument can't be applied.
  *
@@ -72,13 +47,15 @@ export function resolveIncognitoCommand(modes: SavedMode[], arg: string): Incogn
   return { kind: "pick", modes: incognito }
 }
 
+// ---- copy (shared by App and the picker so both say the same thing) ----
+
 /** Nothing to apply: say what an incognito mode IS and how to save one. */
 export const NO_INCOGNITO_MODES =
   'No incognito modes saved. An incognito mode is a saved mode with a provider allowlist — add `"incognito": { "allow": ["<provider-id>"] }` to a mode in Chunky\'s settings.json, where every listed provider is a custom provider with `"scope": "incognito"` (or "both"). Then `/incognito` applies it. `/mode` lists what you have saved today.'
 
 /** Applied. `trio` is the same `<model> (<effort>) · <provider>` tail /mode prints. */
 export function incognitoAppliedLine(name: string, trio: string): string {
-  return `Incognito mode "${name}" applied: ${trio} — NEW threads start off the record (nothing written to disk, red accent). Start one with “New thread”; this thread stays exactly as it is.`
+  return `Incognito mode "${name}" applied: ${trio} — NEW sessions start off the record (nothing written to disk, red accent). Run /clear to start one; this session stays exactly as it is.`
 }
 
 /** The named mode exists but wouldn't take you off the record. */

@@ -53,6 +53,11 @@ export const SLASH_COMMANDS: SlashCommand[] = [
     insert: "/mode ",
   },
   {
+    name: "/incognito",
+    description: "Go off the record: apply an incognito mode (bare picks it, /incognito <name> names one)",
+    insert: "/incognito ",
+  },
+  {
     name: "/login",
     description: "Log in to a provider (/login lists them, /login <provider> starts the flow)",
     insert: "/login ",

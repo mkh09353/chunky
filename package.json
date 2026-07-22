@@ -12,10 +12,10 @@
   },
   "scripts": {
     "server": "CHUNKY_AUTH=\"${CHUNKY_AUTH:-$HOME/.chunky/state/auth.json}\" bun run scripts/dev-server.ts",
-    "tui": "CHUNKY_PORT=\"${CHUNKY_PORT:-4620}\" bun run packages/tui/src/index.tsx",
+    "tui": "CHUNKY_PORT=\"${CHUNKY_DEV_PORT:-4620}\" bun run packages/tui/src/index.tsx",
     "app": "bun run --cwd packages/app start",
-    "app:dev": "CHUNKY_PORT=\"${CHUNKY_PORT:-4620}\" bun run --cwd packages/app dev",
-    "app:hmr": "CHUNKY_PORT=\"${CHUNKY_PORT:-4620}\" bun run --cwd packages/app dev",
+    "app:dev": "CHUNKY_PORT=\"${CHUNKY_DEV_PORT:-4620}\" bun run --cwd packages/app dev",
+    "app:hmr": "CHUNKY_PORT=\"${CHUNKY_DEV_PORT:-4620}\" bun run --cwd packages/app dev",
     "chunky": "bun run chunky.ts",
     "pair": "bun run packages/server/src/relay/pair.ts",
     "install:cli": "bash scripts/install.sh",

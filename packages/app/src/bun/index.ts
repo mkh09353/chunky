@@ -41,8 +41,16 @@ async function getMainViewUrl(): Promise<string> {
 // (electrobun doesn't forward CHUNKY_PORT into the launched .app). An explicit
 // CHUNKY_URL / CHUNKY_PORT still wins — e.g. an installed launcher pinning a
 // free port (chunky.ts), which is never 4620/4599.
-const baseUrl =
-  process.env.CHUNKY_URL || `http://localhost:${process.env.CHUNKY_PORT || 4620}`
+// Leak guard: CHUNKY_SERVER_NONCE only ever exists in the env of a
+// launcher-managed *server* process (chunky.ts sets it for the server child,
+// and the server exports it to shells it spawns). If it reached us, the whole
+// CHUNKY_* set — including CHUNKY_PORT, that server's ephemeral port — leaked
+// in from a shell inside a Chunky session, not from an intentional pin, so
+// ignore the URL/port and use the dev default.
+const envLeaked = !!process.env.CHUNKY_SERVER_NONCE
+const baseUrl = envLeaked
+  ? "http://localhost:4620"
+  : process.env.CHUNKY_URL || `http://localhost:${process.env.CHUNKY_PORT || 4620}`
 const workspace = process.env.CHUNKY_WORKSPACE || process.cwd()
 const workspaceName = workspace.split(/[\\/]/).filter(Boolean).pop() || "workspace"
 function serverToken(): string | undefined {

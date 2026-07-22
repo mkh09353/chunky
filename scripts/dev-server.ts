@@ -11,9 +11,38 @@
 import { DEFAULT_PORT } from "@chunky/protocol"
 
 // Dev's dedicated port. Distinct from DEFAULT_PORT (4599, the wire default the
-// installed app ignores in favour of a free port). Override with CHUNKY_PORT.
+// installed app ignores in favour of a free port). Override with CHUNKY_DEV_PORT.
+// Deliberately NOT CHUNKY_PORT: the installed launcher (chunky.ts) exports its
+// own ephemeral CHUNKY_PORT into every shell it spawns, so a `bun run server`
+// started from inside a Chunky session would silently bind the wrong port.
 const DEV_PORT = 4620
-const port = Number(process.env.CHUNKY_PORT) || DEV_PORT
+const port = Number(process.env.CHUNKY_DEV_PORT) || DEV_PORT
+
+// Scrub launcher-session env. When this script runs from a shell spawned by an
+// installed Chunky session, the launcher's per-server env leaks in and corrupts
+// dev: CHUNKY_SERVER_NONCE makes the server think it's launcher-managed (the
+// lease loop then SIGTERMs it ~30s in with no clients — "Polite quit request"),
+// CHUNKY_DISCOVERY_RECORD/CHUNKY_SERVER_ID fight over the installed server's
+// registration, and CHUNKY_DB/CHUNKY_GRAPH_DB point at the installed state.
+for (const key of [
+  "CHUNKY_SERVER_NONCE",
+  "CHUNKY_SERVER_ID",
+  "CHUNKY_DISCOVERY_RECORD",
+  "CHUNKY_BUILD_ID",
+  "CHUNKY_VERSION",
+  "CHUNKY_DB",
+  "CHUNKY_GRAPH_DB",
+  "CHUNKY_WORKSPACE",
+]) {
+  delete process.env[key]
+}
+// Settings stay on the user's real file (NOT scrubbed to the repo-local
+// settings.json): the app's bun process reads serverToken from
+// ~/.chunky/state/settings.json by default, and dev must agree on the token
+// or every request 401s. Override with CHUNKY_DEV_SETTINGS.
+process.env.CHUNKY_SETTINGS =
+  process.env.CHUNKY_DEV_SETTINGS ||
+  `${process.env.HOME}/.chunky/state/settings.json`
 // Make the server (imported below) and every child read the same port.
 process.env.CHUNKY_PORT = String(port)
 

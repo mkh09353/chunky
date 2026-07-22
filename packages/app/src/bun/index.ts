@@ -10,22 +10,27 @@ const DEV_SERVER_PORT = 5173
 const DEV_SERVER_URL = process.env.VITE_DEV_URL ?? `http://localhost:${DEV_SERVER_PORT}`
 
 async function getMainViewUrl(): Promise<string> {
-  // Prefer Vite HMR when reachable (dev workflow).
+  // Prefer Vite HMR when reachable — but ONLY in dev-channel builds (or when
+  // VITE_DEV_URL is set explicitly). An installed (canary/stable) app must
+  // never load the dev frontend: with `bun run app:dev`'s Vite server up, the
+  // installed app would otherwise hijack localhost:5173 on its next reload and
+  // run in-development UI code against its older server — version skew that
+  // ends in a permanently "connecting" session.
+  let channel: string | null = null
   try {
-    await fetch(DEV_SERVER_URL, { method: "HEAD" })
-    console.log(`[@chunky/app] HMR: ${DEV_SERVER_URL}`)
-    return DEV_SERVER_URL
+    channel = await Updater.localInfo.channel()
   } catch {
-    /* fall through to bundled view */
+    /* ignore — treat as dev (running outside a built bundle) */
   }
-
-  try {
-    const channel = await Updater.localInfo.channel()
-    if (channel === "dev") {
-      console.log("[@chunky/app] Vite HMR not running — loading bundled view")
+  const allowHmr = Boolean(process.env.VITE_DEV_URL) || channel === "dev" || channel === null
+  if (allowHmr) {
+    try {
+      await fetch(DEV_SERVER_URL, { method: "HEAD" })
+      console.log(`[@chunky/app] HMR: ${DEV_SERVER_URL}`)
+      return DEV_SERVER_URL
+    } catch {
+      if (channel === "dev") console.log("[@chunky/app] Vite HMR not running — loading bundled view")
     }
-  } catch {
-    /* ignore */
   }
   return "views://mainview/index.html"
 }
@@ -55,8 +60,13 @@ function serverToken(): string | undefined {
 // The browser pane's Chrome DevTools Protocol port. Must agree with the
 // `remote-debugging-port` chromiumFlag in electrobun.config.ts, which reads the
 // same env var at build time — they're baked separately, so overriding it means
-// rebuilding, not just relaunching.
-const cdpPort = Number(process.env.CHUNKY_CDP_PORT || 9223)
+// rebuilding, not just relaunching. Dev-channel builds default to 9224 (release
+// 9223) so a dev app and the installed app can run side by side; the config
+// picks the same defaults by `electrobun dev` vs `build`.
+const appChannel = await Updater.localInfo.channel().catch(() => null)
+const cdpPort = Number(
+  process.env.CHUNKY_CDP_PORT || (appChannel === "stable" || appChannel === "canary" ? 9223 : 9224),
+)
 
 // Whether this build actually shipped CEF. `availableRenderers` comes from the
 // bundle's Resources/build.json, which the electrobun CLI writes from

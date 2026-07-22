@@ -9,12 +9,23 @@ import type { ElectrobunConfig } from "electrobun/bun"
 //   CHUNKY_CDP_PORT=9444 bun run app:dev
 // The bun process reads the same env var to report the port it expects, so the
 // two stay in agreement.
-const CDP_PORT = process.env.CHUNKY_CDP_PORT || "9223"
+// This config is evaluated by the electrobun CLI itself, so argv tells us
+// whether this is `electrobun dev` or `electrobun build`. Dev runs get their
+// OWN app identity: with the installed app's identifier (com.chunky.app),
+// macOS would focus the already-running installed Chunky instead of launching
+// the dev bundle at all — the classic "dev app won't start while real Chunky
+// is running". A distinct name/identifier also splits Application Support
+// state, so dev and installed never fight over the same dirs.
+const isRelease = process.argv[2] === "build"
+// Dev also gets its own CDP default (9224 vs 9223) so the dev browser pane
+// doesn't collide with the installed app's DevTools listener. Runtime
+// (src/bun/index.ts) picks the same default by channel.
+const CDP_PORT = process.env.CHUNKY_CDP_PORT || (isRelease ? "9223" : "9224")
 
 export default {
   app: {
-    name: "Chunky",
-    identifier: "com.chunky.app",
+    name: isRelease ? "Chunky" : "Chunky Dev",
+    identifier: isRelease ? "com.chunky.app" : "com.chunky.app.dev",
     version: "0.0.1",
   },
   build: {

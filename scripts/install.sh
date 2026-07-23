@@ -13,11 +13,8 @@ command -v bun >/dev/null 2>&1 || { echo "error: 'bun' is required on your PATH 
 
 echo "→ snapshotting app to $APP"
 mkdir -p "$APP" "$STATE" "$BIN"
-# packages/app is the desktop (electrobun) app — not needed for the CLI/TUI install,
-# and it drags in heavy UI deps (react-dom, @astryxdesign/*, electrobun).
 rsync -a --delete \
   --exclude '.git' --exclude 'node_modules' --exclude '.claude' --exclude 'scratchpad' \
-  --exclude 'packages/app' \
   --exclude '*.db' --exclude '*.db-wal' --exclude '*.db-shm' --exclude '*.log' \
   --exclude '.env' --exclude 'auth.json' --exclude 'settings.json' \
   "$SRC/" "$APP/"

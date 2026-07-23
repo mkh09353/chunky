@@ -1,8 +1,8 @@
 {
   "extends": "./tsconfig.base.json",
   "include": ["packages/**/*.ts", "packages/**/*.tsx"],
-  // The TUI and desktop app have package-specific JSX/runtime boundaries.
+  // The TUI and desktop app has package-specific JSX/runtime boundaries.
   // `bun run typecheck` chains both package-local checks so the renderer does
   // not accidentally pull Electrobun's Bun-side dependency graph into tsc.
-  "exclude": ["packages/tui", "packages/app"]
+  "exclude": ["packages/tui"]
 }

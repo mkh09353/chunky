@@ -3,7 +3,7 @@
  * Smoke-test the desktop app's built-in browser pane over the Chrome DevTools
  * Protocol.
  *
- * The pane runs on CEF (see packages/app/electrobun.config.ts), which exposes a
+ * The pane runs on CEF (see chunky-app/electrobun.config.ts), which exposes a
  * DevTools listener on 127.0.0.1. This script proves the whole chain end to end:
  * the port is listening, a page target exists, and we can both drive navigation
  * and read state back out of it.

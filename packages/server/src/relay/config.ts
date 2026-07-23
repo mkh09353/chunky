@@ -11,7 +11,7 @@
 import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs"
 
 /** A paired remote device (phone). Its pubKey came through the pairing QR
- *  flow, never through the relay — see docs/relay-design.md. */
+ *  flow, never through the relay — see the internal relay design doc. */
 export interface RelayPeer {
   deviceId: string
   name: string

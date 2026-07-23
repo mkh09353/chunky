@@ -1,4 +1,4 @@
-// Relay uplink — the computer side of remote access (docs/relay-design.md).
+// Relay uplink — the computer side of remote access (internal relay design doc).
 //
 // Dials OUT to the relay over WebSocket (so NAT/firewalls never matter) and
 // acts as a pure sidecar: E2E-encrypted TunnelFrames from paired phones are

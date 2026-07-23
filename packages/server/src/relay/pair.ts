@@ -4,7 +4,7 @@
 // carrying the relay URL, the pairing code, this computer's X25519 public key
 // and a one-time secret. The QR is the trusted channel: the phone answers with
 // its own public key sealed under that secret, so the relay — which never sees
-// the secret — can neither read nor substitute keys (docs/relay-design.md).
+// the secret — can neither read nor substitute keys (internal relay design doc).
 // On claim we write relay.json; index.ts boots the uplink from it on the next
 // server start.
 import { hostname } from "node:os"

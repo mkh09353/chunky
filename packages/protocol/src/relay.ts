@@ -1,7 +1,7 @@
 // @chunky/protocol/relay — wire contract for the hosted relay (relay.chunky.to).
 // Shared by the relay service (private repo), the computer-side uplink, and
 // remote clients (iPhone app / RelayClient). Same rule as index.ts: import
-// these shapes, do not fork them. See docs/relay-design.md.
+// these shapes, do not fork them. See the relay design doc (internal).
 
 export const DEFAULT_RELAY_URL = "https://relay.chunky.to"
 export const RELAY_WS_PATH = "/ws"

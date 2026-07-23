@@ -2,7 +2,7 @@
 // traffic. tweetnacl only (X25519 ECDH + XSalsa20-Poly1305), portable to the
 // browser and to Swift (CryptoKit / libsodium) later.
 //
-// Trust model (see docs/relay-design.md): the pairing QR is the trusted
+// Trust model (see the internal relay design doc): the pairing QR is the trusted
 // channel. It carries the computer's public key and a one-time 32-byte secret;
 // the phone returns its own public key sealed with that secret, so the relay
 // can neither read nor substitute keys. After pairing, both sides derive the

@@ -6,7 +6,7 @@
 // design: native WebSocket + TextEncoder/TextDecoder + crypto.randomUUID only
 // (no Bun/Node APIs, no fetch() — every byte rides the socket), so it runs in
 // browsers and in JavaScriptCore inside the iPhone app, for which this is the
-// reference implementation. See docs/relay-design.md.
+// reference implementation. See the relay design doc (internal).
 
 import { RELAY_WS_PATH } from "./relay.ts"
 import type { PeerInfo, RelayClientFrame, RelayServerFrame, TunnelFrame } from "./relay.ts"

@@ -36,7 +36,7 @@ function assert(cond: unknown, label: string): void {
 const BRIEF = [
   "Objective: the relay uplink reconnects with exponential backoff after a network drop, verified by the cross-repo E2E suite.",
   "Decisions: keep the outbound-only WebSocket design (no listening ports); backoff caps at 60s (user-agreed).",
-  "Pointers: packages/server/src/relay/uplink.ts (startUplink),",
+  "Pointers: packages/server/src/relay/uplink.ts (startUplink).",
   "Verification: bun test packages/server, plus the relay E2E suite must stream events across a simulated drop.",
 ].join("\n")
 

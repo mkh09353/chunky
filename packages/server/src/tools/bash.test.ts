@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { rmSync } from "node:fs"
-import { bash, setDefaultTimeoutForTests } from "./bash.ts"
+import { bash, sanitizedShellEnvironment, setDefaultTimeoutForTests } from "./bash.ts"
 import { asToolRunResult, dualTool } from "./result.ts"
 
 const spillPaths: string[] = []
@@ -47,6 +47,28 @@ describe("bash timeout", () => {
         // It already exited.
       }
     }
+  })
+})
+
+describe("bash environment isolation", () => {
+  test("does not expose launcher-owned production state paths to agent commands", () => {
+    const env = sanitizedShellEnvironment({
+      PATH: "/safe/bin",
+      SAFE_USER_VALUE: "kept",
+      CHUNKY_DB: "/Users/example/.chunky/state/chunky.db",
+      CHUNKY_GRAPH_DB: "/Users/example/.chunky/state/chunky-graph.db",
+      CHUNKY_SETTINGS: "/Users/example/.chunky/state/settings.json",
+      CHUNKY_AUTH: "/Users/example/.chunky/state/auth.json",
+      CHUNKY_PORT: "4620",
+      CHUNKY_WORKSPACE: "/Users/example/project",
+      CHUNKY_VERSION: "0.3.20",
+      CHUNKY_BUILD_ID: "build",
+      CHUNKY_SERVER_NONCE: "nonce",
+      CHUNKY_SERVER_ID: "server",
+      CHUNKY_DISCOVERY_RECORD: "/Users/example/.chunky/state/servers/record.json",
+    })
+
+    expect(env).toEqual({ PATH: "/safe/bin", SAFE_USER_VALUE: "kept" })
   })
 })
 

@@ -31,6 +31,32 @@ import { terminateProcessTree } from "../process-tree.ts"
 // exactly like the user's terminal.
 let loginPath: string | null | undefined
 
+const LAUNCHER_ENV_KEYS = [
+  "CHUNKY_AUTH",
+  "CHUNKY_BUILD_ID",
+  "CHUNKY_DB",
+  "CHUNKY_DISCOVERY_RECORD",
+  "CHUNKY_GRAPH_DB",
+  "CHUNKY_PORT",
+  "CHUNKY_SERVER_ID",
+  "CHUNKY_SERVER_NONCE",
+  "CHUNKY_SETTINGS",
+  "CHUNKY_VERSION",
+  "CHUNKY_WORKSPACE",
+] as const
+
+/** Agent shell commands are children of the long-running server, but they must
+ * never inherit the server's production state paths or discovery identity. */
+export function sanitizedShellEnvironment(
+  inherited: NodeJS.ProcessEnv,
+  path?: string | null,
+): NodeJS.ProcessEnv {
+  const env = { ...inherited }
+  for (const key of LAUNCHER_ENV_KEYS) delete env[key]
+  if (path) env.PATH = path
+  return env
+}
+
 async function userLoginPath(): Promise<string | null> {
   if (loginPath !== undefined) return loginPath
   loginPath = null
@@ -107,7 +133,7 @@ export const bash = tool(
     const path = await userLoginPath()
     const proc = Bun.spawn(["bash", "-lc", command], {
       cwd: workspaceFromConfig(config),
-      env: path ? { ...process.env, PATH: path } : process.env,
+      env: sanitizedShellEnvironment(process.env, path),
       stdout: "pipe",
       stderr: "pipe",
     })

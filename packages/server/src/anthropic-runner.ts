@@ -17,7 +17,7 @@ import type { MessageEndReason } from "@chunky/protocol"
 import { Store } from "./store.ts"
 import { taggedEmitter, type Emit } from "./event-emitter.ts"
 import { buildSystemPrompt } from "./prompt.ts"
-import { listSidekickSeats, sidekickFor, type AgentSelection } from "./providers/registry.ts"
+import { listSidekickSeats, resolveReviewSelection, sidekickFor, type AgentSelection } from "./providers/registry.ts"
 import { ANTHROPIC_SDK_ISOLATION_OPTIONS, anthropicOAuthEnvironment } from "./providers/anthropic-sdk.ts"
 import { usageForAnthropicCache, usageFromAnthropicResult } from "./usage.ts"
 import { noteRequest } from "./cache-watch.ts"
@@ -61,6 +61,9 @@ import { getTaskOutput, getTaskOutputInputShape, killTask, killTaskInputShape } 
 import { hashlineEdit, hashlineRead } from "./tools/hashline/index.ts"
 import { hashlineEditInputShape } from "./tools/hashline/types.ts"
 import { resolveFileToolProfile, type FileToolProfile } from "./settings.ts"
+import { readRepoMemory } from "./memory.ts"
+import { remember, rememberInputShape } from "./tools/remember.ts"
+import { review, reviewInputShape } from "./tools/review.ts"
 
 const SERVER_NAME = "chunky"
 const ALLOWED_TOOLS = [`mcp__${SERVER_NAME}__*`]
@@ -87,6 +90,8 @@ const CHUNKY_TOOLS = [
   goalCompleteTool,
   goalBlockedTool,
   shipGoal,
+  remember,
+  review,
 ]
 const SDK_TOOL_NAMES = new Set(CHUNKY_TOOLS.map((chunkyTool) => `mcp__${SERVER_NAME}__${chunkyTool.name}`))
 const knownSessions = new Set<string>()
@@ -233,6 +238,7 @@ export function createChunkySdkMcpServer(
         (args) => write.invoke(args, runConfig),
         emit,
       ),
+      wrapChunkyTool(remember.name, remember.description, rememberInputShape, (args) => remember.invoke(args, runConfig), emit),
       wrapChunkyTool(
         fileTools.edit.name,
         fileTools.edit.description,
@@ -251,6 +257,7 @@ export function createChunkySdkMcpServer(
         emit,
       ),
       wrapChunkyTool(rateDelegate.name, rateDelegate.description, rateDelegateInputShape, (args) => rateDelegate.invoke(args, runConfig), emit),
+      wrapChunkyTool(review.name, review.description, reviewInputShape, (args) => review.invoke(args, runConfig), emit),
       wrapChunkyTool(
         spawnThread.name,
         spawnThread.description,
@@ -363,7 +370,7 @@ export interface AnthropicRunRequest {
   agentsMd?: string | null
   /** Called once the SDK query has been constructed and provider submission has begun. */
   onSubmitted?: () => void
-  usageContext?: { sessionId: string; role: "lead" | "sidekick" | "advisor" | "child"; delegationId?: string | null }
+  usageContext?: { sessionId: string; role: "lead" | "sidekick" | "advisor" | "review" | "child"; delegationId?: string | null }
 }
 
 export async function buildAnthropicOptions(
@@ -387,8 +394,10 @@ export async function buildAnthropicOptions(
       buildSystemPrompt("edit", false, workspace, {
         fileToolProfile: resolveFileToolProfile(),
         hasSidekick: sidekickFor(selection) != null,
+        hasReview: resolveReviewSelection(request.usageContext?.sessionId) != null,
         sidekickSeats: listSidekickSeats(),
         agentsMd: request.agentsMd,
+        repoMemory: readRepoMemory(workspace, threadId),
       }),
     ...ANTHROPIC_SDK_ISOLATION_OPTIONS,
     mcpServers: { [SERVER_NAME]: createChunkySdkMcpServer(threadId, emit, eventThreadId, workspace) },

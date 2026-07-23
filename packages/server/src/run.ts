@@ -18,6 +18,7 @@ import { databaseErrorMessage, isSqliteBusy } from "./sqlite.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { classifyGoalError, decideGoalStep, firstLine, goalContinuationPrompt, toSnapshot, type GoalStep } from "./goal.ts"
 import { distilledAgentsMd } from "./agents-md.ts"
+import { readRepoMemory } from "./memory.ts"
 import { assertSelectionAllowed } from "./incognito.ts"
 import { asToolRunResult } from "./tools/result.ts"
 import { peekTaskReminders, consumeTaskReminders } from "./tasks.ts"
@@ -112,7 +113,7 @@ export async function translateStream(
   emit: Emit,
   cache?: CacheContext,
   onToolBoundary?: () => InterjectionBoundary | undefined,
-  usageContext?: { sessionId: string; selection?: AgentSelection; role?: "lead" | "sidekick" | "advisor" | "child"; delegationId?: string | null },
+  usageContext?: { sessionId: string; selection?: AgentSelection; role?: "lead" | "sidekick" | "advisor" | "review" | "child"; delegationId?: string | null },
 ): Promise<string> {
   // Tag message/tool/error events with the owning threadId (omitted for main).
   const emitT = taggedEmitter(emit, threadId)
@@ -385,6 +386,7 @@ export async function runAgent(
   // sessions in different repos run concurrently without interfering.
   const workspace = Store.workspaceOf(sessionId) ?? LAUNCH_WORKSPACE
   const agentsMd = await distilledAgentsMd(workspace, selection, sessionId)
+  const repoMemory = readRepoMemory(workspace, sessionId)
 
   // Preflight credentials: refresh an expiring OAuth token, or fail fast with a
   // clear "run /login" error. Without this a revoked token hangs the whole turn
@@ -428,7 +430,7 @@ export async function runAgent(
       })
     } else {
       const stream = await streamWithCheckpointRecovery(
-        getAgent(selection, workspace, agentsMd, sessionId),
+        getAgent(selection, workspace, agentsMd, sessionId, repoMemory),
         { messages: [{ role: "user", content: userMessageContent(prompt, turnImages) }] } as any,
         {
           configurable: {

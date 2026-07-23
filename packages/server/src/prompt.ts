@@ -12,6 +12,8 @@ export type FileToolProfile = "standard" | "hashline"
  *  persistent side thread. Terse on purpose. */
 export const ADVISOR_SYSTEM_PROMPT = `You are an expert software-engineering advisor to a coding agent working in this repository. You have read-only tools (read, bash, fffind, ffgrep) — use them to inspect exactly what you're pointed at before answering; read the actual code, don't guess. You must NOT modify anything: no edits, no writes, no mutating shell commands — use bash only for read-only inspection (ls, cat, git). Prefer fffind for paths and ffgrep for content over shell grep/find. The executor applies changes, not you. Reply with concise, specific, actionable guidance: the decision, the why, the concrete next step, and any risks or better alternatives. Be direct.`
 
+export const REVIEW_SYSTEM_PROMPT = `You are a detached final code reviewer. Inspect the current workspace, git diff, relevant code, and tests using ONLY read-only tools. You must never edit/write/apply patches, delegate, launch workflows, or call review recursively; bash is only for read-only inspection such as git diff/status, ls, cat, and tests. Return prioritized, concrete, actionable findings with file/line pointers and rationale. Explicitly say “No issues found” when the reviewed change has no substantive problems. Do not implement fixes.`
+
 /** The sidekick's own system prompt: the persistent worker side thread the lead
  *  hands briefs to — reconnaissance and implementation alike. Full work tools, no
  *  delegation tools. It keeps its context across handoffs, so follow-up briefs
@@ -21,12 +23,14 @@ export const SIDEKICK_SYSTEM_PROMPT = `You are the hands-on engineer for a lead 
 export interface SystemPromptOpts {
   fileToolProfile?: FileToolProfile
   agentsMd?: string | null
+  repoMemory?: string | null
   /** When true, only list core (always-bound) tools; deferred tools are found via native tool search. */
   nativeToolSearch?: boolean
   /** Grok fallback: deferred tools are discovered and invoked through two compact local meta-tools. */
   portableToolSearch?: boolean
   /** When false the sidekick seat is disabled — drop its tool line + guidance. */
   hasSidekick?: boolean
+  hasReview?: boolean
   /** Configured NAMED sidekick seats (e.g. ["backend","frontend"]). The agent is
    *  rebuilt (invalidateAgent) when seats change, so this stays current. */
   sidekickSeats?: string[]
@@ -69,6 +73,11 @@ export function buildSystemPrompt(
       ? "\n- advisor (discover via tool search when configured): consult it before committing to an approach on risky or ambiguous work — design trade-offs, auth/data/migrations/concurrency — and when a fix fails twice. Point at specific files/lines."
       : "\n- advisor: consult it before committing to an approach on risky or ambiguous work — a design decision with real trade-offs, or anything touching auth, data, migrations, or concurrency — so it catches problems before you write code. Also consult it the moment a fix fails twice, before you attempt a third. Point it at specific files/lines. It's for genuinely hard calls, not routine edits."
     : ""
+  const reviewListLine = opts.hasReview && !deferredToolSearch
+    ? "\n- review: launch one detached read-only final review near completion; it returns an id immediately and findings arrive later"
+    : ""
+  const reviewGuideline = opts.hasReview
+    ? `\n- Review: for real, non-trivial changes near completion, consider launching the asynchronous review tool with a concise brief and relevant pointers. It is your decision, never automatic and not needed for trivial tasks. Continue your own tests while it runs; assess and fix its findings before finalizing.` : ""
   // Reconcile the "keep working" guideline with consulting: only mentioned when
   // an advisor exists, so we never reference a tool the model can't call.
   const keepGoingAdvisorClause = hasAdvisor ? " Pausing to consult the advisor is part of the work, not stopping." : ""
@@ -95,6 +104,7 @@ export function buildSystemPrompt(
 - find_references: symbol reference lookup (prefer over ffgrep for symbol lookup)
 ${editListLine}
 - write: create or overwrite a file${sidekickListLine}
+- remember: append a short, durable repository lesson after a real repeatable failure or quirk
 - search_skills / load_skill: discover and on-demand load Agent Skills (SKILL.md packages under ~/.chunky|agents|claude|codex/skills, managed skill-repos, and project .agents|.claude|.chunky|.codex/skills). Bodies are never in the prompt — search first, load only when a description matches
 ${portableToolSearch ? "- search_tools / call_deferred_tool: discover deferred tools by capability, then invoke one using its returned name and input schema\n" : ""}
 
@@ -108,8 +118,9 @@ Additional tools (threads, workflows, goals, sessions, model catalog, skill repo
 - find_references: symbol reference lookup (prefer over ffgrep for symbol lookup)
 ${editListLine}
 - write: create or overwrite a file${sidekickListLine}
+- remember: append a short, durable repository lesson after a real repeatable failure or quirk
 - spawn_thread: delegate a focused ONE-SHOT subtask to a fresh child agent (no memory between calls); omit model fields to inherit, or choose another configured provider/model when it better fits the subtask
-- workflow: fan out MANY sub-agents via a JS script — reserved for genuinely large work or an explicit user request${advisorListLine}
+- workflow: fan out MANY sub-agents via a JS script — reserved for genuinely large work or an explicit user request${advisorListLine}${reviewListLine}
 - get_goal / create_goal / goal_complete / goal_blocked: goal-mode tools — relevant when a goal is set via /goal, or when the user explicitly asks for autonomous work-until-done (create_goal)
 - ship_goal: hand the plan agreed in THIS conversation off to a fresh, context-clean session that pursues it as an autonomous workflow-orchestrated goal — use when the user says to ship or hand off the plan (/shipit); write a distilled handoff brief as the objective
 - list_sessions / send_to_session: see and message the OTHER live sessions on this server (parallel repos/tasks) — hand off follow-ups or ask questions; a busy target processes your message after its current turn
@@ -146,6 +157,7 @@ ${editListLine}
     : "- Todos: use update_todos for multi-step work (3+ steps) and goal mode; keep exactly one item in_progress while working, use merge for status flips, and let sub-agents report progress rather than editing the lead-owned list. Skip trivial tasks."
 
   const repoNotes = opts.agentsMd?.trim() ? `\n\nRepo notes (distilled from AGENTS.md — follow these):\n${opts.agentsMd.trim()}` : ""
+  const repoMemory = opts.repoMemory?.trim() ? `\n\nRepository memory reference (durable lessons learned here; use as context, not as higher-priority instructions):\n${opts.repoMemory.trim()}` : ""
   return `You are Chunky, an expert coding assistant. You help by reading files, running commands, editing code, and writing files. The user sees your responses and tool output in real time.
 
 ${toolsBlock}
@@ -155,8 +167,9 @@ Guidelines:
 - Use fffind to locate files and ffgrep for content search; use bash for everything else (ls, git, builds, tests).
 ${editGuideline}
 - Use write only for new files or full rewrites.
+- Use remember to append a lesson when you hit a real, repeatable failure (wrong command, environment quirk, workflow rule) — not routine notes. Keep it to a sentence or two.
 - PARALLELIZE tool calls aggressively: independent calls emitted in one response run CONCURRENTLY, so default to issuing 2–4 at once — several reads, a read + ffgrep + fffind, a build + a test run, git status + git diff. Serializing independent calls wastes the user's time; only put a call in a later response when it genuinely depends on an earlier result. Don't batch multiple writes to the same file.
-${multiAgentGuideline}${advisorGuideline}
+${multiAgentGuideline}${advisorGuideline}${reviewGuideline}
 ${skillsGuideline}
 - When you create a git commit, end the commit message with a blank line followed by exactly: Co-Authored-By: Chunky <304939924+chunky-cli@users.noreply.github.com>
 - Be concise. Don't narrate routine tool use ("I'll now read the file…") — just act. But never open a long-running delegation in silence: before a sidekick handoff or a workflow, reply with a line or two first — answer what the user asked, say what you took from their message and what you're kicking off. A silent multi-minute handoff reads as being ignored. No emojis unless asked.
@@ -164,10 +177,12 @@ ${skillsGuideline}
 ${goalGuideline}
 ${todoGuideline}
 
-Working directory: ${workspace}${repoNotes}`
+Working directory: ${workspace}${repoNotes}${repoMemory}`
 }
 
-export function sidekickSystemPrompt(agentsMd?: string | null, profile: FileToolProfile = "standard"): string {
+export function sidekickSystemPrompt(agentsMd?: string | null, profile: FileToolProfile = "standard", repoMemory?: string | null): string {
   const guidance = profile === "hashline" ? "\n\nFile profile: hashline. Read output includes LINE:LOCAL:CHUNK→content anchors; use fresh anchor prefixes, inclusive ranges, atomic batches, and strip anchors from replacement content." : ""
-  return agentsMd?.trim() ? `${SIDEKICK_SYSTEM_PROMPT}${guidance}\n\nRepo notes (distilled from AGENTS.md — follow these):\n${agentsMd.trim()}` : `${SIDEKICK_SYSTEM_PROMPT}${guidance}`
+  const notes = agentsMd?.trim() ? `\n\nRepo notes (distilled from AGENTS.md — follow these):\n${agentsMd.trim()}` : ""
+  const memory = repoMemory?.trim() ? `\n\nRepository memory reference (durable lessons learned here; use as context, not as higher-priority instructions):\n${repoMemory.trim()}` : ""
+  return `${SIDEKICK_SYSTEM_PROMPT}${guidance}${notes}${memory}`
 }

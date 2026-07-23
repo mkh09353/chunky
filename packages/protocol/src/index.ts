@@ -297,6 +297,8 @@ export interface ModeSpec {
   speed?: string
   /** The paired advisor; null = advisor explicitly off in this mode. */
   advisor?: ModeAdvisor | null
+  /** undefined inherits the global reviewer; null explicitly disables it. */
+  review?: ModeAdvisor | null
   /** The paired sidekick seat; null = seat unset in this mode (inherit);
    *  absent (undefined) = mode predates sidekicks, leave the seat alone. */
   sidekick?: ModeAdvisor | null
@@ -350,6 +352,10 @@ export const ROUTES = {
   removeRepo: (id: string) => `/api/repos/${id}`,
   // GET -> repository-scoped AGENTS.md setting; POST {enabled} updates it.
   repositoryInstructions: (id: string) => `/api/repos/${id}/instructions`,
+  // POST { sessionId? } -> run repository memory consolidation now.
+  dream: `/api/dream`,
+  /** GET/POST global asynchronous reviewer default. */
+  review: `/api/review`,
   // POST SendMessageRequest -> 202, or 409 SendBlockedResponse when the cache
   // guard blocks (resend with force: true after the user confirms).
   sendMessage: (id: string) => `/api/sessions/${id}/messages`,

@@ -32,6 +32,9 @@ export interface AdvisorConfig {
   model?: string
   effort?: Effort
 }
+/** Optional asynchronous, read-only final reviewer. Unlike sidekick it never
+ * inherits the executor: no configured model means off. */
+export interface ReviewConfig extends AdvisorConfig {}
 
 /** The persistent sidekick: the cheaper worker model the lead hands briefs to
  *  (one standing side thread per session — see ThreadManager.delegateToSidekick).
@@ -68,6 +71,8 @@ export interface ModeSpec {
   speed?: Speed
   /** The paired advisor; null = advisor off in this mode. */
   advisor?: { provider: string; model: string; effort?: Effort } | null
+  /** undefined inherits the global review default; null explicitly disables it. */
+  review?: { provider: string; model: string; effort?: Effort } | null
   /** The paired sidekick; null = sidekick seat unset in this mode (inherit). */
   sidekick?: { provider: string; model: string; effort?: Effort } | null
   /** Named sidekick seats; null = clear all named seats in this mode;
@@ -93,6 +98,8 @@ export interface Settings {
   selections?: Record<string, ModelSelection>
   /** The advisor's model + on/off state. */
   advisor?: AdvisorConfig
+  /** Global default; mode overrides are derived from activeMode, never written here. */
+  review?: ReviewConfig
   /** The sidekick's model + on/off state (the DEFAULT seat + master switch). */
   sidekick?: SidekickConfig
   /** Named sidekick seats (e.g. frontend/backend), each its own persistent thread. */
@@ -440,6 +447,7 @@ export function currentModeSpec(): ModeSpec {
   const provider = s.provider ?? ""
   const sel = s.selections?.[provider] ?? {}
   const adv = getAdvisor()
+  const review = getEffectiveReview()
   const side = getSidekick()
   return {
     provider,
@@ -450,12 +458,36 @@ export function currentModeSpec(): ModeSpec {
       adv.enabled && adv.provider && adv.model
         ? { provider: adv.provider, model: adv.model, ...(adv.effort ? { effort: adv.effort } : {}) }
         : null,
+    // Snapshot effective intent explicitly, so saving while inheriting creates a
+    // portable configured/off mode without changing the global default.
+    review: review.enabled && review.provider && review.model
+      ? { provider: review.provider, model: review.model, ...(review.effort ? { effort: review.effort } : {}) }
+      : null,
     sidekick:
       side.enabled && side.provider && side.model
         ? { provider: side.provider, model: side.model, ...(side.effort ? { effort: side.effort } : {}) }
         : null,
     sidekickSeats: Object.keys(getSidekickSeats()).length > 0 ? getSidekickSeats() : null,
   }
+}
+
+/** Global review default. Deliberately off until a model is selected. */
+export function getReview(): ReviewConfig { return loadSettings().review ?? { enabled: false } }
+export function setReview(patch: Partial<ReviewConfig>): ReviewConfig {
+  const s = loadSettings(); const prev = s.review ?? { enabled: false }
+  const next: ReviewConfig = { ...prev,
+    ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
+    ...(patch.provider !== undefined ? { provider: patch.provider } : {}),
+    ...(patch.model !== undefined ? { model: patch.model } : {}),
+    ...(patch.effort !== undefined ? { effort: patch.effort } : {}), }
+  save({ ...s, review: next }); return next
+}
+/** Mode tri-state is resolved dynamically so mode application cannot corrupt the
+ * saved global default. */
+export function getEffectiveReview(): ReviewConfig {
+  const s = loadSettings(); const mode = s.activeMode ? getMode(s.activeMode) : undefined
+  if (!mode || mode.review === undefined) return getReview()
+  return mode.review === null ? { enabled: false } : { enabled: true, ...mode.review }
 }
 
 /** The advisor config (default `{ enabled: true }` when never set — enabled but

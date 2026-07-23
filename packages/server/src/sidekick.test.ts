@@ -17,7 +17,7 @@ import { join } from "node:path"
 process.env.CHUNKY_SETTINGS = join(mkdtempSync(join(tmpdir(), "chunky-sidekick-")), "settings.json")
 
 import type { AgentEvent } from "@chunky/protocol"
-import { executorToolsFor } from "./agent.ts"
+import { executorToolsFor, getSidekickAgent, invalidateAgent } from "./agent.ts"
 import { listSidekickSeats, resolveSidekickSeat, sidekickFor, type AgentSelection } from "./providers/registry.ts"
 import { currentModeSpec, isValidSeatName, setSidekick, setSidekickSeat } from "./settings.ts"
 import { type AgentForSelection, ThreadManager } from "./threads.ts"
@@ -58,6 +58,17 @@ function assert(cond: boolean, msg: string): void {
 }
 
 async function main() {
+  // The default cached factory must treat memory as prompt-bearing identity rather
+  // than returning an agent built with a stale repository-memory snapshot.
+  const memorySelection: AgentSelection = Object.freeze({ provider: "codex", model: "gpt-5.5", effort: "low" })
+  invalidateAgent()
+  const noMemory = getSidekickAgent(memorySelection, process.cwd(), null, "sidekick-memory-test", null)
+  const withMemory = getSidekickAgent(memorySelection, process.cwd(), null, "sidekick-memory-test", "Use bun test.")
+  const sameMemory = getSidekickAgent(memorySelection, process.cwd(), null, "sidekick-memory-test", "Use bun test.")
+  assert(noMemory !== withMemory, "default sidekick factory cache key must include repo memory")
+  assert(withMemory === sameMemory, "default sidekick factory should cache the same repo-memory snapshot")
+  invalidateAgent()
+
   console.log("--- sidekickFor resolution: inherit / configured / disabled ---")
   // Never-configured default: enabled, no seat -> inherit the executor selection.
   const inherited = sidekickFor(EXECUTOR)

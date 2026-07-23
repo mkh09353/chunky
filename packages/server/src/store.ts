@@ -14,14 +14,18 @@ import { isIncognitoSession } from "./incognito.ts"
  *  the store keeps zero runtime provider dependencies). */
 export type PinnedSelection = AgentSelection
 export type UsageLedgerInput = {
-  sessionId: string; threadId?: string; role: "lead" | "sidekick" | "advisor" | "child"
+  sessionId: string; threadId?: string; role: "lead" | "sidekick" | "advisor" | "review" | "child"
   provider: string; model: string; effort?: string | null; delegationId?: string | null
   inputTokens?: number; outputTokens?: number; reasoningTokens?: number
   cacheReadTokens?: number; cacheWriteTokens?: number; ts?: number
 }
-export type DelegationInput = { id: string; sessionId: string; kind: "sidekick" | "child" | "workflow_agent"; seat?: string; provider: string; model: string; effort?: string; briefSnippet: string }
+export type DelegationInput = { id: string; sessionId: string; kind: "sidekick" | "review" | "child" | "workflow_agent"; seat?: string; provider: string; model: string; effort?: string; briefSnippet: string }
 
-const DB_PATH = process.env.CHUNKY_DB || "chunky.db"
+/** The durable path is fixed when this module opens its connection. Exporting it
+ * lets diagnostics/tests inspect that same database rather than a later-mutated
+ * process environment (test modules deliberately isolate settings paths). */
+export const durableDbPath = process.env.CHUNKY_DB || "chunky.db"
+const DB_PATH = durableDbPath
 const db = openSqlite(DB_PATH)
 // Incognito data is deliberately process-local. Keep a separate connection so
 // accidental SQL against the durable database cannot expose it.

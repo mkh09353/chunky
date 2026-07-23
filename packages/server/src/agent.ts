@@ -16,6 +16,7 @@ import { createAgent, summarizationMiddleware } from "langchain"
 import {
   activeSelection,
   advisorFor,
+  resolveReviewSelection,
   listSidekickSeats,
   resolveModel,
   selectionSignature,
@@ -30,7 +31,7 @@ import { snapshotSessionTasks } from "./tasks.ts"
 import { todoSummary } from "./todos.ts"
 import { formatSystemReminder } from "./system-reminder.ts"
 import { activeSidekickSummaries, runningChildSummaries } from "./threads.ts"
-import { ADVISOR_SYSTEM_PROMPT, sidekickSystemPrompt, buildSystemPrompt, type EditToolName } from "./prompt.ts"
+import { ADVISOR_SYSTEM_PROMPT, REVIEW_SYSTEM_PROMPT, sidekickSystemPrompt, buildSystemPrompt, type EditToolName } from "./prompt.ts"
 import {
   buildToolSearchMiddleware,
   portableToolSetFor,
@@ -62,6 +63,8 @@ import { resolveFileToolProfile } from "./settings.ts"
 import { hashlineRead, hashlineEdit } from "./tools/hashline/index.ts"
 import { browserTools } from "./tools/browser.ts"
 import { rateDelegate } from "./tools/rate-delegate.ts"
+import { remember } from "./tools/remember.ts"
+import { review } from "./tools/review.ts"
 
 export function makePostCompactionReminder() {
   let handledSummaryId: string | undefined
@@ -219,9 +222,10 @@ export function editToolNameForModel(modelId: string | undefined, providerId: st
  * from the executor (always-on + auto-suppress; see advisorFor).
  * Factored out so a test can assert seat presence without building a model.
  */
-export function executorToolsFor(selection: AgentSelection) {
+export function executorToolsFor(selection: AgentSelection, sessionId?: string) {
   const advisorSel = advisorFor(selection)
   const sidekickSel = sidekickFor(selection)
+  const reviewSel = resolveReviewSelection(sessionId)
   const tools = [
     ...fileToolsFor(selection.model, selection.provider),
     dualTool(bash),
@@ -234,6 +238,7 @@ export function executorToolsFor(selection: AgentSelection) {
     goto_definition,
     find_references,
     write,
+    remember,
     ...(sidekickSel ? [sidekick] : []),
     spawnThread,
     rateDelegate,
@@ -248,8 +253,9 @@ export function executorToolsFor(selection: AgentSelection) {
     ...skillTools,
     ...browserTools,
     ...(advisorSel ? [advisor] : []),
+    ...(reviewSel ? [review] : []),
   ]
-  return { tools, hasAdvisor: advisorSel != null, hasSidekick: sidekickSel != null }
+  return { tools, hasAdvisor: advisorSel != null, hasSidekick: sidekickSel != null, hasReview: reviewSel != null }
 }
 
 /** Max LangGraph steps per turn (a step ≈ one model call or tool node). LangGraph
@@ -264,8 +270,8 @@ export const RECURSION_LIMIT = Number(process.env.CHUNKY_RECURSION_LIMIT) || 500
  * native tool-search middleware config. Pure enough for unit tests — does not
  * call resolveModel / createAgent.
  */
-export function agentPlanFor(selection: AgentSelection) {
-  const { tools, hasAdvisor, hasSidekick } = executorToolsFor(selection)
+export function agentPlanFor(selection: AgentSelection, sessionId?: string) {
+  const { tools, hasAdvisor, hasSidekick, hasReview } = executorToolsFor(selection, sessionId)
   const sidekickSeats = listSidekickSeats()
   const nativeToolSearch = supportsNativeToolSearch(selection.provider, selection.model)
   const toolSearchConfig = toolSearchMiddlewareConfigFor(
@@ -277,6 +283,7 @@ export function agentPlanFor(selection: AgentSelection) {
     tools,
     hasAdvisor,
     hasSidekick,
+    hasReview,
     sidekickSeats,
     nativeToolSearch,
     /** Non-null only when gate is open and there is at least one deferred tool. */
@@ -295,11 +302,12 @@ export function buildAgent(
   _opts: BuildAgentOpts = {},
   agentsMd?: string | null,
   sessionId?: string,
+  repoMemory?: string | null,
 ) {
   const providerId = selection.provider
   const modelId = selection.model
   const model = resolveModel(selection, sessionId)
-  const plan = agentPlanFor(selection)
+  const plan = agentPlanFor(selection, sessionId)
   // TODO: prompt-caching middleware. langchain exports anthropicPromptCachingMiddleware,
   // but every current provider builds an OpenAI-compatible ChatOpenAI (zen/grok/codex),
   // not ChatAnthropic, so it would be a no-op here. Wire it in if/when an Anthropic
@@ -318,8 +326,10 @@ export function buildAgent(
       nativeToolSearch: plan.nativeToolSearch,
       portableToolSearch: providerId === "grok",
       hasSidekick: plan.hasSidekick,
+      hasReview: plan.hasReview,
       sidekickSeats: plan.sidekickSeats,
       agentsMd,
+      repoMemory,
     }),
     checkpointer: makeCheckpointer(),
     // Auto-compaction — the context-management half of Pi's efficiency win (a
@@ -365,11 +375,12 @@ export function getAgent(
   workspace: string = LAUNCH_WORKSPACE,
   agentsMd?: string | null,
   sessionId?: string,
+  repoMemory?: string | null,
 ): ReturnType<typeof buildAgent> {
-  const sig = `${selectionSignature(selection)}@@${workspace}@@${agentsMd ?? ""}@@${resolveFileToolProfile()}@@${sessionId ?? ""}`
+  const sig = `${selectionSignature(selection)}@@${workspace}@@${agentsMd ?? ""}@@${repoMemory ?? ""}@@${resolveFileToolProfile()}@@${sessionId ?? ""}`
   let a = agentCache.get(sig)
   if (!a) {
-    a = buildAgent(selection, workspace, {}, agentsMd, sessionId)
+    a = buildAgent(selection, workspace, {}, agentsMd, sessionId, repoMemory)
     agentCache.set(sig, a)
   }
   return a
@@ -406,6 +417,19 @@ export function buildAdvisorAgent(selection: AgentSelection, sessionId?: string)
   })
 }
 
+/** Detached reviewer agent: the exact read-only set, separate prompt and no
+ * thread-context tools, so recursive review/delegation is impossible. */
+export function buildReviewAgent(selection: AgentSelection, sessionId?: string) {
+  const model = resolveModel(selection, sessionId)
+  return createAgent({ model, tools: [resolveFileToolProfile() === "hashline" ? hashlineRead : read, bash, fffind, ffgrep, goto_definition, find_references], systemPrompt: REVIEW_SYSTEM_PROMPT, checkpointer: makeCheckpointer() })
+}
+export function getReviewAgent(selection: AgentSelection = activeSelection(), sessionId?: string): ReturnType<typeof buildAgent> {
+  const sig = "review::" + selectionSignature(selection) + "@@" + resolveFileToolProfile() + "@@" + (sessionId ?? "")
+  let a = agentCache.get(sig)
+  if (!a) { a = buildReviewAgent(selection, sessionId) as unknown as ReturnType<typeof buildAgent>; agentCache.set(sig, a) }
+  return a
+}
+
 /** The advisor agent for one selection, cached in the SAME agentCache (keyed
  *  "advisor::<sig>") so invalidateAgent() clears it too. Its prompt embeds no
  *  working directory (tools resolve the run's workspace per-call), so one
@@ -429,13 +453,13 @@ export function getAdvisorAgent(selection: AgentSelection = activeSelection(), s
  * persistent side thread on a stable thread_id, so the checkpointer gives it
  * continuity across handoffs — that's what makes follow-up briefs cheap.
  */
-export function buildSidekickAgent(selection: AgentSelection, agentsMd?: string | null, sessionId?: string) {
+export function buildSidekickAgent(selection: AgentSelection, agentsMd?: string | null, sessionId?: string, repoMemory?: string | null) {
   const model = resolveModel(selection, sessionId)
   const [fileRead, fileEdit] = sidekickFileToolsFor(selection.model, selection.provider)
   return createAgent({
     model,
     tools: [fileRead, fileEdit, bash, fffind, ffgrep, goto_definition, find_references, write],
-    systemPrompt: sidekickSystemPrompt(agentsMd, resolveFileToolProfile()),
+    systemPrompt: sidekickSystemPrompt(agentsMd, resolveFileToolProfile(), repoMemory),
     checkpointer: makeCheckpointer(),
     middleware: [
       summarizationMiddleware({
@@ -450,15 +474,15 @@ export function buildSidekickAgent(selection: AgentSelection, agentsMd?: string 
 /** The sidekick agent for one selection, cached in the SAME agentCache (keyed
  *  "sidekick::<sig>") so invalidateAgent() clears it too. ThreadManager's default
  *  sidekickAgentFor injectable. */
-export function getSidekickAgent(selection: AgentSelection = activeSelection(), _workspace?: string, agentsMd?: string | null, sessionId?: string): ReturnType<typeof buildAgent> {
+export function getSidekickAgent(selection: AgentSelection = activeSelection(), _workspace?: string, agentsMd?: string | null, sessionId?: string, repoMemory?: string | null): ReturnType<typeof buildAgent> {
   // Include the session workspace as well as the instruction text: identical
   // repo notes must not make a tool-bearing agent instance cross repository
   // boundaries (tools resolve cwd at runtime, but the prompt/checkpointer do
   // not represent that boundary).
-  const sig = "sidekick::" + selectionSignature(selection) + "@@" + (_workspace ?? LAUNCH_WORKSPACE) + "@@" + resolveFileToolProfile() + "@@" + (agentsMd ?? "") + "@@" + (sessionId ?? "")
+  const sig = "sidekick::" + selectionSignature(selection) + "@@" + (_workspace ?? LAUNCH_WORKSPACE) + "@@" + resolveFileToolProfile() + "@@" + (agentsMd ?? "") + "@@" + (repoMemory ?? "") + "@@" + (sessionId ?? "")
   let a = agentCache.get(sig)
   if (!a) {
-    a = buildSidekickAgent(selection, agentsMd, sessionId) as unknown as ReturnType<typeof buildAgent>
+    a = buildSidekickAgent(selection, agentsMd, sessionId, repoMemory) as unknown as ReturnType<typeof buildAgent>
     agentCache.set(sig, a)
   }
   return a

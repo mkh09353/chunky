@@ -55,6 +55,9 @@ export interface ThreadSpawner {
     seat?: string
   }): Promise<string>
 
+  /** Starts a detached read-only review; it must outlive the invoking turn. */
+  launchReview?(opts: { callerThreadId: string; brief: string; pointers?: string }): string
+
   /**
    * Run a dynamic-workflow `script` on behalf of `callerThreadId`: a JS
    * orchestration that fans out many sub-agents (each a real child thread) via the

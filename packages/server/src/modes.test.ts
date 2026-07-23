@@ -11,7 +11,7 @@ try {
   /* not there yet */
 }
 
-const { listModes, getMode, saveMode, deleteMode, currentModeSpec, setPersistedProvider, setSelectionFor, setAdvisor } =
+const { listModes, getMode, saveMode, deleteMode, currentModeSpec, setPersistedProvider, setSelectionFor, setAdvisor, setActiveMode, setReview, getEffectiveReview } =
   await import("./settings.ts")
 
 describe("modes", () => {
@@ -38,16 +38,34 @@ describe("modes", () => {
     deleteMode("solo-test")
   })
 
+  test("review mode override inherits, pins, or disables without mutating global default", () => {
+    setReview({ enabled: true, provider: "codex", model: "gpt-5.6-sol", effort: "high" })
+    saveMode("review-inherit", { provider: "zen", model: "glm-5.2" })
+    saveMode("review-off", { provider: "zen", model: "glm-5.2", review: null })
+    saveMode("review-pinned", { provider: "zen", model: "glm-5.2", review: { provider: "grok", model: "grok-4.5" } })
+    setActiveMode("review-inherit")
+    expect(getEffectiveReview()).toMatchObject({ enabled: true, provider: "codex", model: "gpt-5.6-sol" })
+    setActiveMode("review-off")
+    expect(getEffectiveReview()).toEqual({ enabled: false })
+    setActiveMode("review-pinned")
+    expect(getEffectiveReview()).toMatchObject({ enabled: true, provider: "grok", model: "grok-4.5" })
+    setActiveMode(undefined)
+    expect(getEffectiveReview()).toMatchObject({ enabled: true, provider: "codex", model: "gpt-5.6-sol" })
+    for (const name of ["review-inherit", "review-off", "review-pinned"]) deleteMode(name)
+  })
+
   test("currentModeSpec snapshots the active pairing", () => {
     setPersistedProvider("grok")
     setSelectionFor("grok", { model: "grok-4.5", effort: "high" })
     setAdvisor({ enabled: true, provider: "codex", model: "gpt-5.6-sol", effort: "xhigh" })
+    setReview({ enabled: true, provider: "anthropic", model: "sonnet", effort: "high" })
     const spec = currentModeSpec()
     expect(spec).toMatchObject({
       provider: "grok",
       model: "grok-4.5",
       effort: "high",
       advisor: { provider: "codex", model: "gpt-5.6-sol", effort: "xhigh" },
+      review: { provider: "anthropic", model: "sonnet", effort: "high" },
     })
     setAdvisor({ enabled: false })
     expect(currentModeSpec().advisor).toBeNull()

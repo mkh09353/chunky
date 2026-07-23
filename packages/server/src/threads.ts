@@ -11,9 +11,10 @@ import { AsyncLocalStorageProviderSingleton } from "@langchain/core/singletons"
 import type { AgentEvent } from "@chunky/protocol"
 import type { Emit } from "./event-emitter.ts"
 import { translateStream } from "./run.ts"
-import { getAdvisorAgent, getAgent, getSidekickAgent, RECURSION_LIMIT } from "./agent.ts"
-import { ADVISOR_SYSTEM_PROMPT, sidekickSystemPrompt } from "./prompt.ts"
+import { getAdvisorAgent, getAgent, getReviewAgent, getSidekickAgent, RECURSION_LIMIT } from "./agent.ts"
+import { ADVISOR_SYSTEM_PROMPT, REVIEW_SYSTEM_PROMPT, sidekickSystemPrompt } from "./prompt.ts"
 import { distilledAgentsMd } from "./agents-md.ts"
+import { readRepoMemory } from "./memory.ts"
 import {
   activeSelection,
   childSelection,
@@ -21,6 +22,7 @@ import {
   listSidekickSeats,
   providerRuntime,
   resolveAdvisorSelection,
+  resolveReviewSelection,
   resolveSidekickSeat,
   sidekickFor,
   type AgentSelection,
@@ -35,6 +37,8 @@ import { workflowRouteResolver } from "./workflow/router.ts"
 import { streamWithCheckpointRecovery } from "./checkpoint-recovery.ts"
 import { createDelegateWatchdog } from "./watchdog.ts"
 import { Store } from "./store.ts"
+import { appendReminder } from "./tasks.ts"
+import { routeBackgroundNotice } from "./background-dispatch.ts"
 
 /** Reasoning-effort cap for `big`-tier workflow agents: keep a lower configured
  *  effort, clamp anything at/above medium (or unset) to medium. */
@@ -50,7 +54,7 @@ export interface StreamableAgent {
   stream(...args: any[]): Promise<AsyncIterable<unknown>>
 }
 
-export type AgentForSelection = (selection: AgentSelection, workspace: string, agentsMd?: string | null, sessionId?: string) => StreamableAgent
+export type AgentForSelection = (selection: AgentSelection, workspace: string, agentsMd?: string | null, sessionId?: string, repoMemory?: string | null) => StreamableAgent
 
 /** Per-session advisor-consult tally, keyed by root session id. A fresh
  *  ThreadManager is built per turn (run.ts), so this lives module-level to
@@ -93,11 +97,13 @@ export class ThreadManager implements ThreadSpawner {
   }
   private readonly agentFor: AgentForSelection
   private readonly advisorAgentFor: AgentForSelection
+  private readonly reviewAgentFor: AgentForSelection
   private readonly sidekickAgentFor: AgentForSelection
   /** Injected agent factories own their own readiness contract. Only the real
    *  provider-backed factories should consult Chunky's persisted OAuth state. */
   private readonly preflightAgentProvider: boolean
   private readonly preflightAdvisorProvider: boolean
+  private readonly preflightReviewProvider: boolean
   private readonly preflightSidekickProvider: boolean
   private readonly selections = new Map<string, AgentSelection>()
   /** The session's workspace: every child thread and advisor consult runs here —
@@ -121,14 +127,17 @@ export class ThreadManager implements ThreadSpawner {
     workspace: string = LAUNCH_WORKSPACE,
     abort?: AbortController,
     sidekickAgentFor: AgentForSelection = getSidekickAgent,
+    reviewAgentFor: AgentForSelection = getReviewAgent,
   ) {
     this.emit = emit
     this.rootId = rootId
     this.agentFor = agentFor
     this.advisorAgentFor = advisorAgentFor
+    this.reviewAgentFor = reviewAgentFor
     this.sidekickAgentFor = sidekickAgentFor
     this.preflightAgentProvider = agentFor === getAgent
     this.preflightAdvisorProvider = advisorAgentFor === getAdvisorAgent
+    this.preflightReviewProvider = reviewAgentFor === getReviewAgent
     this.preflightSidekickProvider = sidekickAgentFor === getSidekickAgent
     this.workspace = workspace
     this.abort = abort
@@ -422,6 +431,71 @@ export class ThreadManager implements ThreadSpawner {
     return ThreadManager.nonEmptyReport(finalText, "advisor")
   }
 
+  /** Launch a fresh, detached reviewer. Unlike advisor/sidekick, review is
+   * deliberately stateless and never awaited by the calling tool turn. */
+  launchReview(opts: { callerThreadId: string; brief: string; pointers?: string }): string {
+    const reviewSel = resolveReviewSelection(this.rootId)
+    if (!reviewSel) return "error: no reviewer is configured — ask the user to configure one."
+    try { assertSelectionAllowed(this.rootId, reviewSel) } catch (err) { return `error: ${(err as Error).message}` }
+
+    const reviewId = randomUUID()
+    const reviewThreadId = `${this.rootId}:review:${reviewId}`
+    const delegationId = randomUUID()
+    Store.createDelegation({ id: delegationId, sessionId: this.rootId, kind: "review", provider: reviewSel.provider, model: reviewSel.model ?? "unknown", effort: reviewSel.effort ?? undefined, briefSnippet: opts.brief })
+    this.emit({ type: "thread.spawn", threadId: reviewThreadId, parentThreadId: opts.callerThreadId === this.rootId ? null : opts.callerThreadId, title: "Review", model: reviewSel.model })
+    this.emit({ type: "thread.status", threadId: reviewThreadId, status: "running", title: "Review" })
+
+    void this.runReview({ reviewId, reviewThreadId, delegationId, selection: reviewSel, brief: opts.brief, pointers: opts.pointers })
+    return `review launched: ${reviewId}. Continue verification; findings will arrive as a session reminder.`
+  }
+
+  private async runReview(opts: { reviewId: string; reviewThreadId: string; delegationId: string; selection: AgentSelection; brief: string; pointers?: string }): Promise<void> {
+    const { reviewId, reviewThreadId, delegationId, selection, brief, pointers } = opts
+    const content = pointers ? `Review this completed change.\n\nBrief:\n${brief}\n\nFocus / pointers:\n${pointers}` : `Review this completed change.\n\nBrief:\n${brief}`
+    let report = ""
+    let ok = false
+    const dog = createDelegateWatchdog({ emit: this.emit, label: "review", parent: this.abort })
+    try {
+      if (this.preflightReviewProvider) await getProvider(selection.provider)?.ensureAuth?.()
+      if (providerRuntime(selection.provider) === "anthropic-sdk") {
+        const { runAnthropicAgent } = await import("./anthropic-runner.ts")
+        report = await runAnthropicAgent({
+          selection, threadId: reviewThreadId, prompt: content, emit: dog.emit, eventThreadId: reviewThreadId,
+          freshSession: true, systemPrompt: REVIEW_SYSTEM_PROMPT,
+          allowedTools: ["mcp__chunky__read", "mcp__chunky__bash", "mcp__chunky__fffind", "mcp__chunky__ffgrep"],
+          workspace: this.workspace, abort: dog.abort,
+          usageContext: { sessionId: this.rootId, role: "review", delegationId },
+        })
+      } else {
+        const stream = await AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () =>
+          streamWithCheckpointRecovery(this.reviewAgentFor(selection, this.workspace, undefined, this.rootId),
+            { messages: [{ role: "user", content }] },
+            { configurable: { thread_id: reviewThreadId, workspace: this.workspace }, streamMode: ["updates", "messages"], recursionLimit: RECURSION_LIMIT, signal: dog.abort.signal } as any),
+        )
+        report = await translateStream(stream, reviewThreadId, dog.emit, undefined, undefined, { sessionId: this.rootId, selection, role: "review", delegationId })
+      }
+      report = ThreadManager.nonEmptyReport(report, "reviewer")
+      ok = !report.startsWith("error:")
+    } catch (err) {
+      const message = dog.timedOut() ? dog.timeoutMessage() : ((err as Error)?.message ?? String(err))
+      this.emit({ type: "error", message, threadId: reviewThreadId } as AgentEvent)
+      report = `error: ${message}`
+    } finally {
+      dog.dispose()
+      Store.completeDelegation(delegationId, ok)
+      this.emit({ type: "thread.status", threadId: reviewThreadId, status: "idle", title: "Review" })
+      const reminder = `Review ${reviewId} finished. Findings:\n${report}`
+      // Reviews outlive the initiating turn, but the process-global dispatcher
+      // owns the session runner and remains available after this manager is
+      // disposed. Wake an idle lead with the complete actionable report; queue
+      // the established reminder unchanged while it is busy.
+      const wakePrompt = `${reminder}\n\nAssess these review findings and fix any valid issues before finalizing.`
+      if (routeBackgroundNotice(this.rootId, wakePrompt, "Review finished; assess the findings before finalizing.", "review") === "reminder") {
+        appendReminder(this.rootId, reminder)
+      }
+    }
+  }
+
   /**
    * Hand a brief to the sidekick and return its report. Like consultAdvisor,
    * this runs on a STABLE thread id (`${rootId}:sidekick`, never randomUUID):
@@ -487,6 +561,7 @@ export class ThreadManager implements ThreadSpawner {
     const dog = createDelegateWatchdog({ emit: this.emit, label: "sidekick", parent: this.abort })
     try {
       const agentsMd = await distilledAgentsMd(this.workspace, rootSelection, this.rootId)
+      const repoMemory = readRepoMemory(this.workspace, this.rootId)
       if (providerRuntime(sidekickSel.provider) === "anthropic-sdk") {
         // Anthropic sidekicks run via the SDK runtime with the worker prompt +
         // the hands-on toolset (read/bash/search/write/edit — no delegation
@@ -498,7 +573,7 @@ export class ThreadManager implements ThreadSpawner {
           prompt: opts.brief,
           emit: dog.emit,
           eventThreadId: sidekickThreadId,
-          systemPrompt: sidekickSystemPrompt(agentsMd),
+          systemPrompt: sidekickSystemPrompt(agentsMd, "standard", repoMemory),
           allowedTools: [
             "mcp__chunky__read",
             "mcp__chunky__bash",
@@ -517,7 +592,7 @@ export class ThreadManager implements ThreadSpawner {
         // tokens stream only through its OWN iterator, tagged with its threadId.
         const stream = await AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () =>
           streamWithCheckpointRecovery(
-            this.sidekickAgentFor(sidekickSel, this.workspace, agentsMd, this.rootId),
+            this.sidekickAgentFor(sidekickSel, this.workspace, agentsMd, this.rootId, repoMemory),
             { messages: [{ role: "user", content: opts.brief }] },
             {
               configurable: { thread_id: sidekickThreadId, workspace: this.workspace },

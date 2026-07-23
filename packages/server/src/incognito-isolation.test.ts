@@ -7,7 +7,7 @@ import { markSessionIncognito, clearIncognitoSessions, assertSelectionAllowed } 
 import { saveCustomProviders } from "./settings.ts"
 import { resolveModel } from "./providers/registry.ts"
 import { AuthStore } from "./providers/auth-store.ts"
-import { Store } from "./store.ts"
+import { durableDbPath, Store } from "./store.ts"
 import { IncognitoCheckpointSaver, registerIncognitoThread } from "./bun-sqlite-saver.ts"
 
 afterEach(() => clearIncognitoSessions())
@@ -24,9 +24,16 @@ test("dual store keeps incognito data out of durable sqlite", () => {
   expect(Store.history(id)).toHaveLength(1)
   expect(Store.list().some((s) => s.sessionId === id)).toBe(true)
   expect(Store.usageRows(id)).toHaveLength(1)
-  const db = new Database(process.env.CHUNKY_DB || "chunky.db", { readonly: true })
-  for (const table of ["sessions", "events", "session_turns", "usage_log", "delegations", "todos"]) {
-    expect((db.query(`SELECT COUNT(*) n FROM ${table} WHERE ${table === "sessions" ? "id" : "session_id"}=?`).get(id) as any).n).toBe(0)
+  // Store fixes its durable connection at module load. Other test modules may
+  // subsequently swap and remove CHUNKY_DB paths, so inspect Store's actual
+  // durable backing file rather than the mutable environment variable.
+  const db = new Database(durableDbPath, { readonly: true })
+  try {
+    for (const table of ["sessions", "events", "session_turns", "usage_log", "delegations", "todos"]) {
+      expect((db.query(`SELECT COUNT(*) n FROM ${table} WHERE ${table === "sessions" ? "id" : "session_id"}=?`).get(id) as any).n).toBe(0)
+    }
+  } finally {
+    db.close()
   }
 })
 

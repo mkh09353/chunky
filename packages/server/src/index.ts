@@ -39,6 +39,7 @@ import {
   listModelsFor,
   listProviders,
   resolveAdvisorSelection,
+  resolveReviewSelection,
   selectionOf,
   setActiveProviderId,
   setSelection,
@@ -53,6 +54,8 @@ import {
   currentModeSpec,
   deleteMode,
   getAdvisor,
+  getEffectiveReview,
+  getReview,
   getCacheGuardTokens,
   getMode,
   getOnboardedAt,
@@ -68,6 +71,7 @@ import {
   setActiveMode,
   saveCustomProviders,
   setAdvisor,
+  setReview,
   setCacheGuardTokens,
   setSidekick,
   setSidekickSeat,
@@ -77,6 +81,7 @@ import {
   agentsMdEnabled,
   setAgentsMdEnabled,
   type AdvisorConfig,
+  type ReviewConfig,
   type ModeSpec,
   type SidekickConfig,
 } from "./settings.ts"
@@ -104,6 +109,7 @@ import { manageSkillRepos, type SkillRepoMutationAction } from "./skill-repos.ts
 import { resetTasks, liveTaskCounts } from "./tasks.ts"
 import { installBackgroundDispatcher } from "./background-dispatch.ts"
 import { databaseErrorMessage } from "./sqlite.ts"
+import { dreamRepoMemory, memoryRepoKey } from "./memory.ts"
 import {
   canonicalWorkspace,
   removeDiscoveryRecordIfOwned,
@@ -133,8 +139,27 @@ const queueBusy = new Set<string>()
 // that root-turn identity across the two callbacks.
 const busTurns = new Map<string, number[]>()
 const encoder = new TextEncoder()
+const dreamTimers = new Map<string, ReturnType<typeof setTimeout>>()
+const DREAM_IDLE_MS = 10 * 60_000
 
 let shuttingDown = false
+
+function scheduleDream(sessionId: string): void {
+  if (isIncognitoSession(sessionId)) return
+  const workspace = Store.workspaceOf(sessionId)
+  if (!workspace) return
+  const key = memoryRepoKey(workspace)
+  const old = dreamTimers.get(key)
+  if (old) clearTimeout(old)
+  dreamTimers.set(key, setTimeout(() => {
+    dreamTimers.delete(key)
+    if (isIncognitoSession(sessionId) || [...running.keys()].some((id) => {
+      const other = Store.workspaceOf(id)
+      return other && memoryRepoKey(other) === key
+    })) return
+    void dreamRepoMemory(workspace, effectiveSessionSelection(sessionId), sessionId)
+  }, DREAM_IDLE_MS))
+}
 
 /** The desktop app's built-in browser pane (CDP endpoint), as announced over
  *  POST ROUTES.appBrowser. Null until an app checks in. Process-local by
@@ -234,6 +259,12 @@ function startRun(
   options?: { suppressCacheWarning?: boolean },
   turn?: number,
 ): Promise<void> {
+  const workspace = Store.workspaceOf(sessionId)
+  if (workspace) {
+    const key = memoryRepoKey(workspace)
+    const timer = dreamTimers.get(key)
+    if (timer) { clearTimeout(timer); dreamTimers.delete(key) }
+  }
   const ac = new AbortController()
   running.set(sessionId, ac)
   const done = runAgent(sessionId, text, (ev) => emitTo(sessionId, ev), images, ac, {
@@ -255,6 +286,7 @@ function startRun(
       if (turn != null) Store.completeTurn(sessionId, turn, anchorLatestCheckpoint(sessionId, turn))
       if (running.get(sessionId) === ac) running.delete(sessionId)
       if (runDone.get(sessionId) === done) runDone.delete(sessionId)
+      scheduleDream(sessionId)
       drainQueue(sessionId)
       queueBusy.delete(sessionId)
       const leftovers = interjections.get(sessionId)?.drainAll() ?? []
@@ -361,9 +393,9 @@ installSessionBus({
 // context: their wake turns belong exclusively to their owning session.
 installBackgroundDispatcher({
   isRunning: (sessionId) => running.has(sessionId),
-  wake(sessionId, prompt, shownText) {
+  wake(sessionId, prompt, shownText, from) {
     const turn = beginUserTurn(sessionId, shownText)
-    emitTo(sessionId, { type: "message.user", text: shownText, from: "monitor" })
+    emitTo(sessionId, { type: "message.user", text: shownText, from: from ?? "monitor" })
     void AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () => startRun(sessionId, prompt, undefined, undefined, turn))
   },
   changed(sessionId) { emitTo(sessionId, { type: "background.changed", sessionId, ...liveTaskCounts(sessionId) }) },
@@ -747,6 +779,19 @@ const server = Bun.serve({
     }
 
     // GET /api/advisor -> { config, active } (the always-on advisor's config + readiness)
+    if (req.method === "POST" && pathname === ROUTES.dream) {
+      let body: { sessionId?: unknown } = {}
+      try { body = (await req.json()) as typeof body } catch { return json({ error: "invalid JSON body" }, 400) }
+      const sessionId = typeof body.sessionId === "string" ? body.sessionId : undefined
+      const workspace = sessionId ? Store.workspaceOf(sessionId) : activeRepo()?.path
+      if (!workspace) return json({ error: "unknown session or repository" }, 404)
+      if (sessionId && isIncognitoSession(sessionId)) return json({ error: "dreaming is unavailable for incognito sessions" }, 403)
+      const selection = sessionId ? effectiveSessionSelection(sessionId) : activeSelection()
+      const ran = await dreamRepoMemory(workspace, selection, sessionId, true)
+      return json({ ran })
+    }
+
+    // GET /api/advisor -> { config, active } (the always-on advisor's config + readiness)
     if (req.method === "GET" && pathname === "/api/advisor") {
       return json({ config: getAdvisor(), active: resolveAdvisorSelection() != null })
     }
@@ -770,6 +815,24 @@ const server = Bun.serve({
       setAdvisor(patch)
       invalidateAgent()
       return json({ config: getAdvisor(), active: resolveAdvisorSelection() != null })
+    }
+
+    // Global reviewer default. Active mode overrides are intentionally read-only
+    // here: configuring the default must not overwrite a saved mode's intent.
+    if (req.method === "GET" && pathname === ROUTES.review) {
+      return json({ config: getReview(), effective: getEffectiveReview(), active: resolveReviewSelection() != null })
+    }
+    if (req.method === "POST" && pathname === ROUTES.review) {
+      let body: { enabled?: unknown; provider?: unknown; model?: unknown; effort?: unknown }
+      try { body = (await req.json()) as typeof body } catch { return json({ error: "invalid JSON body" }, 400) }
+      const patch: Partial<ReviewConfig> = {}
+      if (typeof body.enabled === "boolean") patch.enabled = body.enabled
+      if (typeof body.provider === "string") patch.provider = body.provider
+      if (typeof body.model === "string") patch.model = body.model
+      if (isEffort(body.effort)) patch.effort = body.effort
+      setReview(patch)
+      invalidateAgent()
+      return json({ config: getReview(), effective: getEffectiveReview(), active: resolveReviewSelection() != null })
     }
 
     // GET /api/sidekick -> { config, seats } (the default seat + master switch,
@@ -866,7 +929,8 @@ const server = Bun.serve({
         if (!spec) return json({ error: `unknown mode "${name}"` }, 404)
         if (!getProvider(spec.provider)) return json({ error: `mode "${name}" uses unknown provider "${spec.provider}"` }, 400)
         try { validateIncognitoMode(spec) } catch (err) { return json({ error: (err as Error).message }, 400) }
-        setActiveMode(spec.incognito ? name : undefined)
+        // activeMode drives review's tri-state override for ordinary modes too.
+        setActiveMode(name)
         setActiveProviderId(spec.provider)
         setSelection(spec.provider, { model: spec.model, effort: spec.effort, speed: spec.speed })
         if (spec.advisor) {
@@ -898,6 +962,7 @@ const server = Bun.serve({
           speed: sel.speed ?? null,
           advisor: getAdvisor(),
           advisorActive: resolveAdvisorSelection() != null,
+          review: { config: getReview(), effective: getEffectiveReview(), active: resolveReviewSelection() != null },
           sidekick: getSidekick(),
           sidekickSeats: getSidekickSeats(),
         })

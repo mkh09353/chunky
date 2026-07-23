@@ -16,6 +16,7 @@ import { chatOptionsFor } from "./model-options.ts"
 import { assertSelectionAllowed, incognitoAllowlistFor, isIncognitoSession, providerScope } from "../incognito.ts"
 import {
   getAdvisor,
+  getEffectiveReview,
   getSidekick,
   getSidekickSeats,
   persistedProvider,
@@ -349,6 +350,15 @@ export function advisorFor(executor: AgentSelection): AgentSelection | null {
   if (!advisor) return null
   if (advisor.provider === executor.provider && advisor.model === executor.model) return null
   return advisor
+}
+
+/** Effective reviewer model after applying the active mode's tri-state override. */
+export function resolveReviewSelection(sessionId?: string): AgentSelection | null {
+  const cfg = getEffectiveReview()
+  if (!cfg.enabled || !cfg.provider || !cfg.model || !providers[cfg.provider]) return null
+  const selection = Object.freeze({ provider: cfg.provider, model: cfg.model, effort: cfg.effort, speed: undefined })
+  try { assertSelectionAllowed(sessionId ?? null, selection) } catch { return null }
+  return selection
 }
 
 // ---- Sidekick selection (the persistent worker side-thread model) ----

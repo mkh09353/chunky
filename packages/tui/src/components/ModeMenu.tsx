@@ -27,8 +27,7 @@ function prettyModel(id: string | null | undefined): string {
 const eff = (e?: string | null) => (e ? ` ${e}` : "")
 const effortParen = (e?: string | null) => (e ? ` (${e})` : "")
 
-/** Compact one-line trio preview for a row, e.g.
- *  `Fable low · ⚒ Luna xhigh · frontend=Opus · ✦ Sol`. Exported for testing. */
+/** Compact one-line mode preview. Exported for testing. */
 export function previewSpec(spec: ModeSpec): string {
   const parts = [`${prettyModel(spec.model)}${eff(spec.effort)}`]
   parts.push(`⚒ ${spec.sidekick ? `${prettyModel(spec.sidekick.model)}${eff(spec.sidekick.effort)}` : "inherit"}`)
@@ -38,6 +37,7 @@ export function previewSpec(spec: ModeSpec): string {
     }
   }
   parts.push(`✦ ${spec.advisor ? `${prettyModel(spec.advisor.model)}${eff(spec.advisor.effort)}` : "off"}`)
+  parts.push(`⚑ ${spec.review === undefined ? "inherit" : spec.review ? `${prettyModel(spec.review.model)}${eff(spec.review.effort)}` : "off"}`)
   return parts.join(" · ")
 }
 
@@ -59,7 +59,7 @@ function fmtSpec(spec: ModeSpec): string {
       : ""
   return `${prettyModel(spec.model)}${effortParen(spec.effort)} + sidekick ${
     spec.sidekick ? `${prettyModel(spec.sidekick.model)}${effortParen(spec.sidekick.effort)}` : "inherit"
-  }${seats} + advisor ${spec.advisor ? `${prettyModel(spec.advisor.model)}${effortParen(spec.advisor.effort)}` : "off"}`
+  }${seats} + advisor ${spec.advisor ? `${prettyModel(spec.advisor.model)}${effortParen(spec.advisor.effort)}` : "off"} + reviewer ${spec.review === undefined ? "inherit" : spec.review ? `${prettyModel(spec.review.model)}${effortParen(spec.review.effort)}` : "off"}`
 }
 
 /** The POST /api/modes/:name/apply response — carries the full trio so the
@@ -72,6 +72,7 @@ export interface ModeApplyPayload {
   speed?: string | null
   advisor?: { enabled?: boolean; provider?: string; model?: string; effort?: string }
   advisorActive?: boolean
+  review?: { config?: { enabled?: boolean; provider?: string; model?: string; effort?: string }; effective?: { enabled?: boolean; provider?: string; model?: string; effort?: string }; active?: boolean }
   sidekick?: { enabled?: boolean; provider?: string; model?: string; effort?: string }
   sidekickSeats?: Record<string, { provider: string; model: string; effort?: string }>
 }

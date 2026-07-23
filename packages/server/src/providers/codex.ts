@@ -221,6 +221,8 @@ function codexResponsesBody(bodyStr: string): string {
     const body = JSON.parse(bodyStr)
     // Codex CLI does not send max_output_tokens; the backend can reject it.
     delete body.max_output_tokens
+    // Let the model emit multiple tool calls per turn (LangChain omits the field).
+    if (body.parallel_tool_calls === undefined) body.parallel_tool_calls = true
     // Function tools: strict must be a boolean (LangChain emits null) — drop it.
     if (Array.isArray(body.tools)) {
       for (const t of body.tools) if (t && t.strict == null) delete t.strict
@@ -292,6 +294,8 @@ export function prepareCodexResponsesRequest(bodyStr: string, headers: Headers):
   delete body.tools
   delete body.instructions
   body.tool_choice = "auto"
+  // The backend hard-requires this: "X-OpenAI-Internal-Codex-Responses-Lite
+  // requires `parallel_tool_calls` to be false." (verified live 2026-07).
   body.parallel_tool_calls = false
   body.prompt_cache_key = LUNA_CODEX_SESSION_ID
   body.reasoning = {

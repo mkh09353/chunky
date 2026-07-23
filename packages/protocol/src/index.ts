@@ -56,8 +56,8 @@ export type AgentEvent =
       toModel?: string
     }
   /** A user turn, echoed by the server so it is persisted and replayed on
-   * resume. Clients render it as the user's own message (single source of
-   * truth — no optimistic local echo needed). `from` is set when the message
+   * resume. Live clients may render an optimistic local echo and suppress this
+   * same-session event to avoid a duplicate. `from` is set when the message
    * was injected by ANOTHER session via send_to_session (a short human label,
    * e.g. `fix tests (0f3a21c9)`) — clients render provenance instead of a
    * plain user bubble. */

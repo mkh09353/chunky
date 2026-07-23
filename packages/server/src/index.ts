@@ -26,7 +26,7 @@ import { effectiveSessionSelection, runAgent, type InputImage, type Interjection
 import { shipHandoffPrompt } from "./tools/ship.ts"
 import { Store } from "./store.ts"
 import { markSessionIncognito, validateIncognitoMode } from "./incognito.ts"
-import { restoreSnapshot, snapshotWorkspace } from "./shadow-git.ts"
+import { restoreSnapshot, snapshotWorkspace, snapshotWorkspaceAsync } from "./shadow-git.ts"
 import { createForkWorktree, removeForkWorktree } from "./worktree-fork.ts"
 import { anchorLatestCheckpoint, cloneThreadAtCheckpoint, rewindCheckpoints } from "./bun-sqlite-saver.ts"
 import { DEFAULT_MAX_TURNS, firstLine, goalKickoffPrompt, toSnapshot, type Goal } from "./goal.ts"
@@ -312,8 +312,11 @@ function dispatchRun(
  * degradation: the agent still runs, but that point is unavailable to rewind. */
 function beginUserTurn(sessionId: string, text: string): number {
   const workspace = Store.workspaceOf(sessionId) ?? LAUNCH_WORKSPACE
-  const snapshot = snapshotWorkspace(workspace, `refs/sessions/${sessionId}`)
-  return Store.startTurn(sessionId, text, snapshot)
+  const turn = Store.startTurn(sessionId, text, null)
+  void snapshotWorkspaceAsync(workspace, `refs/sessions/${sessionId}`).then((snapshot) => {
+    Store.setTurnSnapshot(sessionId, turn, snapshot)
+  })
+  return turn
 }
 
 function sessionIsBusy(sessionId: string): boolean {

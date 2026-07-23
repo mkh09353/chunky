@@ -4,7 +4,7 @@
 import { appendFileSync, existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join, resolve } from "node:path"
-import { spawnSync } from "node:child_process"
+import { spawn, spawnSync } from "node:child_process"
 import { repoId } from "./repos.ts"
 
 function shadowDir(workspace: string): string {
@@ -27,6 +27,40 @@ function withIndex<T>(workspace: string, fn: (index: string) => T): T {
   const dir = mkdtempSync(join(tmpdir(), "chunky-shadow-index-"))
   const index = join(dir, "index")
   try { return fn(index) } finally { rmSync(dir, { recursive: true, force: true }) }
+}
+
+/** Serialize async snapshots of a workspace. Each snapshot has its own index,
+ * but the lock keeps ref updates and worktree scans ordered for one workspace. */
+const snapshotLocks = new Map<string, Promise<void>>()
+
+async function withSnapshotLock<T>(workspace: string, fn: () => Promise<T>): Promise<T> {
+  const key = resolve(workspace)
+  const previous = snapshotLocks.get(key) ?? Promise.resolve()
+  let release!: () => void
+  const current = previous.then(() => new Promise<void>((done) => { release = done }))
+  snapshotLocks.set(key, current)
+  await previous
+  try {
+    return await fn()
+  } finally {
+    release()
+    if (snapshotLocks.get(key) === current) snapshotLocks.delete(key)
+  }
+}
+
+function gitAsync(sourceWorkspace: string, worktree: string, args: string[], index: string): Promise<string | null> {
+  const dir = shadowDir(sourceWorkspace)
+  return new Promise((done) => {
+    const child = spawn("git", args, {
+      cwd: worktree,
+      env: { ...process.env, GIT_DIR: dir, GIT_WORK_TREE: worktree, GIT_INDEX_FILE: index },
+      stdio: ["ignore", "pipe", "ignore"],
+    })
+    let stdout = ""
+    child.stdout.on("data", (chunk) => { stdout += chunk })
+    child.once("error", () => done(null))
+    child.once("close", (code) => done(code === 0 ? stdout.trim() : null))
+  })
 }
 
 function ensureRepo(workspace: string, index: string): boolean {
@@ -56,6 +90,27 @@ export function snapshotWorkspace(workspace: string, refName: string): string | 
     const commit = git(workspace, workspace, ["-c", "user.name=Chunky", "-c", "user.email=chunky@local", "commit-tree", tree, "-m", "Chunky snapshot"], index)
     if (!commit || git(workspace, workspace, ["update-ref", refName, commit], index) == null) return null
     return commit
+  })
+}
+
+/** Asynchronous counterpart for message turns. It yields before doing any
+ * filesystem work, keeping snapshotting entirely off the POST critical path. */
+export async function snapshotWorkspaceAsync(workspace: string, refName: string): Promise<string | null> {
+  await Promise.resolve()
+  return withSnapshotLock(workspace, async () => {
+    const dir = mkdtempSync(join(tmpdir(), "chunky-shadow-index-"))
+    const index = join(dir, "index")
+    try {
+      if (!ensureRepo(workspace, index)) return null
+      if (await gitAsync(workspace, workspace, ["add", "-A"], index) == null) return null
+      const tree = await gitAsync(workspace, workspace, ["write-tree"], index)
+      if (!tree) return null
+      const commit = await gitAsync(workspace, workspace, ["-c", "user.name=Chunky", "-c", "user.email=chunky@local", "commit-tree", tree, "-m", "Chunky snapshot"], index)
+      if (!commit || await gitAsync(workspace, workspace, ["update-ref", refName, commit], index) == null) return null
+      return commit
+    } finally {
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 }
 

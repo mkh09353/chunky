@@ -27,7 +27,7 @@ import {
 } from "@chunky/protocol"
 import { mockRun } from "@chunky/protocol/mock"
 import { mockThreadsRun } from "./mockThreads.js"
-import { initialState, pushUser, reduce, type TranscriptState } from "./transcript.js"
+import { initialState, popUser, pushUser, reduce, type TranscriptState } from "./transcript.js"
 import { abortableSleep, isIntentionalAbort, reconnectDelay, retryableHttpMessage } from "./reconnect.js"
 import { ACCENT, BORDER, setIncognitoTheme, WARNING } from "./theme.js"
 import { WelcomeBanner } from "./components/WelcomeBanner.js"
@@ -578,9 +578,9 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     void refreshSidekick()
   }, [refreshAdvisor, refreshSidekick])
 
-  // POST one user message to the live server. On a cache-guard 409 the send is
-  // parked in pendingSend (nothing ran server-side); otherwise echo the user
-  // line locally and start the turn timer.
+  // POST one user message to the live server. Echo immediately so accepting a
+  // turn (which may snapshot a large workspace) never delays the transcript.
+  // A cache-guard rejection rolls that echo back and parks the message instead.
   const postMessage = useCallback(
     async (text: string, shown: string, images: ClipboardImage[], force: boolean, steer = false, skill?: string | null, delivery?: "interject" | "queue") => {
       const id = sessionIdRef.current
@@ -592,6 +592,9 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       // local pushUser below is the echo, so the server's from-less message.user
       // for this send must not render too.
       resumeReplayRef.current = false
+      const localId = `${Date.now()}-${Math.random()}`
+      setState((s) => pushUser(s, shown, localId))
+      setStartedAt(Date.now())
       try {
         const res = await fetch(baseUrl + ROUTES.sendMessage(id), {
           method: "POST",
@@ -607,13 +610,14 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         })
         if (res.status === 409) {
           const body = (await res.json()) as SendBlockedResponse
+          setState((s) => popUser(s, localId))
           setPendingSend({ text, shown, images, warning: body.warning, guardTokens: body.guardTokens })
           return
         }
-        setState((s) => pushUser(s, shown))
-        setStartedAt(Date.now())
+        if (!res.ok) throw new Error(`HTTP ${res.status}`)
         setCacheCold(null)
       } catch (err) {
+        setState((s) => popUser(s, localId))
         apply({ type: "error", message: `send failed: ${String(err)}` })
       }
     },
@@ -710,8 +714,8 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         for await (const ev of gen) apply(ev)
         return
       }
-      // The user line is echoed only once the server ACCEPTS: a cache-guard 409
-      // parks the message instead, and nothing should look sent.
+      // postMessage echoes immediately, then rolls the row back if the cache
+      // guard parks the message instead.
       const skill = pendingSkill
       setPendingSkill(null)
       await postMessage(text, shown, images, false, opts?.delivery === "steer", skill)

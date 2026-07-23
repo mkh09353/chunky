@@ -10,7 +10,7 @@ export const MAIN = "main"
 
 export type Item =
   /** `from` marks a message injected by ANOTHER session via send_to_session. */
-  | { kind: "user"; text: string; from?: string }
+  | { kind: "user"; text: string; from?: string; localId?: string }
   | { kind: "assistant"; text: string; streaming: boolean; endReason?: MessageEndReason }
   /** Extended-thinking block streamed before the answer. `id` is thread-stable so
    *  the renderer can key its collapsed/expanded state. */
@@ -354,10 +354,22 @@ export function reduce(state: TranscriptState, ev: AgentEvent): TranscriptState 
   }
 }
 
-export function pushUser(state: TranscriptState, text: string): TranscriptState {
+export function pushUser(state: TranscriptState, text: string, localId?: string): TranscriptState {
   // Strip carriage returns so a raw multi-line echo can't overwrite lines in the
   // terminal (CR returns the cursor to column 0). Pastes normally arrive already
   // collapsed to a chip; this guards the mock/other paths.
   const clean = text.replace(/\r\n?/g, "\n")
-  return updateThreadItems(state, MAIN, (items) => [...items, { kind: "user", text: clean }])
+  return updateThreadItems(state, MAIN, (items) => [...items, { kind: "user", text: clean, ...(localId ? { localId } : {}) }])
+}
+
+/** Undo a just-added local user echo when the server rejects or cannot accept it.
+ * The local id distinguishes concurrent sends with identical visible text. */
+export function popUser(state: TranscriptState, localId: string): TranscriptState {
+  return updateThreadItems(state, MAIN, (items) => {
+    for (let i = items.length - 1; i >= 0; i--) {
+      const item = items[i]
+      if (item?.kind === "user" && item.localId === localId) return [...items.slice(0, i), ...items.slice(i + 1)]
+    }
+    return items
+  })
 }

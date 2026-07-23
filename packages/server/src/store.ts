@@ -287,6 +287,12 @@ export const Store = {
     return turn
   },
 
+  /** Attach a best-effort workspace snapshot after an asynchronously started turn.
+   * This is intentionally a no-op when the turn was rewound before git finished. */
+  setTurnSnapshot(sessionId: string, turn: number, snapshotCommit: string | null): void {
+    backend(sessionId).query("UPDATE session_turns SET snapshot_commit=? WHERE session_id=? AND turn_index=?").run(snapshotCommit, sessionId, turn)
+  },
+
   completeTurn(sessionId: string, turn: number, anchorCheckpointId: string | null): void {
     const conn=backend(sessionId); const last = conn.query("SELECT MAX(seq) n FROM events WHERE session_id=?").get(sessionId) as { n: number | null }
     conn.query("UPDATE session_turns SET end_event_seq=?,anchor_checkpoint_id=?,status='complete',completed_at=? WHERE session_id=? AND turn_index=?").run(last.n, anchorCheckpointId, Date.now(), sessionId, turn)

@@ -74,6 +74,30 @@ export function usageFromLangChainMessage(msg: unknown): UsageDelta | null {
   return null
 }
 
+/** Per-request usage off an SDK `assistant` message: `message.usage` bills a
+ *  SINGLE API request, so input + cacheRead + cacheWrite ≈ the live context
+ *  size. The `result` message's totals are CUMULATIVE across every request in
+ *  the turn (each tool-loop iteration re-bills the prompt as cache reads), so
+ *  they overstate the context by the number of tool iterations — never use
+ *  them to size a cold-cache re-send. */
+export function usageFromAnthropicAssistant(message: unknown): UsageDelta | null {
+  const m = (message as { message?: { model?: string; usage?: {
+    input_tokens?: number
+    output_tokens?: number
+    cache_read_input_tokens?: number | null
+    cache_creation_input_tokens?: number | null
+  } } })?.message
+  const u = m?.usage
+  if (!u || typeof u.input_tokens !== "number") return null
+  return {
+    inputTokens: u.input_tokens ?? 0,
+    outputTokens: u.output_tokens ?? 0,
+    ...(u.cache_read_input_tokens ? { cacheReadTokens: u.cache_read_input_tokens } : {}),
+    ...(u.cache_creation_input_tokens ? { cacheWriteTokens: u.cache_creation_input_tokens } : {}),
+    ...(m?.model ? { model: m.model } : {}),
+  }
+}
+
 /** Pull token counts from an Anthropic Agent SDK `result` message. */
 export function usageFromAnthropicResult(message: {
   usage?: {

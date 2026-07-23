@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import {
   promptTokensOf,
   usageForAnthropicCache,
+  usageFromAnthropicAssistant,
   usageFromAnthropicResult,
   usageFromLangChainMessage,
 } from "./usage.ts"
@@ -15,6 +16,30 @@ describe("promptTokensOf", () => {
 
   test("tolerates missing cache fields", () => {
     expect(promptTokensOf({ inputTokens: 120, outputTokens: 10 })).toBe(120)
+  })
+})
+
+describe("usageFromAnthropicAssistant", () => {
+  test("reads a single request's usage off message.usage", () => {
+    expect(
+      usageFromAnthropicAssistant({
+        message: {
+          model: "claude-fable-5-20260601",
+          usage: { input_tokens: 900, output_tokens: 50, cache_read_input_tokens: 58_000, cache_creation_input_tokens: 1_200 },
+        },
+      }),
+    ).toEqual({
+      inputTokens: 900,
+      outputTokens: 50,
+      cacheReadTokens: 58_000,
+      cacheWriteTokens: 1_200,
+      model: "claude-fable-5-20260601",
+    })
+  })
+
+  test("returns null without a usage block", () => {
+    expect(usageFromAnthropicAssistant({ message: { model: "x" } })).toBeNull()
+    expect(usageFromAnthropicAssistant(undefined)).toBeNull()
   })
 })
 

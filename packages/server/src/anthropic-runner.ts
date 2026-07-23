@@ -13,14 +13,14 @@ import {
 } from "@anthropic-ai/claude-agent-sdk"
 import { createHash, randomUUID } from "node:crypto"
 import { z } from "zod"
-import type { MessageEndReason } from "@chunky/protocol"
+import type { MessageEndReason, UsageDelta } from "@chunky/protocol"
 import { Store } from "./store.ts"
 import { taggedEmitter, type Emit } from "./event-emitter.ts"
 import { buildSystemPrompt } from "./prompt.ts"
 import { listSidekickSeats, resolveReviewSelection, sidekickFor, type AgentSelection } from "./providers/registry.ts"
 import { ANTHROPIC_SDK_ISOLATION_OPTIONS, anthropicOAuthEnvironment } from "./providers/anthropic-sdk.ts"
-import { usageForAnthropicCache, usageFromAnthropicResult } from "./usage.ts"
-import { noteRequest } from "./cache-watch.ts"
+import { promptTokensOf, usageForAnthropicCache, usageFromAnthropicAssistant, usageFromAnthropicResult } from "./usage.ts"
+import { cacheModelKey, noteRequest } from "./cache-watch.ts"
 import type { CacheContext, InputImage } from "./run.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { assertSelectionAllowed } from "./incognito.ts"
@@ -438,6 +438,10 @@ export async function translateAnthropicMessages(
   // surfacing the failure as a thrown error (instead of returning "") is the
   // only way a delegating caller (sidekick/advisor/spawn) learns what happened.
   let lastErrorDetail: string | null = null
+  // Last SINGLE-request usage seen this turn ≈ the live context size. The
+  // `result` totals are cumulative across the whole tool loop and would
+  // overstate the context many-fold on tool-heavy turns.
+  let lastRequestUsage: UsageDelta | null = null
 
   const openAssistant = () => {
     if (!assistantOpen) {
@@ -505,6 +509,18 @@ export async function translateAnthropicMessages(
         continue
       }
 
+      if (message.type === "assistant" && !message.error) {
+        const u = usageFromAnthropicAssistant(message)
+        if (u && promptTokensOf(u) > 0) {
+          // Only accept requests from the selected model (API ids extend the
+          // selection id with a date suffix); aux calls (title gen etc.) must
+          // not arm the cache watch. Unknown namespace → fall through to the
+          // result-based fallback below.
+          const key = cache ? cacheModelKey(cache.model) : null
+          if (!key || !u.model || u.model.toLowerCase().startsWith(key)) lastRequestUsage = u
+        }
+      }
+
       if (message.type === "assistant" && message.error) {
         closeAssistant()
         lastErrorDetail = String(message.error)
@@ -530,7 +546,7 @@ export async function translateAnthropicMessages(
         // haiku or API-format id here manufactures a false "model switch".
         const delta = usageFromAnthropicResult(message as any)
         if (cache) {
-          noteRequest(cache.conversationId, usageForAnthropicCache(message as any, cache.model), cache.model, Date.now())
+          noteRequest(cache.conversationId, lastRequestUsage ?? usageForAnthropicCache(message as any, cache.model), cache.model, Date.now())
         }
         emit({ type: "usage.update", usage: delta })
         if (usageContext) Store.logUsage({ sessionId: usageContext.sessionId, threadId: displayThreadId, role: usageContext.role,

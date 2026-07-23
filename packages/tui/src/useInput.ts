@@ -17,6 +17,9 @@ export interface InputKey {
   ctrl: boolean
   shift: boolean
   meta: boolean
+  /** True when the key was a raw linefeed (Ctrl+J in legacy terminals — it sends
+   *  \n, distinct from Enter's \r). Folded into `return` for compatibility. */
+  linefeed: boolean
 }
 
 /**
@@ -43,6 +46,7 @@ export function useInput(
       pageUp: name === "pageup",
       pageDown: name === "pagedown",
       return: name === "return" || name === "linefeed",
+      linefeed: name === "linefeed",
       escape: name === "escape",
       tab: name === "tab",
       backspace: name === "backspace",

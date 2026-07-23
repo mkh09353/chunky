@@ -257,10 +257,16 @@ export function PromptInput({
       if (key.upArrow) return recallHistory(-1)
       if (key.downArrow) return recallHistory(1)
 
-      if (key.return) {
+      // Ctrl+J (kitty-protocol terminals report the chord; legacy terminals send
+      // a raw linefeed, surfaced as key.linefeed) is the everywhere-safe interject
+      // hotkey — Apple Terminal can't report Option+Enter without "Use Option as
+      // Meta Key" enabled.
+      const ctrlJ = key.ctrl && (input === "j" || input === "J")
+      if (key.return || ctrlJ) {
+        const interject = key.meta || key.linefeed || ctrlJ
         // Shift+Enter → newline (needs a terminal that reports shift on Enter,
         // i.e. the kitty keyboard protocol — kitty/Ghostty/WezTerm/iTerm2).
-        if (key.shift) {
+        if (key.shift && !interject) {
           insertChunk("\n")
           return
         }
@@ -276,10 +282,11 @@ export function PromptInput({
           if (h.length > HISTORY_CAP) h.shift()
         }
         histIdxRef.current = null
-        // Alt/Option+Enter marks a STEER (cut into a running turn at the next tool
-        // result); a plain Enter queues/sends. App decides based on run state.
+        // Alt/Option+Enter or Ctrl+J marks an INTERJECT (cut into a running turn
+        // at the next tool result); a plain Enter queues/sends. App decides based
+        // on run state.
         reset()
-        onSubmit(text, display, key.meta ? { delivery: "interject" } : undefined)
+        onSubmit(text, display, interject ? { delivery: "interject" } : undefined)
         return
       }
       // Ctrl+V — pull an image off the clipboard (Cmd+V is owned by the terminal).
@@ -359,7 +366,7 @@ function HintsLine({
   threadsHint: string
 }) {
   if (running) {
-    return <text attributes={DIM}>{"  option+enter steer · ctrl+c quit"}</text>
+    return <text attributes={DIM}>{"  ctrl+j / option+enter steer · ctrl+c quit"}</text>
   }
   if (value.length === 0) {
     return (
@@ -423,7 +430,7 @@ function CursorText({
   if (value.length === 0) {
     return (
       <text attributes={DIM}>
-        {running ? "type to queue · option+enter to steer" : 'Try "fix lint errors" or @file'}
+        {running ? "type to queue · ctrl+j to steer" : 'Try "fix lint errors" or @file'}
       </text>
     )
   }

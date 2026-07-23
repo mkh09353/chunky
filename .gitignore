@@ -18,3 +18,8 @@ repos.json
 relay.json
 .playwright-mcp/
 anthropic-models-cache.json
+
+# local exploratory docs, never commit
+docs/
+grok-docs/
+grok-docs-new/

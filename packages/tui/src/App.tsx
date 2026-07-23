@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { realpathSync } from "node:fs"
-import { TextAttributes } from "@opentui/core"
+import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
 import { useRenderer } from "@opentui/react"
 import { rawModeSupported, useInput } from "./useInput.js"
 import {
@@ -188,6 +188,45 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       renderer.console.onCopySelection = undefined
     }
   }, [renderer, toast])
+
+  // The transcript scrollbox. OpenTUI's stickyStart="bottom" keeps it pinned as
+  // content streams in, but the box un-sticks when its VIEWPORT resizes: typing a
+  // long (wrapping) line grows the input band below, which shrinks the scrollbox,
+  // and a spurious scrollbar update during that resize flips the box's internal
+  // "manual scroll" flag — so the transcript parks a few rows above the bottom and
+  // never snaps back, even after enter. We re-assert the pin ourselves on every
+  // resize (input grow/shrink) and on content growth, but ONLY while the user is
+  // actually at the bottom: if they scrolled up to read history we leave them
+  // there (stickBottomRef, tracked from real scroll-position changes below).
+  const scrollRef = useRef<ScrollBoxRenderable | null>(null)
+  const stickBottomRef = useRef(true)
+
+  // Re-pin the transcript to the bottom; a no-op if the user has scrolled up.
+  // Setting scrollTop back to the max also clears the box's corrupted internal
+  // "manual scroll" flag, so its own sticky logic resumes working afterwards.
+  const restickBottom = useCallback(() => {
+    const sb = scrollRef.current
+    if (!sb || !stickBottomRef.current) return
+    const max = Math.max(0, sb.scrollHeight - sb.viewport.height)
+    if (sb.scrollTop !== max) sb.scrollTop = max
+  }, [])
+
+  // Track whether the user is at (within a row of) the bottom. Only a genuine
+  // position change fires the scrollbar's "change" event — content/viewport growth
+  // that merely moves the bottom away leaves scrollTop untouched and does NOT fire
+  // it — so this follows deliberate scrolling, not the resize drift we're fixing.
+  useEffect(() => {
+    const sb = scrollRef.current
+    if (!sb) return
+    const bar = sb.verticalScrollBar
+    const onScroll = ({ position }: { position: number }) => {
+      const max = Math.max(0, sb.scrollHeight - sb.viewport.height)
+      stickBottomRef.current = position >= max - 1
+    }
+    bar.on("change", onScroll)
+    return () => { bar.removeListener("change", onScroll) }
+  }, [])
+
   const [state, setState] = useState<TranscriptState>(initialState)
   const [connection, setConnection] = useState<"connecting" | "connected" | "reconnecting">("connecting")
   const [startedAt, setStartedAt] = useState<number | null>(null)
@@ -1992,6 +2031,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       {/* OpenTUI owns the whole screen (no terminal scrollback), so the
           transcript lives in a scrollbox pinned to the bottom like a chat. */}
       <scrollbox
+        ref={scrollRef}
         flexGrow={1}
         flexShrink={1}
         stickyScroll
@@ -1999,8 +2039,13 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         scrollY
         contentOptions={{ flexDirection: "column" }}
       >
-        <WelcomeBanner mode={mode} cwd={cwd} model={bannerModel} incognito={incognito} />
-        <Transcript state={state} collapsed={threadsCollapsed} />
+        {/* Wrapped so ONE onSizeChange fires when streaming grows the transcript
+            (the content-growth trigger for restickBottom); the input band handles
+            the viewport-resize trigger. */}
+        <box flexDirection="column" onSizeChange={restickBottom}>
+          <WelcomeBanner mode={mode} cwd={cwd} model={bannerModel} incognito={incognito} />
+          <Transcript state={state} collapsed={threadsCollapsed} />
+        </box>
       </scrollbox>
       {(running && startedAt != null) || connection === "reconnecting" ? (
         <StatusLine startedAt={startedAt ?? undefined} reconnecting={connection === "reconnecting"} />
@@ -2012,7 +2057,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         <WatchingLine tasks={background.tasks} monitors={background.monitors} />
       )}
       {updateNotice && <text attributes={TextAttributes.DIM}>{updateNotice}</text>}
-      <box flexDirection="column" width="100%" marginTop={1} flexShrink={0}>
+      <box flexDirection="column" width="100%" marginTop={1} flexShrink={0} onSizeChange={restickBottom}>
         {onboardingOpen && <OnboardingWizard baseUrl={baseUrl} onDone={(stamped) => { setOnboardingOpen(false); if (!stamped) void fetch(baseUrl + "/api/onboarding/complete", { method: "POST" }).catch(() => {}) }} onLogin={async (p) => {
           // `active` is LoginPicker display state; initiateLogin never reads it.
           await initiateLogin({ id: p.id, label: p.label, ready: p.ready, active: false })

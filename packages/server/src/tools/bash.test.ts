@@ -1,15 +1,26 @@
 import { afterEach, describe, expect, test } from "bun:test"
 import { rmSync } from "node:fs"
-import { bash } from "./bash.ts"
+import { bash, setDefaultTimeoutForTests } from "./bash.ts"
 import { asToolRunResult, dualTool } from "./result.ts"
 
 const spillPaths: string[] = []
 
 afterEach(() => {
+  setDefaultTimeoutForTests()
   for (const path of spillPaths.splice(0)) rmSync(path, { force: true })
 })
 
 describe("bash timeout", () => {
+  test("foreground commands without a timeout get the default instead of hanging forever", async () => {
+    setDefaultTimeoutForTests(0.1)
+    const started = Date.now()
+    const output = await bash.invoke({ command: "sleep 30" })
+
+    expect(Date.now() - started).toBeLessThan(2_000)
+    expect(String(output)).toContain("timed out after 0.1s — default")
+    expect(String(output)).toContain("background=true")
+  })
+
   test("terminates descendants that inherit the command pipes", async () => {
     const started = Date.now()
     const output = await bash.invoke({ command: "sleep 5 & wait", timeout: 0.1 })

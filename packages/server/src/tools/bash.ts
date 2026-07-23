@@ -52,6 +52,15 @@ export function resetLoginPathForTests(): void {
   loginPath = undefined
 }
 
+/** Default timeout for FOREGROUND commands when the model passes none. */
+export const DEFAULT_TIMEOUT_SECS = 120
+let defaultTimeoutSecs = DEFAULT_TIMEOUT_SECS
+
+/** Test seam: override (or restore, with no argument) the foreground default timeout. */
+export function setDefaultTimeoutForTests(secs?: number): void {
+  defaultTimeoutSecs = secs ?? DEFAULT_TIMEOUT_SECS
+}
+
 export const bashInputShape = {
   command: z.string().describe("The bash command."),
   timeout: z.number().optional().describe("Timeout in seconds (optional)."),
@@ -88,6 +97,10 @@ async function readPipe(reader: ReadableStreamDefaultReader<Uint8Array>, onChunk
 export const bash = tool(
   async ({ command, timeout, background, description, ready_pattern }: { command: string; timeout?: number; background?: boolean; description?: string; ready_pattern?: string }, config?: any) => {
     const threadId = config?.configurable?.thread_id
+    // Foreground commands ALWAYS get a timeout: a dev server started without
+    // background=true would otherwise hang the turn forever at proc.exited.
+    const defaulted = !background && (!timeout || timeout <= 0)
+    if (defaulted) timeout = defaultTimeoutSecs
     if (ready_pattern && !background) return toolResult("ready_pattern is only valid with background=true.", { ok: false })
     let readyRegex: RegExp | undefined
     if (ready_pattern) try { readyRegex = new RegExp(ready_pattern) } catch { return toolResult("ready_pattern must be a valid regular expression.", { ok: false }) }
@@ -237,12 +250,15 @@ export const bash = tool(
       out += `\n\n[Output truncated. ${bits.join(" · ")}. Re-read with read/rg if you need more.]`
     }
 
-    const status = timedOut ? `${exitCode} (timed out after ${timeout}s)` : String(exitCode)
+    const status = timedOut ? `${exitCode} (timed out after ${timeout}s${defaulted ? " — default" : ""})` : String(exitCode)
+    const timeoutHint = timedOut && defaulted
+      ? "\n[hint: the command hit the default timeout. If it is a long-running process (dev server, watch mode), rerun it with background=true and a ready_pattern; if it is just slow, rerun with an explicit timeout.]"
+      : ""
     const note = detached && !timedOut
       ? "\n[note: a background process is still running and holding the output pipe; its further output is not captured]"
       : ""
     const dateStamp = dateStampFor(config?.configurable?.thread_id)
-    const promptText = `${out ? `${out}\n` : ""}[exit code: ${status}]${note}${dateStamp}`
+    const promptText = `${out ? `${out}\n` : ""}[exit code: ${status}]${timeoutHint}${note}${dateStamp}`
     return toolResult(promptText, { raw: {
       kind: "bash", command, exitCode, timedOut, truncated, originalLines, reducer,
       rawBytes: Buffer.byteLength(combined), ...(spillPath ? { spillPath } : {}), ...(detached ? { detached: true } : {}),
@@ -250,7 +266,7 @@ export const bash = tool(
   },
   {
     name: "bash",
-    description: `Run a shell command in the project root; this is how you list, search (grep/rg), and find files. Combines stdout+stderr, compresses noisy tool output (git/gh/npm/tsc/tests), signal-truncates to ~${MAX_LINES} lines / ${MAX_BYTES / 1000}KB (full output spilled to a temp file). Optional timeout in seconds. For dev servers use background=true with ready_pattern to be notified once ready; use monitor for ongoing watching.`,
+    description: `Run a shell command in the project root; this is how you list, search (grep/rg), and find files. Combines stdout+stderr, compresses noisy tool output (git/gh/npm/tsc/tests), signal-truncates to ~${MAX_LINES} lines / ${MAX_BYTES / 1000}KB (full output spilled to a temp file). Optional timeout in seconds (foreground default: ${DEFAULT_TIMEOUT_SECS}s). NEVER run a dev server/watch mode in the foreground; for dev servers use background=true with ready_pattern to be notified once ready; use monitor for ongoing watching.`,
     schema: z.object(bashInputShape),
   },
 )

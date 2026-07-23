@@ -270,6 +270,16 @@ export function PromptInput({
           insertChunk("\n")
           return
         }
+        // Fallback for terminals that can't report Shift+Enter (no kitty
+        // keyboard protocol, e.g. Apple Terminal, Zed): a trailing backslash
+        // before Enter becomes a newline, shell-style.
+        if (!interject && bufRef.current.cursor > 0 && bufRef.current.value[bufRef.current.cursor - 1] === "\\") {
+          setBuf((b) => ({
+            value: b.value.slice(0, b.cursor - 1) + "\n" + b.value.slice(b.cursor),
+            cursor: b.cursor,
+          }))
+          return
+        }
         const display = bufRef.current.value.trim()
         const text = expandPastes(display, pastesRef.current).trim()
         // Allow an image-only message: submit when there's text OR attachments.

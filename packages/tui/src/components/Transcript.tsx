@@ -538,8 +538,13 @@ export function ItemView({ item }: { item: DisplayItem }) {
       // line (no dot, no bold header, no expandable output) so it reads as a
       // footnote to the delegation above it rather than a peer tool call.
       if (item.name === "rate_delegate") {
-        const input = (item.input ?? {}) as { rating?: number; rework?: boolean; reason?: string }
-        const rating = typeof input.rating === "number" ? `${input.rating}/10` : "…"
+        const input = (item.input ?? {}) as { rating?: number; compliance?: number; correctness?: number; report?: number; exceeded?: number; rework?: boolean; reason?: string }
+        // Rating is computed server-side from sub-scores (1 + c + x + r + e, capped
+        // at 7 on rework); mirror that here, falling back to the legacy direct rating.
+        const computed = typeof input.compliance === "number" && typeof input.correctness === "number" && typeof input.report === "number"
+          ? Math.min(1 + input.compliance + input.correctness + input.report + (input.exceeded ?? 0), input.rework ? 7 : 10)
+          : typeof input.rating === "number" ? input.rating : undefined
+        const rating = typeof computed === "number" ? `${computed}/10` : "…"
         const reason = typeof input.reason === "string" ? input.reason : ""
         return (
           <box flexDirection="row" marginLeft={2}>

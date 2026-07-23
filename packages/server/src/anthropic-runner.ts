@@ -41,7 +41,7 @@ import {
 import { read, readInputShape } from "./tools/read.ts"
 import { shipGoal, shipGoalInputShape } from "./tools/ship.ts"
 import { sidekick, sidekickInputShape } from "./tools/sidekick.ts"
-import { rateDelegate } from "./tools/rate-delegate.ts"
+import { rateDelegate, rateDelegateInputShape } from "./tools/rate-delegate.ts"
 import { spawnThread, spawnThreadInputShape } from "./tools/spawn-thread.ts"
 import { workflow, workflowInputShape } from "./tools/workflow.ts"
 import { manageModels, manageModelsInputShape } from "./tools/manage-models.ts"
@@ -250,7 +250,7 @@ export function createChunkySdkMcpServer(
         (args) => sidekick.invoke(args, runConfig),
         emit,
       ),
-      wrapChunkyTool(rateDelegate.name, rateDelegate.description, { delegation: z.string(), rating: z.number().int().min(1).max(10), rework: z.boolean().optional(), reason: z.string() }, (args) => rateDelegate.invoke(args, runConfig), emit),
+      wrapChunkyTool(rateDelegate.name, rateDelegate.description, rateDelegateInputShape, (args) => rateDelegate.invoke(args, runConfig), emit),
       wrapChunkyTool(
         spawnThread.name,
         spawnThread.description,

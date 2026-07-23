@@ -55,6 +55,9 @@ export type AgentEvent =
       fromModel?: string
       toModel?: string
     }
+  /** Older model context was replaced by a summary. The durable event transcript
+   * remains intact and can be queried with the recall tool. */
+  | { type: "context.compacted"; sessionId: string }
   /** A user turn, echoed by the server so it is persisted and replayed on
    * resume. Live clients may render an optimistic local echo and suppress this
    * same-session event to avoid a duplicate. `from` is set when the message

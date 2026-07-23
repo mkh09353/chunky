@@ -436,6 +436,7 @@ export async function runAgent(
             workspace,
             emitToolProgress: (toolCallId: string, chunk: string) =>
               taggedEmitter(emit, undefined)({ type: "tool.progress", id: toolCallId, chunk }),
+            emitSessionEvent: (event: any) => emit(event),
           },
           streamMode: ["updates", "messages"],
           recursionLimit: RECURSION_LIMIT,

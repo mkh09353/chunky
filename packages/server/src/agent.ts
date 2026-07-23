@@ -56,6 +56,7 @@ import { write } from "./tools/write.ts"
 import { dualTool } from "./tools/result.ts"
 import { getTaskOutput, killTask } from "./tools/task.ts"
 import { monitor } from "./tools/monitor.ts"
+import { recall } from "./tools/recall.ts"
 import { updateTodos } from "./tools/todos.ts"
 import { resolveFileToolProfile } from "./settings.ts"
 import { hashlineRead, hashlineEdit } from "./tools/hashline/index.ts"
@@ -66,7 +67,7 @@ export function makePostCompactionReminder() {
   let handledSummaryId: string | undefined
   return async function postCompactionReminder(
     state: { messages: any[] },
-    runtime: { configurable?: { thread_id?: unknown } },
+    runtime: { configurable?: { thread_id?: unknown; emitSessionEvent?: unknown } },
     collect: (sessionId: string) => Parameters<typeof formatSystemReminder>[0] = (sessionId) => {
       const goal = Store.getGoal(sessionId)
       return {
@@ -84,12 +85,17 @@ export function makePostCompactionReminder() {
     const sessionId = runtime.configurable?.thread_id
     if (typeof sessionId !== "string") return
     handledSummaryId = summaryId
+    const emitSessionEvent = runtime.configurable?.emitSessionEvent
+    if (typeof emitSessionEvent === "function") emitSessionEvent({ type: "context.compacted", sessionId })
     const removals = state.messages
       .filter((message) => message?.additional_kwargs?.lc_source === "chunky-system-reminder" && message.id)
       .map((message) => new RemoveMessage({ id: message.id }))
     const reminder = formatSystemReminder(collect(sessionId))
-    if (reminder) return { messages: [...removals, new SystemMessage({ content: reminder, additional_kwargs: { lc_source: "chunky-system-reminder" } })] }
-    return removals.length ? { messages: removals } : undefined
+    const recallLine = "Older context was summarized; the full unabridged transcript remains available via recall. Search by keyword or read seq ranges."
+    const content = reminder
+      ? reminder.replace("\n</system-reminder>", `\n${recallLine}\n</system-reminder>`)
+      : `<system-reminder>\n${recallLine}\n</system-reminder>`
+    return { messages: [...removals, new SystemMessage({ content, additional_kwargs: { lc_source: "chunky-system-reminder" } })] }
   }
 }
 export const postCompactionReminder = makePostCompactionReminder()
@@ -220,6 +226,7 @@ export function executorToolsFor(selection: AgentSelection) {
     ...fileToolsFor(selection.model, selection.provider),
     dualTool(bash),
     monitor,
+    recall,
     getTaskOutput,
     killTask,
     fffind,
@@ -318,7 +325,7 @@ export function buildAgent(
     // Auto-compaction — the context-management half of Pi's efficiency win (a
     // "tighter working set" so long sessions don't grow unbounded, which is what we
     // lost by dropping createDeepAgent's SummarizationMiddleware). Once history grows
-    // past ~100k tokens, older messages are summarized while the most recent 20 are
+    // past ~150k tokens, older messages are summarized while the most recent 15 are
     // kept verbatim; the active model writes the summary. A token trigger (not a
     // context-window fraction) keeps this provider-agnostic — Zen/Codex ChatOpenAI
     // instances don't reliably report a context size. Move to { fraction } once model
@@ -326,7 +333,7 @@ export function buildAgent(
     middleware: [
       summarizationMiddleware({
         model,
-        trigger: { tokens: 60_000 },
+        trigger: { tokens: 150_000 },
         keep: { messages: 15 },
       }),
       // LangChain's summarizer exposes a reliable beforeModel state update: it
@@ -392,7 +399,7 @@ export function buildAdvisorAgent(selection: AgentSelection, sessionId?: string)
     middleware: [
       summarizationMiddleware({
         model,
-        trigger: { tokens: 60_000 },
+        trigger: { tokens: 150_000 },
         keep: { messages: 15 },
       }),
     ],
@@ -433,7 +440,7 @@ export function buildSidekickAgent(selection: AgentSelection, agentsMd?: string 
     middleware: [
       summarizationMiddleware({
         model,
-        trigger: { tokens: 60_000 },
+        trigger: { tokens: 150_000 },
         keep: { messages: 15 },
       }),
     ],

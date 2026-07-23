@@ -634,6 +634,13 @@ export function ItemView({ item }: { item: DisplayItem }) {
         </box>
       )
 
+    case "compaction-notice":
+      return (
+        <box flexDirection="row" marginTop={1}>
+          <text fg={WARNING}>⚠ {item.message}</text>
+        </box>
+      )
+
     case "goal": {
       // Goal-mode marker. Color by outcome; the message already carries a glyph.
       const color =

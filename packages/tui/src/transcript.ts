@@ -29,6 +29,8 @@ export type Item =
       progress?: string
     }
   | { kind: "error"; text: string }
+  /** A persisted boundary marking LangChain context summarization. */
+  | { kind: "compaction-notice"; message: string }
   /** A goal-mode lifecycle marker (set / continuing / complete / blocked / paused / cleared). */
   | { kind: "goal"; status: GoalStatus | "cleared"; message: string }
   /** A dynamic-workflow phase header, rendered in the thread that ran `workflow`. */
@@ -255,6 +257,12 @@ export function reduce(state: TranscriptState, ev: AgentEvent): TranscriptState 
         },
       ])
     }
+
+    case "context.compacted":
+      return updateThreadItems(state, MAIN, (items) => [
+        ...items,
+        { kind: "compaction-notice", message: "Context compacted — older messages summarized (recall tool can retrieve them)" },
+      ])
 
     case "message.user": {
       // Only cross-session messages render from the event: the user's OWN sends

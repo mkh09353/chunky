@@ -141,6 +141,7 @@ const stmtTitleOf = db.query("SELECT title FROM sessions WHERE id = ?")
 const stmtNextSeq = db.query("SELECT COALESCE(MAX(seq), -1) + 1 AS n FROM events WHERE session_id = ?")
 const stmtInsertEvent = db.query("INSERT INTO events (session_id, seq, json) VALUES (?, ?, ?)")
 const stmtHistory = db.query("SELECT json FROM events WHERE session_id = ? ORDER BY seq ASC")
+const stmtHistoryWithSeq = db.query("SELECT seq, json FROM events WHERE session_id = ? ORDER BY seq ASC")
 const stmtLastSeq = db.query("SELECT MAX(seq) AS n FROM events WHERE session_id = ?")
 const stmtNextTurn = db.query("SELECT COALESCE(MAX(turn_index), 0) + 1 AS n FROM session_turns WHERE session_id = ?")
 const stmtInsertTurn = db.query("INSERT INTO session_turns (session_id, turn_index, start_event_seq, snapshot_commit, user_text, status, created_at) VALUES (?, ?, ?, ?, ?, 'running', ?)")
@@ -318,6 +319,16 @@ export const Store = {
     if (isIncognitoSession(sessionId)) return (memoryDb.query("SELECT json FROM events WHERE session_id=? ORDER BY seq").all(sessionId) as { json: string }[]).map((r) => JSON.parse(r.json) as AgentEvent)
     const rows = stmtHistory.all(sessionId) as { json: string }[]
     return rows.map((r) => JSON.parse(r.json) as AgentEvent)
+  },
+
+  /** Read-only durable transcript rows, retaining their event sequence numbers.
+   * Used by recall; unlike rewind, this never mutates events. */
+  historyWithSeq(sessionId: string): Array<{ seq: number; event: AgentEvent }> {
+    const conn = isIncognitoSession(sessionId) ? memoryDb : db
+    const rows = (isIncognitoSession(sessionId)
+      ? conn.query("SELECT seq, json FROM events WHERE session_id=? ORDER BY seq ASC").all(sessionId)
+      : stmtHistoryWithSeq.all(sessionId)) as Array<{ seq: number; json: string }>
+    return rows.map((row) => ({ seq: row.seq, event: JSON.parse(row.json) as AgentEvent }))
   },
 
   titleOf(sessionId: string): string | null {

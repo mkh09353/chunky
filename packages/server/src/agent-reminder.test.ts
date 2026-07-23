@@ -15,6 +15,7 @@ describe("post-compaction reminder", () => {
     expect(result?.messages[0]).toMatchObject({ type: "remove", id: "old-reminder" })
     expect(result?.messages[1]).toBeInstanceOf(SystemMessage)
     expect((result?.messages[1] as SystemMessage).content).toContain("live")
+    expect((result?.messages[1] as SystemMessage).content).toContain("full unabridged transcript remains available via recall")
     expect(await middleware({ messages: [summary("sum-1")] }, { configurable: { thread_id: "s" } }, () => ({}))).toBeUndefined()
   })
   test("new summary removes every prior reminder and inserts one fresh reminder", async () => {
@@ -27,10 +28,11 @@ describe("post-compaction reminder", () => {
     expect(reduced.filter((m) => m.additional_kwargs?.lc_source === "chunky-system-reminder")).toHaveLength(1)
     expect(reduced.some((m) => m.id === "r1" || m.id === "r2")).toBe(false)
   })
-  test("removes stale reminders without injecting when live state is empty", async () => {
+  test("removes stale reminders and injects recall guidance when live state is empty", async () => {
     const middleware = makePostCompactionReminder()
     const result = await middleware({ messages: [summary("sum-empty"), stale("r-empty")] }, { configurable: { thread_id: "s" } }, () => ({}))
-    expect(result?.messages).toHaveLength(1)
+    expect(result?.messages).toHaveLength(2)
     expect(result?.messages[0]).toMatchObject({ type: "remove", id: "r-empty" })
+    expect((result?.messages[1] as SystemMessage).content).toContain("recall")
   })
 })

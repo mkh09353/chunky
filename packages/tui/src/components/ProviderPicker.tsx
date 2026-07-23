@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react"
 import { TextAttributes } from "@opentui/core"
-import { ACCENT, BORDER } from "../theme.js"
+import { ACCENT, BORDER, ERROR } from "../theme.js"
 import { rawModeSupported, useInput } from "../useInput.js"
 
 interface Provider { id: string; label: string; ready: boolean }
@@ -84,7 +84,7 @@ export function ProviderPicker({ baseUrl, onDone, onCancel }: Props) {
         <text attributes={TextAttributes.DIM}>{provider ? ` — ${(row as Model).name}${(row as Model).custom ? " [custom]" : ""}` : ` — ${(row as Provider).label}${(row as Provider).ready ? " [logged in]" : ""}`}</text>
       </box>
     })}
-    {error && <text fg="red">{error}</text>}
+    {error && <text fg={ERROR}>{error}</text>}
     {busy && <text attributes={TextAttributes.DIM}>Saving…</text>}
   </box>
 }

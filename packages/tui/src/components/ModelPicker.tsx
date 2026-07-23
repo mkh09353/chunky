@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { TextAttributes } from "@opentui/core"
 import figures from "figures"
-import { ACCENT, BORDER } from "../theme.js"
+import { ACCENT, BORDER, ERROR } from "../theme.js"
 import { rawModeSupported, useInput } from "../useInput.js"
 
 const { BOLD, DIM } = TextAttributes
@@ -257,7 +257,7 @@ export function ModelPicker({ baseUrl, onDone, onCancel }: Props) {
   if (error) {
     return (
       <box border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
-        <text fg="red">Couldn&apos;t load models: {error}</text>
+        <text fg={ERROR}>Couldn&apos;t load models: {error}</text>
       </box>
     )
   }

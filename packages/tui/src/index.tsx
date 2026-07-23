@@ -4,7 +4,9 @@ import { createRoot } from "@opentui/react"
 import { DEFAULT_PORT } from "@chunky/protocol"
 import { App } from "./App.js"
 import { Flag } from "./flags.js"
-import { getServerToken } from "../../server/src/settings.ts"
+import { getServerToken, getTheme } from "../../server/src/settings.ts"
+import { detect } from "./terminalAppearance.js"
+import { setThemeAppearance } from "./theme.js"
 
 const argv = process.argv.slice(2)
 const wantMock = argv.includes("--mock")
@@ -46,6 +48,10 @@ else mode = (await serverIsUp()) ? "live" : "mock"
 // unambiguous. `{}` leaves release-event reporting OFF (the default), and
 // exitOnCtrlC still fires — OpenTUI matches ctrl+c against the parsed key event,
 // not the raw byte, so quitting is unaffected.
+const configuredTheme = getTheme()
+const detectedTheme = configuredTheme === "auto" ? await detect() : configuredTheme
+setThemeAppearance(detectedTheme === "light" ? "light" : "dark")
+
 const renderer = await createCliRenderer({
   exitOnCtrlC: true,
   useMouse: !Flag.disableMouse,

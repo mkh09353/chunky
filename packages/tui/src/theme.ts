@@ -5,22 +5,37 @@
  *  swap is a pure hue change: a lightened headline accent (contrast on dark
  *  terminals), one deeper step for rails/links, headings on the accent hue, and
  *  a quiet gray nudged toward that hue for bullets. */
-const PALETTES = {
-  /** Lavender — the default Chunky brand accent. */
-  normal: {
+type Palette = Record<"ACCENT" | "ACCENT_DEEP" | "HEADING" | "MARKER_BULLET" | "MARKER" | "BORDER" | "SUCCESS" | "ERROR" | "WARNING" | "CODE" | "CODE_MUTED", string>
+const PALETTES: Record<Appearance, Record<"normal" | "incognito", Palette>> = {
+  dark: {
+    normal: {
     ACCENT: "#c4b1f9",
     ACCENT_DEEP: "#a78bfa",
     HEADING: "#c4b1f9",
     MARKER_BULLET: "#766e91",
-  },
-  /** Bright red — an incognito session must be unmistakable at a glance.
-   *  #ff3b30 is the base hue; ACCENT is lightened from it the same two steps
-   *  the lavender accent is lightened from Purple 600. */
-  incognito: {
+    MARKER: "#6b7280", BORDER: "#767e89", SUCCESS: "green", ERROR: "red", WARNING: "yellow",
+    CODE: "#7fd0ca", CODE_MUTED: "gray",
+    },
+    incognito: {
     ACCENT: "#ff5f56",
     ACCENT_DEEP: "#ff3b30",
     HEADING: "#ff5f56",
     MARKER_BULLET: "#916e6e",
+    MARKER: "#6b7280", BORDER: "#767e89", SUCCESS: "green", ERROR: "red", WARNING: "yellow",
+    CODE: "#7fd0ca", CODE_MUTED: "gray",
+    },
+  },
+  light: {
+    normal: {
+      ACCENT: "#6d28d9", ACCENT_DEEP: "#5b21b6", HEADING: "#6d28d9", MARKER_BULLET: "#4b5563",
+      MARKER: "#374151", BORDER: "#4b5563", SUCCESS: "#15803d", ERROR: "#b91c1c", WARNING: "#a16207",
+      CODE: "#0f766e", CODE_MUTED: "#4b5563",
+    },
+    incognito: {
+      ACCENT: "#b91c1c", ACCENT_DEEP: "#991b1b", HEADING: "#b91c1c", MARKER_BULLET: "#7f1d1d",
+      MARKER: "#374151", BORDER: "#4b5563", SUCCESS: "#15803d", ERROR: "#991b1b", WARNING: "#a16207",
+      CODE: "#0f766e", CODE_MUTED: "#4b5563",
+    },
   },
 } as const
 
@@ -32,18 +47,20 @@ const PALETTES = {
 /** Brand accent (prompt marker, spinner, sparkle, ⏺ dots). Lightened two steps
  *  from Purple 600 so it holds ~9:1 contrast on dark terminals instead of ~3:1
  *  — same family, no more squinting. Bright red in an incognito session. */
-export let ACCENT: string = PALETTES.normal.ACCENT
+type Appearance = "light" | "dark"
+let appearance: Appearance = "dark"
+export let ACCENT: string = PALETTES.dark.normal.ACCENT
 /** One step deeper accent (violet-400) — secondary rail / highlights. */
-export let ACCENT_DEEP: string = PALETTES.normal.ACCENT_DEEP
+export let ACCENT_DEEP: string = PALETTES.dark.normal.ACCENT_DEEP
 /** Markdown headings. Kept on the accent hue; a separate token so headings
  *  and glyph accents can diverge without touching the renderer again. */
-export let HEADING: string = PALETTES.normal.HEADING
+export let HEADING: string = PALETTES.dark.normal.HEADING
 /** Numbered-list markers (1.) — quiet gray so list structure reads without
  *  shouting; the accent is reserved for prompt/dots/headings. */
-export const MARKER = "#6b7280"
+export let MARKER: string = PALETTES.dark.normal.MARKER
 /** Bullet circles (•) — the marker gray nudged a step toward the accent hue:
  *  still quiet, but visibly kin to the brand hue. */
-export let MARKER_BULLET: string = PALETTES.normal.MARKER_BULLET
+export let MARKER_BULLET: string = PALETTES.dark.normal.MARKER_BULLET
 
 let incognito = false
 
@@ -62,31 +79,46 @@ export function isIncognitoTheme(): boolean {
 export function setIncognitoTheme(on: boolean): boolean {
   if (on === incognito) return false
   incognito = on
-  const palette = on ? PALETTES.incognito : PALETTES.normal
+  const palette = PALETTES[appearance][on ? "incognito" : "normal"]
   ACCENT = palette.ACCENT
   ACCENT_DEEP = palette.ACCENT_DEEP
   HEADING = palette.HEADING
+  MARKER = palette.MARKER
   MARKER_BULLET = palette.MARKER_BULLET
+  BORDER = palette.BORDER; SUCCESS = palette.SUCCESS; ERROR = palette.ERROR; WARNING = palette.WARNING
+  CODE = palette.CODE; CODE_MUTED = palette.CODE_MUTED
   return true
 }
+
+export function setThemeAppearance(next: Appearance): boolean {
+  if (next === appearance) return false
+  appearance = next
+  const palette = PALETTES[appearance][incognito ? "incognito" : "normal"]
+  ACCENT = palette.ACCENT; ACCENT_DEEP = palette.ACCENT_DEEP; HEADING = palette.HEADING
+  MARKER = palette.MARKER; MARKER_BULLET = palette.MARKER_BULLET; BORDER = palette.BORDER
+  SUCCESS = palette.SUCCESS; ERROR = palette.ERROR; WARNING = palette.WARNING
+  CODE = palette.CODE; CODE_MUTED = palette.CODE_MUTED
+  return true
+}
+export function themeAppearance(): Appearance { return appearance }
 
 /** Label shown wherever the UI has to shout that this session is off the record. */
 export const INCOGNITO_LABEL = "INCOGNITO"
 /** The incognito red as a FIXED color, for marking OTHER sessions as off the
  *  record (the resume picker) — those rows must read red even while the attached
  *  session is a normal one and ACCENT is still lavender. */
-export const INCOGNITO_ACCENT = PALETTES.incognito.ACCENT
+export const INCOGNITO_ACCENT = PALETTES.dark.incognito.ACCENT
 /** Dim gray for the input border, meta text, and tool result summaries. */
-export const BORDER = "#767e89"
-export const SUCCESS = "green"
-export const ERROR = "red"
+export let BORDER = PALETTES.dark.normal.BORDER
+export let SUCCESS = PALETTES.dark.normal.SUCCESS
+export let ERROR = PALETTES.dark.normal.ERROR
 /** Amber for advisory notices like a cold prompt-cache warning. */
-export const WARNING = "yellow"
+export let WARNING = PALETTES.dark.normal.WARNING
 /** Inline `code` and fenced code body — soft teal, cool counterpart to the
  *  lavender accent so code and chrome separate at a glance. */
-export const CODE = "#7fd0ca"
+export let CODE = PALETTES.dark.normal.CODE
 /** Fenced-code rail / language tag — quieter than CODE. */
-export const CODE_MUTED = "gray"
+export let CODE_MUTED = PALETTES.dark.normal.CODE_MUTED
 
 /** The teardrop-asterisk sparkle Claude Code shows in its welcome banner. */
 export const SPARKLE = "✻"

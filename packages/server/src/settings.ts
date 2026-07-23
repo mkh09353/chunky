@@ -78,6 +78,8 @@ export interface ModeSpec {
 }
 
 export interface Settings {
+  /** Terminal TUI appearance; auto detects the terminal background. */
+  theme?: "auto" | "dark" | "light"
   /** Repository-scoped instruction loading. Missing entries are enabled. */
   repositoryInstructions?: Record<string, { agentsMd?: boolean }>
   fileToolProfile?: "standard" | "hashline"
@@ -241,6 +243,15 @@ export function loadSettings(): Settings {
     cache = {}
   }
   return cache
+}
+
+export function getTheme(): "auto" | "dark" | "light" {
+  const theme = loadSettings().theme
+  return theme === "dark" || theme === "light" ? theme : "auto"
+}
+
+export function setTheme(theme: "auto" | "dark" | "light"): void {
+  save({ ...loadSettings(), theme })
 }
 
 function save(next: Settings): void {

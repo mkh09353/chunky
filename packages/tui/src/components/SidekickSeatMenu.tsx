@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react"
 import { TextAttributes } from "@opentui/core"
 import figures from "figures"
-import { ACCENT, BORDER } from "../theme.js"
+import { ACCENT, BORDER, ERROR } from "../theme.js"
 import { rawModeSupported, useInput } from "../useInput.js"
 
 const { BOLD, DIM } = TextAttributes
@@ -130,14 +130,14 @@ export function SidekickSeatMenu({ baseUrl, onDone, onCancel, currentModel }: Pr
   }, { isActive: rawModeSupported })
 
   if (loading) return <box border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}><text attributes={DIM}>Loading sidekick seats…</text></box>
-  if (error) return <box border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}><text fg="red">Couldn&apos;t load sidekick seats: {error}</text></box>
+  if (error) return <box border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}><text fg={ERROR}>Couldn&apos;t load sidekick seats: {error}</text></box>
 
   if (adding) {
     return (
       <box flexDirection="column" border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
         <text attributes={DIM}>Add a sidekick seat — type a name · enter continue · esc back</text>
         <box flexDirection="row"><text fg={ACCENT}>{figures.pointer} </text><text>{name}</text><text attributes={DIM}>{name ? "" : "e.g. frontend, backend"}</text></box>
-        {nameError && <text fg="red">{nameError}</text>}
+        {nameError && <text fg={ERROR}>{nameError}</text>}
         <text attributes={DIM}>Names: lowercase slug, up to 24 characters</text>
       </box>
     )

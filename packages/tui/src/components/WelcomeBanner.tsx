@@ -1,6 +1,6 @@
 import { TextAttributes } from "@opentui/core"
 import { ChunkyLogo } from "./ChunkyLogo.js"
-import { ACCENT, INCOGNITO_LABEL } from "../theme.js"
+import { ACCENT, BORDER, INCOGNITO_LABEL } from "../theme.js"
 
 /** Shorten a path to Claude Code's `/…/parent/dir` form. */
 function shortCwd(cwd: string): string {
@@ -33,7 +33,7 @@ export function WelcomeBanner({
       marginBottom={1}
       border
       borderStyle="rounded"
-      borderColor="gray"
+      borderColor={BORDER}
       flexDirection="column"
       alignItems="center"
       paddingY={1}

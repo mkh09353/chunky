@@ -2,7 +2,7 @@ import { useEffect, useMemo, useState } from "react"
 import { TextAttributes } from "@opentui/core"
 import figures from "figures"
 import { ROUTES, type ModeInfo, type ModeSpec, type ModesResponse } from "@chunky/protocol"
-import { ACCENT, BORDER, WARNING } from "../theme.js"
+import { ACCENT, BORDER, ERROR, WARNING } from "../theme.js"
 import { incognitoAppliedLine, isIncognitoMode, type SavedMode } from "../incognitoModes.js"
 import { rawModeSupported, useInput } from "../useInput.js"
 
@@ -290,7 +290,7 @@ export function ModeMenu({ baseUrl, onApplied, onNotice, onCancel, incognitoOnly
   if (error) {
     return (
       <box border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
-        <text fg="red">Couldn&apos;t load modes: {error}</text>
+        <text fg={ERROR}>Couldn&apos;t load modes: {error}</text>
       </box>
     )
   }
@@ -304,7 +304,7 @@ export function ModeMenu({ baseUrl, onApplied, onNotice, onCancel, incognitoOnly
           <text>{name}</text>
           <text attributes={DIM}>{name ? "" : "e.g. review, fast, deep"}</text>
         </box>
-        {nameError && <text fg="red">{nameError}</text>}
+        {nameError && <text fg={ERROR}>{nameError}</text>}
         <text attributes={DIM}>{current ? previewSpec(current) : ""}</text>
       </box>
     )

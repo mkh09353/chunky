@@ -1,5 +1,6 @@
 // Chunky CLI server: Bun.serve HTTP + SSE. Model via the provider registry;
 // sessions + event history persisted to sqlite so reconnecting resumes.
+process.title = "chunky-server" // name in ps/top/pkill (Activity Monitor still shows the bun executable)
 import { randomUUID } from "node:crypto"
 import { rmSync } from "node:fs"
 import { join } from "node:path"

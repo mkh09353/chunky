@@ -6,6 +6,7 @@
 //   - the server's stdout goes to a log file so it can't fight the TUI's rendering.
 // The app code is resolved relative to THIS file, so the same launcher works both
 // from the repo (dev) and from an installed ~/.chunky/app copy.
+process.title = "chunky" // name in ps/top/pkill (Activity Monitor still shows the bun executable)
 import { spawn } from "node:child_process"
 import { createServer } from "node:net"
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs"
@@ -96,6 +97,7 @@ async function startServer(identity: LauncherServerIdentity): Promise<{ pid: num
   const log = openSync(join(STATE, "server.log"), "a")
   try {
     const child = spawn("bun", ["run", join(APP, "packages/server/src/index.ts")], {
+      argv0: "chunky-server", // named in ps/top/Activity Monitor instead of "bun"
       cwd: STATE,
       detached: true,
       stdio: ["ignore", log, log],
@@ -147,6 +149,7 @@ leaseHeartbeat.unref()
 // Hand the terminal to the TUI (child #2), pointed at our server. cwd is your
 // project so the transcript shows the right path; it connects over CHUNKY_PORT.
 const tui = spawn("bun", ["run", join(APP, "packages/tui/src/index.tsx"), "--live"], {
+  argv0: "chunky-tui", // named in ps/top/Activity Monitor instead of "bun"
   cwd: WORKSPACE,
   stdio: "inherit",
   env: { ...process.env, CHUNKY_PORT: String(PORT), CHUNKY_SETTINGS: SETTINGS },

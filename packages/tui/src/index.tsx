@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+process.title = "chunky-tui" // name in ps/top/pkill (Activity Monitor still shows the bun executable)
 import { createCliRenderer } from "@opentui/core"
 import { createRoot } from "@opentui/react"
 import { DEFAULT_PORT } from "@chunky/protocol"

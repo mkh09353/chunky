@@ -189,21 +189,30 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     }
   }, [renderer, toast])
 
-  // The transcript scrollbox. OpenTUI's stickyStart="bottom" keeps it pinned as
-  // content streams in, but the box un-sticks when its VIEWPORT resizes: typing a
-  // long (wrapping) line grows the input band below, which shrinks the scrollbox,
-  // and a spurious scrollbar update during that resize flips the box's internal
-  // "manual scroll" flag — so the transcript parks a few rows above the bottom and
-  // never snaps back, even after enter. We re-assert the pin ourselves on every
-  // resize (input grow/shrink) and on content growth, but ONLY while the user is
-  // actually at the bottom: if they scrolled up to read history we leave them
-  // there (stickBottomRef, tracked from real scroll-position changes below).
+  // The transcript scrollbox. OpenTUI's stickyStart="bottom" re-pins the view to
+  // the end on content growth AND on viewport resize (a wrapping composer grows
+  // the input band, shrinking the scrollbox) — but ONLY while its internal
+  // "manual scroll" flag is clear. Any real scroll gesture (a stray mouse-wheel
+  // notch is enough) sets that flag, and the box only clears it again when the
+  // view is within ONE row of the very bottom (its isAtStickyReengagePoint check).
+  // So if a nudge parks the view 2–3 rows up — visually still "at the bottom" —
+  // the box treats it as manually scrolled and a composer grow/shrink then drifts
+  // the transcript off the end instead of following it, and enter doesn't recover.
+  //
+  // We re-assert the pin ourselves on every resize (input grow/shrink) and on
+  // content growth, but only while the user is within a small near-bottom band:
+  // inside it we keep the view glued to the end (matching the box's own intent),
+  // past it we assume a deliberate scroll into history and leave them alone.
   const scrollRef = useRef<ScrollBoxRenderable | null>(null)
   const stickBottomRef = useRef(true)
+  // How many rows off the bottom still counts as "at the bottom". Must be wider
+  // than the box's 1-row reengage window so a small nudge (or a multi-row
+  // composer grow) stays pinned; small enough that reading history isn't yanked.
+  const NEAR_BOTTOM_ROWS = 3
 
-  // Re-pin the transcript to the bottom; a no-op if the user has scrolled up.
-  // Setting scrollTop back to the max also clears the box's corrupted internal
-  // "manual scroll" flag, so its own sticky logic resumes working afterwards.
+  // Re-pin the transcript to the bottom; a no-op once the user has scrolled up
+  // past the near-bottom band. Setting scrollTop back to the max also clears the
+  // box's "manual scroll" flag, so its own sticky logic resumes working afterwards.
   const restickBottom = useCallback(() => {
     const sb = scrollRef.current
     if (!sb || !stickBottomRef.current) return
@@ -211,17 +220,17 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     if (sb.scrollTop !== max) sb.scrollTop = max
   }, [])
 
-  // Track whether the user is at (within a row of) the bottom. Only a genuine
-  // position change fires the scrollbar's "change" event — content/viewport growth
-  // that merely moves the bottom away leaves scrollTop untouched and does NOT fire
-  // it — so this follows deliberate scrolling, not the resize drift we're fixing.
+  // Track whether the user is within the near-bottom band. Only a genuine scroll
+  // gesture fires the scrollbar's "change" event with a consistent position/max,
+  // so this follows deliberate scrolling and captures the pre-resize intent (it
+  // is NOT re-read during the resize itself, so a large single grow can't fool it).
   useEffect(() => {
     const sb = scrollRef.current
     if (!sb) return
     const bar = sb.verticalScrollBar
     const onScroll = ({ position }: { position: number }) => {
       const max = Math.max(0, sb.scrollHeight - sb.viewport.height)
-      stickBottomRef.current = position >= max - 1
+      stickBottomRef.current = max - position <= NEAR_BOTTOM_ROWS
     }
     bar.on("change", onScroll)
     return () => { bar.removeListener("change", onScroll) }

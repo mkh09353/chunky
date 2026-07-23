@@ -24,7 +24,7 @@ export async function suggestedModes(ready: Set<string>): Promise<OnboardingSugg
     } catch {}
   }
   const result: OnboardingSuggestion[] = []
-  if (ready.has("codex") && ready.has("anthropic")) result.push({ name: "fire",  description: "Anthropic Fable leads, with Codex workers and advice (Opus on frontend).", spec: { provider: "anthropic", model, effort: "low", sidekick: { provider: "codex", model: "gpt-5.6-luna", effort: "xhigh" }, advisor: { provider: "codex", model: "gpt-5.6-sol" }, sidekickSeats: { frontend: { provider: "anthropic", model: opus } } } })
+  if (ready.has("codex") && ready.has("anthropic")) result.push({ name: "fire",  description: "Anthropic Fable leads, with Codex workers and advice (Opus on frontend).", spec: { provider: "anthropic", model, effort: "low", sidekick: { provider: "codex", model: "gpt-5.6-terra", effort: "high" }, advisor: { provider: "codex", model: "gpt-5.6-sol" }, sidekickSeats: { frontend: { provider: "anthropic", model: opus } } } })
   else if (ready.has("codex")) result.push({ name: "default", description: "Codex Sol leads with Luna as a high-effort sidekick.", spec: { provider: "codex", model: "gpt-5.6-sol", sidekick: { provider: "codex", model: "gpt-5.6-luna", effort: "xhigh" }, advisor: null } })
   else if (ready.has("anthropic")) result.push({ name: "default", description: "Anthropic Fable leads your conversation.", spec: { provider: "anthropic", model, sidekick: null, advisor: null } })
   if (ready.has("codex")) {

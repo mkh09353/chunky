@@ -30,6 +30,7 @@ import { mockThreadsRun } from "./mockThreads.js"
 import { initialState, popUser, pushUser, reduce, type TranscriptState } from "./transcript.js"
 import { abortableSleep, isIntentionalAbort, reconnectDelay, retryableHttpMessage } from "./reconnect.js"
 import { ACCENT, BORDER, setIncognitoTheme, WARNING } from "./theme.js"
+import { activeExecutorModelLabel, prettyModel } from "./providerMark.js"
 import { WelcomeBanner } from "./components/WelcomeBanner.js"
 import { Transcript, fmtTokens } from "./components/Transcript.js"
 import { incognitoSegment, StatusLine, WatchingLine } from "./components/StatusLine.js"
@@ -89,21 +90,6 @@ async function fetchIncognito(baseUrl: string, sessionId: string): Promise<boole
   } catch {
     return false
   }
-}
-
-// Model ids that read better fully uppercased in the status line.
-const MODEL_ACRONYMS = new Set(["glm", "gpt", "api", "llm"])
-
-/** Prettify a model id for display: `grok-4.5` → `Grok 4.5`, `glm-5.2` → `GLM 5.2`,
- *  `claude-fable-5` → `Claude Fable 5`. Strips any `[...]` variant tag. Best-effort. */
-function prettyModel(id: string | null | undefined): string {
-  if (!id) return "…"
-  return id
-    .replace(/\[.*?\]/g, "")
-    .split(/[-_]/)
-    .filter(Boolean)
-    .map((p) => (MODEL_ACRONYMS.has(p.toLowerCase()) ? p.toUpperCase() : /^[\d.]+$/.test(p) ? p : p[0]!.toUpperCase() + p.slice(1)))
-    .join(" ")
 }
 
 /** The active model selection, shown on the status line and updated by /model. */
@@ -278,6 +264,29 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   } | null>(null)
   // The active model selection, reflected on the status line.
   const [currentSel, setCurrentSel] = useState<CurrentSelection | null>(null)
+  // Mirrors `currentSel` so `updateCurrentSel` can compare without closing over
+  // state (keeps the callback stable for the mount /api/model effect).
+  const currentSelRef = useRef<CurrentSelection | null>(null)
+  // Concrete provider-reported model id from the latest ROOT-thread usage.update
+  // (e.g. Anthropic resolving `opus[1m]` → `claude-opus-4-1-…`). Cleared whenever
+  // the configured selection or attached session changes so a stale id never
+  // leaks across /model switches or /resume attaches.
+  const [resolvedRuntimeModel, setResolvedRuntimeModel] = useState<string | null>(null)
+  // Single write path for the configured selection. Clears the resolved concrete
+  // model only when provider/model/effort/speed actually change — an identical
+  // /api/model refetch (or mount fetch racing SSE history replay) must not wipe
+  // a just-learned runtime id. No nested setters: compare via the mirror ref.
+  const updateCurrentSel = useCallback((sel: CurrentSelection | null) => {
+    const prev = currentSelRef.current
+    const same =
+      prev?.provider === sel?.provider &&
+      prev?.model === sel?.model &&
+      prev?.effort === sel?.effort &&
+      prev?.speed === sel?.speed
+    currentSelRef.current = sel
+    setCurrentSel(sel)
+    if (!same) setResolvedRuntimeModel(null)
+  }, [])
   // The active advisor config, reflected on the status line.
   const [advisor, setAdvisor] = useState<{
     enabled: boolean
@@ -400,6 +409,12 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       if (ev.type === "message.delta" && !ev.threadId) lastAssistantRef.current += ev.text
       if (ev.type === "queue.changed") setAuthoritativeQueueCount(ev.entries.length)
       if (ev.type === "background.changed") setBackground({ tasks: ev.tasks, monitors: ev.monitors })
+      // Root-thread usage only: child/sidekick/advisor usage must not overwrite
+      // the lead executor label. History replay re-runs these in order, so the
+      // last root usage wins (matching goal.update).
+      if (ev.type === "usage.update" && !ev.threadId && ev.usage.model) {
+        setResolvedRuntimeModel(ev.usage.model)
+      }
       // Live sends are echoed locally after the POST is accepted. On resume, the
       // accepted injected:false event is the sole raw transcript echo;
       // injected:true is only a model-continuation marker.
@@ -530,7 +545,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       try {
         const res = await fetch(baseUrl + "/api/model")
         const body = (await res.json()) as CurrentSelection
-        if (!cancelled) setCurrentSel(body)
+        if (!cancelled) updateCurrentSel(body)
       } catch {
         // leave as null; status line falls back to a placeholder
       }
@@ -538,7 +553,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     return () => {
       cancelled = true
     }
-  }, [mode, baseUrl])
+  }, [mode, baseUrl, updateCurrentSel])
 
   // ---- live: load the advisor config so the status line shows it (and after /advisor) ----
   const refreshAdvisor = useCallback(async () => {
@@ -957,6 +972,9 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     setPrefill(null)
     setAuthoritativeQueueCount(0)
     setBackground({ tasks: 0, monitors: 0 })
+    // Drop any concrete model from the previous session; resume replay may
+    // repopulate it from root usage.update events in the new history.
+    setResolvedRuntimeModel(null)
     resumeTargetRef.current = sessionId
     sessionIdRef.current = null
     setSessionKey((k) => k + 1)
@@ -1401,7 +1419,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   const onModelDone = useCallback(
     (result: ModelSelectionResult, summary: string) => {
       setModelPickerOpen(false)
-      setCurrentSel({
+      updateCurrentSel({
         provider: result.provider,
         model: result.model,
         effort: result.effort ?? null,
@@ -1409,7 +1427,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       })
       printLine(summary)
     },
-    [printLine],
+    [printLine, updateCurrentSel],
   )
 
   // /advisor — open the picker that sets the always-on advisor's model.
@@ -1654,7 +1672,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         printLine(`Mode: ${body.error} — \`/mode\` lists what's saved.`)
         return null
       }
-      setCurrentSel({
+      updateCurrentSel({
         provider: body.provider,
         model: body.model,
         effort: body.effort ?? null,
@@ -1664,7 +1682,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       void refreshSidekick()
       return body
     },
-    [baseUrl, printLine, refreshAdvisor, refreshSidekick],
+    [baseUrl, printLine, refreshAdvisor, refreshSidekick, updateCurrentSel],
   )
 
   // /mode — named executor+sidekick+advisor trios. `rest` is everything after "/mode":
@@ -1802,7 +1820,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     (payload: ModeApplyPayload, summary: string) => {
       setModeMenuOpen(false)
       setIncognitoMenuOpen(false)
-      setCurrentSel({
+      updateCurrentSel({
         provider: payload.provider,
         model: payload.model,
         effort: payload.effort ?? null,
@@ -1832,7 +1850,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
       }
       printLine(summary)
     },
-    [printLine, refreshAdvisor, refreshSidekick],
+    [printLine, refreshAdvisor, refreshSidekick, updateCurrentSel],
   )
 
   // Saved/deleted/error from the mode menu: echo the line + close.
@@ -1861,6 +1879,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           setPrefill(null)
           setAuthoritativeQueueCount(0)
           setBackground({ tasks: 0, monitors: 0 })
+          setResolvedRuntimeModel(null)
           if (mode === "live") {
             const old = sessionIdRef.current
             if (old) void fetch(baseUrl + ROUTES.interrupt(old), { method: "POST" }).catch(() => {})
@@ -1961,13 +1980,26 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   // More than just the main thread means child threads exist -> show the toggle hint.
   const hasThreads = state.order.length > 1
 
-  // Welcome-banner model label: the REAL active selection (model · provider), not a
-  // hardcoded string. Shows "connecting…" until the first /api/model fetch lands.
+  // Welcome-banner / bottom-rule executor label: provider-qualified, prefers a
+  // concrete root usage.model once known, otherwise the configured alias.
+  // Shows "connecting…" until the first /api/model fetch lands. Banner omits
+  // effort (still on the bottom rule) to stay one quiet line.
+  const executorLabel =
+    mode === "live"
+      ? activeExecutorModelLabel({
+          provider: currentSel?.provider,
+          configuredModel: currentSel?.model,
+          resolvedModel: resolvedRuntimeModel,
+          effort: currentSel?.effort,
+        })
+      : null
   const bannerModel =
     mode === "live"
-      ? currentSel?.model
-        ? `${currentSel.model} · ${currentSel.provider}`
-        : "connecting…"
+      ? activeExecutorModelLabel({
+          provider: currentSel?.provider,
+          configuredModel: currentSel?.model,
+          resolvedModel: resolvedRuntimeModel,
+        }) ?? "connecting…"
       : "mock transcript"
   const effortParen = (e?: string | null) => (e ? ` (${e})` : "")
   // Styled status drawn into the input's bottom rule (right-aligned). The
@@ -1977,14 +2009,14 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   // a connecting live session (no selection yet) yields no segments → plain rule.
   const bottomStatus = ((): StatusSegment[] | undefined => {
     if (mode !== "live") return [{ text: "mock", dim: true }]
-    if (!currentSel?.model) return undefined // connecting — plain full-width rule
+    if (!executorLabel) return undefined // connecting — plain full-width rule
     const chips: StatusSegment[] = []
     // INCOGNITO first, in the (now red) accent — the loudest thing on the rule.
     const ghost = incognitoSegment(incognito)
     if (ghost) chips.push(ghost)
-    // Executor: `<model> <effort>` in ACCENT, effort without parens.
+    // Executor: `A·Opus high` (or concrete id after root usage) in ACCENT.
     chips.push({
-      text: `${prettyModel(currentSel.model)}${currentSel.effort ? ` ${currentSel.effort}` : ""}`,
+      text: executorLabel,
       color: ACCENT,
     })
     // Sidekick chip — only when enabled. `⚒ sidekick <model>` (the lead's model
@@ -2000,7 +2032,10 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
             : ` +${seatNames.length}`
       // An unconfigured default seat INHERITS the lead's selection — show the
       // effective model (what a handoff actually runs on), not the word "inherit".
-      const model = sidekick.model ? prettyModel(sidekick.model) : `${prettyModel(currentSel.model)}`
+      // Prefer the resolved concrete id when the seat inherits the executor.
+      const model = sidekick.model
+        ? prettyModel(sidekick.model)
+        : prettyModel(resolvedRuntimeModel || currentSel?.model)
       chips.push({ text: `⚒ sidekick ${model}${seatSuffix}`, dim: true })
     }
     // Advisor chip — only when enabled AND it has a model; ` ✕` when suppressed.

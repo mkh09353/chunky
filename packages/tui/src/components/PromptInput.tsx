@@ -1,12 +1,13 @@
 import { useEffect, useRef, useState } from "react"
 import { TextAttributes } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/react"
-import { ROUTES, type FileSearchItem, type FileSearchResponse } from "@chunky/protocol"
+import { type FileSearchItem, type FileSearchResponse } from "@chunky/protocol"
 import { ACCENT, BORDER } from "../theme.js"
 import { rawModeSupported, useInput, usePasteText } from "../useInput.js"
 import { COMMANDS, SlashMenu, type Command } from "./SlashMenu.js"
 import { MentionMenu, activeMention } from "./MentionMenu.js"
 import { expandPastes, normalizePaste, pasteLabel, shouldCollapsePaste } from "../pastes.js"
+import { beginFileSearch, fileSearchUrl, isCurrentFileSearch } from "../fileSearch.js"
 
 const { DIM, INVERSE } = TextAttributes
 
@@ -43,6 +44,8 @@ interface Props {
   attachmentCount?: number
   /** Server base URL for FFF file search (live mode). Absent → no @ autocomplete. */
   baseUrl?: string
+  /** Authoritative session scope for FFF search (handles resumed/worktree sessions). */
+  sessionId?: string
   /** When the nonce changes, replace the buffer with `text` — used to hand a
    *  message back after a canceled cache-guard confirm so nothing is lost. */
   prefill?: { text: string; nonce: number } | null
@@ -63,6 +66,7 @@ export function PromptInput({
   onPasteImage,
   attachmentCount = 0,
   baseUrl,
+  sessionId,
   prefill,
   running = false,
   threadsHint = "",
@@ -147,34 +151,41 @@ export function PromptInput({
 
   useEffect(() => {
     if (!mention || !baseUrl) {
+      // Invalidate fetches already in flight before hiding the picker.
+      searchGen.current += 1
       setFileHits([])
       setFileLoading(false)
       return
     }
     const gen = ++searchGen.current
-    setFileLoading(true)
+    // Do not render a prior query's files under the newly typed query while its
+    // debounce/fetch is pending.
+    const next = beginFileSearch()
+    setFileHits(next.items)
+    setSelected(0)
+    setFileLoading(next.loading)
     const q = mention.query
     const timer = setTimeout(() => {
-      const url = `${baseUrl}${ROUTES.fileSearch}?q=${encodeURIComponent(q)}&limit=12`
+      const url = fileSearchUrl(baseUrl, q, sessionId)
       void fetch(url)
         .then(async (res) => {
           if (!res.ok) throw new Error(`search ${res.status}`)
           return (await res.json()) as FileSearchResponse
         })
         .then((body) => {
-          if (searchGen.current !== gen) return
+          if (!isCurrentFileSearch(gen, searchGen.current)) return
           setFileHits(body.items ?? [])
           setSelected(0)
           setFileLoading(false)
         })
         .catch(() => {
-          if (searchGen.current !== gen) return
+          if (!isCurrentFileSearch(gen, searchGen.current)) return
           setFileHits([])
           setFileLoading(false)
         })
     }, 60) // light debounce so each keystroke doesn't hammer FFF
     return () => clearTimeout(timer)
-  }, [mention?.query, mention?.start, baseUrl])
+  }, [mention?.query, mention?.start, baseUrl, sessionId])
 
   const mentionActive = mention != null && !!baseUrl
   const mentionItems = mentionActive ? fileHits : []

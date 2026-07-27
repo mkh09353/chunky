@@ -38,6 +38,9 @@ export type AgentEvent =
   | { type: "session.rewound"; sessionId: string; turn: number }
   /** Live task counts; deliberately not persisted in transcript history. */
   | { type: "background.changed"; sessionId: string; tasks: number; monitors: number }
+  /** A saved mode changed the server-wide executor/agent configuration. This is
+   * live-only and broadcasts to every currently attached session stream. */
+  | { type: "mode.applied"; name: string; spec: ModeSpec }
   /** Emitted at the START of a turn when the prompt cache for this thread is
    * cold — the previous turn's cached prefix is gone, so this turn re-sends the
    * whole context. Either the idle gap exceeded the cache TTL, or the model
@@ -371,8 +374,9 @@ export const ROUTES = {
   rewindPoints: (id: string) => `/api/sessions/${id}/rewind-points`,
   rewind: (id: string) => `/api/sessions/${id}/rewind`,
   fork: (id: string) => `/api/sessions/${id}/fork`,
-  // GET ?q=&limit=&repo=<id> -> { items: FileSearchItem[] } — FFF fuzzy search
-  // for @-mentions, scoped to one repo (default repo when omitted).
+  // GET ?q=&limit=&repo=<id>&session=<id> -> { items: FileSearchItem[] } — FFF
+  // fuzzy search for @-mentions. A session scopes to its pinned workspace;
+  // repo/default scope remains for callers that omit it.
   fileSearch: `/api/files/search`,
   // GET  -> GoalStateResponse (current goal, or null).
   // POST GoalRequest -> GoalStateResponse. Set an objective (starts the loop) or

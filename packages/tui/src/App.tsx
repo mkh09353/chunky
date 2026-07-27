@@ -318,6 +318,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   // Bumped by /clear so the live-session effect creates a brand-new server
   // session (fresh prompt cache + empty transcript) instead of only wiping UI.
   const [sessionKey, setSessionKey] = useState(0)
+  const [activeSessionId, setActiveSessionId] = useState<string | undefined>()
   // True while the ATTACHED session is off the record. Server-owned and fixed at
   // session creation, so it's read once per attach (create response, or the
   // session list when resuming) and never mutated locally.
@@ -462,6 +463,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
     let cancelled = false
     const streamAbort = new AbortController()
     sessionIdRef.current = null
+    setActiveSessionId(undefined)
     ;(async () => {
       try {
         let sessionId = resumeTargetRef.current
@@ -486,6 +488,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           } catch { /* handshake is advisory */ }
         }
         sessionIdRef.current = sessionId
+        setActiveSessionId(sessionId)
         // Resuming an existing session: the create response never happened, so
         // the flag comes off the session list instead. Advisory — a failure just
         // leaves the normal palette.
@@ -2221,6 +2224,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
           onPasteImage={onPasteImage}
           attachmentCount={attachments.length}
           baseUrl={mode === "live" ? baseUrl : undefined}
+          sessionId={activeSessionId}
           prefill={prefill}
         />
       </box>

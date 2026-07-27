@@ -1,7 +1,13 @@
 import { describe, expect, test } from "bun:test"
-import type { AgentEvent, QueueEntry } from "./index.ts"
+import type { AgentEvent, ModeSpec, QueueEntry } from "./index.ts"
 
 describe("queue and interjection protocol events", () => {
+  test("mode.applied carries the saved mode name and full spec", () => {
+    const spec: ModeSpec = { provider: "zen", model: "glm-5" }
+    const event: AgentEvent = { type: "mode.applied", name: "fire", spec }
+    expect(event).toEqual({ type: "mode.applied", name: "fire", spec })
+  })
+
   test("queue.changed carries authoritative ordered entries", () => {
     const entry: QueueEntry = {
       id: "q-1",

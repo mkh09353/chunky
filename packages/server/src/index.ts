@@ -92,6 +92,7 @@ import { drainQueue, installSessionBus } from "./session-bus.ts"
 import { InterjectionBuffer, PromptQueue, formatInterjection } from "./prompt-queue.ts"
 import { cacheColdPayload, checkCacheCold, exceedsGuard } from "./cache-watch.ts"
 import { getFinder } from "./fff.ts"
+import { resolveFileSearchWorkspace } from "./file-search.ts"
 import {
   activeRepo,
   addRepo,
@@ -200,6 +201,21 @@ function emitTo(sessionId: string, ev: AgentEvent): void {
       controller.enqueue(frame)
     } catch {
       // subscriber gone; cleaned up on cancel
+    }
+  }
+}
+
+/** Push a server-wide configuration change to every currently attached session.
+ * It intentionally is not persisted into individual session histories. */
+function broadcastLive(ev: AgentEvent): void {
+  const frame = encoder.encode(sse(ev))
+  for (const set of live.values()) {
+    for (const controller of set) {
+      try {
+        controller.enqueue(frame)
+      } catch {
+        // Subscriber gone; cleaned up by its stream's cancel handler.
+      }
     }
   }
 }
@@ -509,6 +525,7 @@ const server = Bun.serve({
       const name = body?.name?.trim() || "default"
       if (!/^[\w+.-]{1,40}$/.test(name)) return json({ error: "invalid mode name" }, 400)
       try { applyOnboardingMode(name, spec) } catch (err) { return json({ error: (err as Error).message }, 404) }
+      broadcastLive({ type: "mode.applied", name, spec })
       return json({ applied: name, spec })
     }
     if (req.method === "POST" && pathname === ROUTES.customProvider) {
@@ -953,6 +970,7 @@ const server = Bun.serve({
           setSidekickSeats({})
         }
         invalidateAgent()
+        broadcastLive({ type: "mode.applied", name, spec })
         const sel = selectionOf(spec.provider)
         return json({
           applied: name,
@@ -992,19 +1010,24 @@ const server = Bun.serve({
       }
     }
 
-    // GET /api/files/search?q=...&limit=20&repo=<id>
+    // GET /api/files/search?q=...&limit=20&repo=<id>&session=<id>
     //   -> { items: [{ path, name, kind: "file"|"directory" }] }
     // FFF-backed fuzzy search for @-mention autocomplete, scoped to one repo's
-    // finder (default: the default repo, for clients that don't pass one).
+    // finder. A session scope is authoritative; repo/default is retained for
+    // callers that do not provide one.
     if (req.method === "GET" && pathname === "/api/files/search") {
       const q = url.searchParams.get("q") ?? ""
       const limitRaw = Number(url.searchParams.get("limit") ?? "20")
       const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(limitRaw, 50)) : 20
       const repoParam = url.searchParams.get("repo")
-      const repo = repoParam ? repoById(repoParam) : activeRepo()
-      if (repoParam && !repo) return json({ error: `unknown repo "${repoParam}"`, items: [] }, 404)
+      const scope = resolveFileSearchWorkspace(url.searchParams.get("session"), repoParam, {
+        workspaceOf: (sessionId) => Store.workspaceOf(sessionId),
+        repoPath: (repoId) => repoById(repoId)?.path ?? null,
+        activeRepoPath: () => activeRepo()?.path ?? null,
+      })
+      if ("error" in scope) return json({ error: scope.error, items: [] }, scope.status)
       try {
-        const finder = await getFinder(repo?.path)
+        const finder = await getFinder(scope.workspace ?? undefined)
         const result = finder.mixedSearch(q, { pageSize: limit })
         if (!result.ok) return json({ error: result.error, items: [] }, 502)
         const items = result.value.items.slice(0, limit).map((mixed) => {

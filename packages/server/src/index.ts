@@ -434,6 +434,28 @@ function json(body: unknown, status = 200, req?: Request): Response {
   })
 }
 
+/** Apply request-specific CORS after a route has constructed its response. */
+function finalizeCors(req: Request, response: Response): Response {
+  const origin = req.headers.get("origin")
+  if (!origin || !ALLOWED_ORIGINS.has(origin)) return response
+  const headers = new Headers(response.headers)
+  headers.set("Access-Control-Allow-Origin", origin)
+  const vary = headers.get("Vary")
+  if (!vary) headers.set("Vary", "Origin")
+  else if (!vary.split(",").some((value) => value.trim().toLowerCase() === "origin")) headers.set("Vary", `${vary}, Origin`)
+  return new Response(response.body, { status: response.status, statusText: response.statusText, headers })
+}
+
+function withCors<T extends { fetch: (req: Request, ...args: any[]) => Response | Promise<Response> }>(options: T): T {
+  const fetch = options.fetch
+  return {
+    ...options,
+    async fetch(req: Request, ...args: any[]): Promise<Response> {
+      return finalizeCors(req, await fetch(req, ...args))
+    },
+  } as T
+}
+
 const port = Number(process.env.CHUNKY_PORT) || DEFAULT_PORT
 const launcherManaged = !!process.env.CHUNKY_SERVER_NONCE
 const serverLeases = launcherManaged ? new ServerLeaseTracker(() => Date.now(), 30_000, 30_000) : null
@@ -450,7 +472,7 @@ if (!previousUpdateCheck?.checkedAt || previousUpdateCheck.current !== currentVe
 // on restart; no durable-session rehydration is performed.
 rmSync(join(tmpdir(), "chunky-incognito"), { recursive: true, force: true })
 
-const server = Bun.serve({
+const server = Bun.serve(withCors({
   port,
   idleTimeout: 0, // never time out SSE connections
   async fetch(req, server) {
@@ -1502,7 +1524,7 @@ const server = Bun.serve({
 
     return new Response("not found", { status: 404, headers: corsHeaders(req) })
   },
-})
+}))
 
 const discoveryRecord = process.env.CHUNKY_DISCOVERY_RECORD
 const ownershipId = process.env.CHUNKY_SERVER_ID

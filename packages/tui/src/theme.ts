@@ -98,6 +98,7 @@ export function setThemeAppearance(next: Appearance): boolean {
   MARKER = palette.MARKER; MARKER_BULLET = palette.MARKER_BULLET; BORDER = palette.BORDER
   SUCCESS = palette.SUCCESS; ERROR = palette.ERROR; WARNING = palette.WARNING
   CODE = palette.CODE; CODE_MUTED = palette.CODE_MUTED
+  CURSOR_BG = CURSOR[appearance].bg; CURSOR_FG = CURSOR[appearance].fg
   return true
 }
 export function themeAppearance(): Appearance { return appearance }
@@ -119,6 +120,21 @@ export let WARNING = PALETTES.dark.normal.WARNING
 export let CODE = PALETTES.dark.normal.CODE
 /** Fenced-code rail / language tag — quieter than CODE. */
 export let CODE_MUTED = PALETTES.dark.normal.CODE_MUTED
+
+/**
+ * The composer's block cursor, as an EXPLICIT foreground/background pair rather
+ * than the INVERSE attribute — see CursorText in PromptInput.tsx for why that
+ * distinction matters (OpenTUI drops the trailing `ESC[0m` on any run that ends
+ * at the last column, so an attribute like INVERSE bleeds into the next row
+ * while colors do not). The pair simply mirrors the terminal's own contrast:
+ * a light block with dark text on dark terminals, and the reverse on light.
+ */
+export let CURSOR_BG = "#e6edf3"
+export let CURSOR_FG = "#0d1117"
+const CURSOR: Record<Appearance, { bg: string; fg: string }> = {
+  dark: { bg: "#e6edf3", fg: "#0d1117" },
+  light: { bg: "#1f2328", fg: "#ffffff" },
+}
 
 /** The teardrop-asterisk sparkle Claude Code shows in its welcome banner. */
 export const SPARKLE = "✻"

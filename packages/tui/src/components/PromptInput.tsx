@@ -2,14 +2,14 @@ import { useEffect, useRef, useState } from "react"
 import { TextAttributes } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/react"
 import { type FileSearchItem, type FileSearchResponse } from "@chunky/protocol"
-import { ACCENT, BORDER } from "../theme.js"
+import { ACCENT, BORDER, CURSOR_BG, CURSOR_FG } from "../theme.js"
 import { rawModeSupported, useInput, usePasteText } from "../useInput.js"
 import { COMMANDS, SlashMenu, type Command } from "./SlashMenu.js"
 import { MentionMenu, activeMention } from "./MentionMenu.js"
 import { expandPastes, normalizePaste, pasteLabel, shouldCollapsePaste } from "../pastes.js"
 import { beginFileSearch, fileSearchUrl, isCurrentFileSearch } from "../fileSearch.js"
 
-const { DIM, INVERSE } = TextAttributes
+const { DIM } = TextAttributes
 
 /** One styled span of the bottom-rule status label. `color` sets the foreground
  *  (omitted → terminal default); `dim` applies the DIM attribute. BottomRule
@@ -457,17 +457,32 @@ function CursorText({
   }
   const before = value.slice(0, cursor)
   const rawAt = value.slice(cursor, cursor + 1)
-  // Never paint INVERSE onto a newline: the styled "\n" makes the renderer
-  // flush an inverse run across the wrapped row — the stray white block. When
-  // the cursor sits on a newline, show the block cursor as a space *before*
-  // the break and keep the newline itself unstyled.
+  // Never style a newline: the styled "\n" makes the renderer flush the cursor's
+  // run across the wrapped row. When the cursor sits on a newline, show the
+  // block cursor as a space *before* the break and keep the newline unstyled.
   const onNewline = rawAt === "\n"
   const at = onNewline || rawAt === "" ? " " : rawAt
   const after = (onNewline ? "\n" : "") + value.slice(cursor + 1)
+  // The block cursor is drawn with EXPLICIT fg/bg, never TextAttributes.INVERSE.
+  // OpenTUI's ANSI writer emits every run as `<fg><bg><attrs>text ESC[0m`, but it
+  // drops that trailing reset when a run ends on the terminal's LAST column (it
+  // leans on the wrap/next cursor move instead). The following run re-emits fg
+  // and bg explicitly — yet nothing ever turns an *attribute* back off — so an
+  // INVERSE cursor landing on the last column left ESC[7m active and the next
+  // run's leading spaces on the wrapped row were painted as a multi-cell white
+  // block. Colors are re-stated on every run, so they cannot bleed that way.
   return (
     <text>
       {before}
-      {showCursor ? <span attributes={INVERSE}>{at}</span> : at === " " ? "" : at}
+      {showCursor ? (
+        <span fg={CURSOR_FG} bg={CURSOR_BG}>
+          {at}
+        </span>
+      ) : at === " " ? (
+        ""
+      ) : (
+        at
+      )}
       {after}
     </text>
   )

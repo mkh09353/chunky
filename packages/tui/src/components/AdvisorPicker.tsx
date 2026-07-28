@@ -30,6 +30,8 @@ export interface AdvisorSelectionResult {
 
 interface Props {
   baseUrl: string
+  /** Sidekick pickers pass their attached session; advisor remains global. */
+  sessionId?: string | null
   onDone: (result: AdvisorSelectionResult, summary: string) => void
   onCancel: () => void
   /** Which side-thread seat this picker configures. Defaults to the advisor;
@@ -72,7 +74,7 @@ function fuzzyScore(query: string, target: string): number {
  * effort}. The server auto-suppresses an advisor that equals the executor model —
  * we surface that as an "(inactive)" note.
  */
-export function AdvisorPicker({ baseUrl, onDone, onCancel, seat = "advisor", seatName }: Props) {
+export function AdvisorPicker({ baseUrl, sessionId, onDone, onCancel, seat = "advisor", seatName }: Props) {
   const rawSupported = rawModeSupported
   // Seat-specific copy: same picker, different side thread + endpoint.
   const seatCap = seatName ? `Sidekick seat "${seatName}"` : seat === "advisor" ? "Advisor" : "Sidekick"
@@ -151,7 +153,11 @@ export function AdvisorPicker({ baseUrl, onDone, onCancel, seat = "advisor", sea
       const res = await fetch(baseUrl + `/api/${seat}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(seatName ? { ...payload, seat: seatName } : payload),
+        body: JSON.stringify({
+          ...payload,
+          ...(seatName ? { seat: seatName } : {}),
+          ...(seat === "sidekick" && sessionId ? { sessionId } : {}),
+        }),
       })
       const body = (await res.json()) as { error?: string; active?: boolean }
       if (body.error) {

@@ -393,9 +393,9 @@ export async function buildAnthropicOptions(
       request.systemPrompt ??
       buildSystemPrompt("edit", false, workspace, {
         fileToolProfile: resolveFileToolProfile(),
-        hasSidekick: sidekickFor(selection) != null,
+        hasSidekick: sidekickFor(selection, request.usageContext?.sessionId) != null,
         hasReview: resolveReviewSelection(request.usageContext?.sessionId) != null,
-        sidekickSeats: listSidekickSeats(),
+        sidekickSeats: listSidekickSeats(request.usageContext?.sessionId),
         agentsMd: request.agentsMd,
         repoMemory: readRepoMemory(workspace, threadId),
       }),

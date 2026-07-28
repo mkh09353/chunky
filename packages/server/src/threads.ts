@@ -511,12 +511,12 @@ export class ThreadManager implements ThreadSpawner {
   async delegateToSidekick(opts: { callerThreadId: string; brief: string; seat?: string }): Promise<string> {
     const rootSelection = this.selections.get(this.rootId) ?? activeSelection()
     const seat = opts.seat?.trim() || undefined
-    const sidekickSel = seat && seat !== "default" ? resolveSidekickSeat(seat) : sidekickFor(rootSelection)
+    const sidekickSel = seat && seat !== "default" ? resolveSidekickSeat(seat, this.rootId) : sidekickFor(rootSelection, this.rootId)
     if (!sidekickSel) {
       if (seat && seat !== "default") {
         // Guard the seat name like spawn_thread guards providers: error with the
         // valid set so the lead corrects itself instead of the handoff dying.
-        const seats = listSidekickSeats()
+        const seats = listSidekickSeats(this.rootId)
         return seats.length > 0
           ? `error: unknown sidekick seat "${seat}". Configured seats: ${seats.map((s) => `"${s}"`).join(", ")} (or omit "seat" for the default). Ask the user to add seats with /sidekick <name>.`
           : `error: no named sidekick seats are configured — omit "seat" to use the default sidekick, or ask the user to add one with /sidekick <name>.`

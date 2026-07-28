@@ -583,7 +583,8 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
   const refreshSidekick = useCallback(async () => {
     if (mode !== "live") return
     try {
-      const res = await fetch(baseUrl + "/api/sidekick")
+      const sid = sessionIdRef.current
+      const res = await fetch(baseUrl + "/api/sidekick" + (sid ? `?sessionId=${encodeURIComponent(sid)}` : ""))
       const body = (await res.json()) as {
         config?: { enabled?: boolean; provider?: string; model?: string; effort?: string }
         seats?: Record<string, { provider: string; model: string; effort?: string }>
@@ -2136,7 +2137,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         )}
         {skillsPickerOpen && <SkillsPicker baseUrl={baseUrl} sessionId={sessionIdRef.current} onSelect={(name) => { setPendingSkill(name); setSkillsPickerOpen(false) }} onCancel={() => setSkillsPickerOpen(false)} />}
         {modelPickerOpen && (
-          <ModelPicker baseUrl={baseUrl} onDone={onModelDone} onCancel={() => setModelPickerOpen(false)} />
+          <ModelPicker baseUrl={baseUrl} sessionId={sessionIdRef.current} onDone={onModelDone} onCancel={() => setModelPickerOpen(false)} />
         )}
         {providerPickerOpen && (
           <ProviderPicker baseUrl={baseUrl} onDone={(summary) => { setProviderPickerOpen(false); printLine(summary) }} onCancel={() => setProviderPickerOpen(false)} />
@@ -2149,6 +2150,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
             seat="sidekick"
             seatName={sidekickPicker.seat}
             baseUrl={baseUrl}
+            sessionId={sessionIdRef.current}
             onDone={onSidekickDone}
             onCancel={() => setSidekickPicker(null)}
           />
@@ -2156,6 +2158,7 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         {sidekickSeatMenuOpen && (
           <SidekickSeatMenu
             baseUrl={baseUrl}
+            sessionId={sessionIdRef.current}
             currentModel={currentSel?.model ?? undefined}
             onDone={(seat) => {
               setSidekickSeatMenuOpen(false)

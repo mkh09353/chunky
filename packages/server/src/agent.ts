@@ -224,7 +224,7 @@ export function editToolNameForModel(modelId: string | undefined, providerId: st
  */
 export function executorToolsFor(selection: AgentSelection, sessionId?: string) {
   const advisorSel = advisorFor(selection)
-  const sidekickSel = sidekickFor(selection)
+  const sidekickSel = sidekickFor(selection, sessionId)
   const reviewSel = resolveReviewSelection(sessionId)
   const tools = [
     ...fileToolsFor(selection.model, selection.provider),
@@ -272,7 +272,7 @@ export const RECURSION_LIMIT = Number(process.env.CHUNKY_RECURSION_LIMIT) || 500
  */
 export function agentPlanFor(selection: AgentSelection, sessionId?: string) {
   const { tools, hasAdvisor, hasSidekick, hasReview } = executorToolsFor(selection, sessionId)
-  const sidekickSeats = listSidekickSeats()
+  const sidekickSeats = listSidekickSeats(sessionId)
   const nativeToolSearch = supportsNativeToolSearch(selection.provider, selection.model)
   const toolSearchConfig = toolSearchMiddlewareConfigFor(
     selection.provider,

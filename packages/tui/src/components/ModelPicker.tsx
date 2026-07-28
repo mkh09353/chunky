@@ -33,6 +33,8 @@ export interface ModelSelectionResult {
 
 interface Props {
   baseUrl: string
+  /** Present only for the /model picker in an attached session. */
+  sessionId?: string | null
   onDone: (result: ModelSelectionResult, summary: string) => void
   onCancel: () => void
 }
@@ -82,7 +84,7 @@ function fuzzyScore(query: string, target: string): number {
  * Esc steps back (and cancels from the list). Styled after the slash menu /
  * LoginPicker (rounded violet box, ❯ pointer).
  */
-export function ModelPicker({ baseUrl, onDone, onCancel }: Props) {
+export function ModelPicker({ baseUrl, sessionId, onDone, onCancel }: Props) {
   const rawSupported = rawModeSupported
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
@@ -161,7 +163,7 @@ export function ModelPicker({ baseUrl, onDone, onCancel }: Props) {
       const res = await fetch(baseUrl + "/api/model/select", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(payload),
+        body: JSON.stringify(sessionId ? { ...payload, sessionId } : payload),
       })
       const body = (await res.json()) as { error?: string; provider?: string; model?: string }
       if (body.error) {

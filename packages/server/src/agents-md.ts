@@ -70,7 +70,7 @@ export async function distilledAgentsMd(workspace: string, selection: AgentSelec
     const sourceHash = createHash("sha256")
       .update(JSON.stringify(sources))
       .digest("hex")
-    const modelSelection = sidekickFor(selection) ?? selection
+    const modelSelection = sidekickFor(selection, sessionId) ?? selection
     const model = `${modelSelection.provider}/${modelSelection.model}`
     const cachePath = join(stateDir(), "agents-md", `${repoId(root)}.json`)
     try {

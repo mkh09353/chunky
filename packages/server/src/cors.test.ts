@@ -61,6 +61,32 @@ describe("server CORS responses", () => {
     expectAllowedCors(repos)
   })
 
+  test("returns a session's pinned selection from GET /api/model?sessionId", async () => {
+    const created = await request("/api/sessions", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: "{}",
+    })
+    expect(created.status).toBe(200)
+    const { sessionId } = await created.json() as { sessionId: string }
+
+    const selected = await request("/api/model/select", {
+      method: "POST",
+      headers: { ...auth, "Content-Type": "application/json" },
+      body: JSON.stringify({ sessionId, provider: "zen", model: "session-pinned-model", effort: "high", speed: "fast" }),
+    })
+    expect(selected.status).toBe(200)
+
+    const response = await request(`/api/model?sessionId=${encodeURIComponent(sessionId)}`, { headers: auth })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({
+      provider: "zen",
+      model: "session-pinned-model",
+      effort: "high",
+      speed: "fast",
+    })
+  })
+
   test("preserves strict origin policy while allowing non-browser clients", async () => {
     const rejected = await request("/api/info", { headers: { ...auth, Origin: "null" } })
     expect(rejected.status).toBe(403)

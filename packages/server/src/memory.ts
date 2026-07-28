@@ -107,7 +107,7 @@ export async function dreamRepoMemory(workspace: string, selection: AgentSelecti
   if (!transcript || (!force && lastTranscriptHash.get(key) === transcriptHash)) return false
   dreaming.add(key)
   try {
-    const cheap = sidekickFor(selection) ?? selection
+    const cheap = sidekickFor(selection, sessionId) ?? selection
     const result = await invokeModel(resolveModel(cheap, sessionId), [{ role: "system", content: DREAM_SYSTEM }, { role: "user", content: input }])
     const rewritten = textOf(result).trim().split("\n").slice(0, MAX_MEMORY_LINES).join("\n").trim()
     writeRepoMemory(workspace, rewritten, sessionId)

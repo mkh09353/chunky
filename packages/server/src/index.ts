@@ -40,6 +40,8 @@ import {
   listProviders,
   resolveAdvisorSelection,
   resolveReviewSelection,
+  effectiveSidekickConfig,
+  effectiveSidekickSeats,
   selectionOf,
   setActiveProviderId,
   setSelection,
@@ -775,8 +777,16 @@ const server = Bun.serve(withCors({
       return json({ action: body.action, name: body.name, enabled: body.action === "enable" })
     }
 
-    // GET /api/model -> the current active selection { provider, model, effort?, speed? }
+    // GET /api/model -> the current active selection, or a session's effective
+    // pinned selection when `sessionId` is supplied. Both forms preserve the
+    // established { provider, model, effort, speed } response shape.
     if (req.method === "GET" && pathname === "/api/model") {
+      const sessionId = url.searchParams.get("sessionId") || undefined
+      if (sessionId) {
+        if (!Store.exists(sessionId)) return json({ error: "unknown session" }, 404)
+        const sel = effectiveSessionSelection(sessionId)
+        return json({ provider: sel.provider, model: sel.model ?? null, effort: sel.effort ?? null, speed: sel.speed ?? null })
+      }
       const provider = activeProviderId()
       const sel = selectionOf(provider)
       return json({ provider, model: sel.model ?? null, effort: sel.effort ?? null, speed: sel.speed ?? null })
@@ -787,7 +797,7 @@ const server = Bun.serve(withCors({
     //      agent cache (so the next turn rebuilds with the new model/knobs), and
     //      returns the now-active selection.
     if (req.method === "POST" && pathname === "/api/model/select") {
-      let body: { provider?: unknown; model?: unknown; effort?: unknown; speed?: unknown }
+      let body: { provider?: unknown; model?: unknown; effort?: unknown; speed?: unknown; sessionId?: unknown }
       try {
         body = (await req.json()) as typeof body
       } catch {
@@ -797,10 +807,10 @@ const server = Bun.serve(withCors({
       if (!getProvider(provider)) return json({ error: `unknown provider "${provider}"` }, 404)
       const model = typeof body.model === "string" && body.model.length > 0 ? body.model : undefined
       if (!model) return json({ error: "missing model" }, 400)
-      // This global route has no target session; root turns enforce pinned and
-      // effective selections. Reject incognito-only providers here as well so
-      // normal-session picker changes cannot silently select one.
-      try { assertSelectionAllowed(null, { provider, model }) } catch (err) { return json({ error: (err as Error).message }, 400) }
+      const sessionId = typeof body.sessionId === "string" && body.sessionId ? body.sessionId : undefined
+      // Validate against the target session when present (not the global normal
+      // context), so session-scoped incognito selections retain their policy.
+      try { assertSelectionAllowed(sessionId ?? null, { provider, model }) } catch (err) { return json({ error: (err as Error).message }, 400) }
 
       const EFFORTS = ["low", "medium", "high", "xhigh", "max"]
       const SPEEDS = ["standard", "fast"]
@@ -809,6 +819,13 @@ const server = Bun.serve(withCors({
       const speed =
         typeof body.speed === "string" && SPEEDS.includes(body.speed) ? (body.speed as Speed) : undefined
 
+      if (sessionId) {
+        if (!Store.exists(sessionId)) return json({ error: "unknown session" }, 404)
+        Store.pinSelection(sessionId, { provider, model, effort, speed })
+        invalidateAgent()
+        const sel = effectiveSessionSelection(sessionId)
+        return json({ provider: sel.provider, model: sel.model ?? null, effort: sel.effort ?? null, speed: sel.speed ?? null })
+      }
       setActiveProviderId(provider)
       setSelection(provider, { model, effort, speed })
       setActiveMode(undefined)
@@ -878,7 +895,9 @@ const server = Bun.serve(withCors({
     // plus the named domain seats; an unconfigured-but-enabled default seat
     // inherits the active selection, so there is no separate "active" readiness)
     if (req.method === "GET" && pathname === "/api/sidekick") {
-      return json({ config: getSidekick(), seats: getSidekickSeats() })
+      const sessionId = url.searchParams.get("sessionId") || undefined
+      if (sessionId && !Store.exists(sessionId)) return json({ error: "unknown session" }, 404)
+      return json({ config: effectiveSidekickConfig(sessionId), seats: effectiveSidekickSeats(sessionId) })
     }
 
     // POST /api/sidekick { enabled?, provider?, model?, effort?, seat? }
@@ -887,19 +906,38 @@ const server = Bun.serve(withCors({
     //   Either way invalidates the agent cache (executors rebuild so the tool,
     //   prompt seat list, and per-seat threads stay current).
     if (req.method === "POST" && pathname === "/api/sidekick") {
-      let body: { enabled?: unknown; provider?: unknown; model?: unknown; effort?: unknown; seat?: unknown }
+      let body: { enabled?: unknown; provider?: unknown; model?: unknown; effort?: unknown; seat?: unknown; sessionId?: unknown }
       try {
         body = (await req.json()) as typeof body
       } catch {
         return json({ error: "invalid JSON body" }, 400)
       }
       const EFFORTS = ["low", "medium", "high", "xhigh", "max"]
+      const sessionId = typeof body.sessionId === "string" && body.sessionId ? body.sessionId : undefined
+      if (sessionId && !Store.exists(sessionId)) return json({ error: "unknown session" }, 404)
       if (typeof body.seat === "string") {
         const name = body.seat.trim().toLowerCase()
         if (!isValidSeatName(name)) {
           return json({ error: `invalid seat name "${name}" — short lowercase slug, not "default"` }, 400)
         }
-        if (body.enabled === false) {
+        if (sessionId) {
+          const current = Store.sidekickOverrideOf(sessionId) ?? {}
+          const seats = { ...(current.seats ?? {}) }
+          if (body.enabled === false) {
+            // Null clears this session's override and reveals the global seat.
+            seats[name] = null
+          } else {
+            if (typeof body.provider !== "string" || typeof body.model !== "string") {
+              return json({ error: "a named seat needs provider and model" }, 400)
+            }
+            seats[name] = {
+              provider: body.provider,
+              model: body.model,
+              ...(typeof body.effort === "string" && EFFORTS.includes(body.effort) ? { effort: body.effort as Effort } : {}),
+            }
+          }
+          Store.setSidekickOverride(sessionId, { ...current, seats })
+        } else if (body.enabled === false) {
           setSidekickSeat(name, null)
         } else {
           if (typeof body.provider !== "string" || typeof body.model !== "string") {
@@ -912,16 +950,21 @@ const server = Bun.serve(withCors({
           })
         }
         invalidateAgent()
-        return json({ config: getSidekick(), seats: getSidekickSeats() })
+        return json({ config: effectiveSidekickConfig(sessionId), seats: effectiveSidekickSeats(sessionId) })
       }
       const patch: Partial<SidekickConfig> = {}
       if (typeof body.enabled === "boolean") patch.enabled = body.enabled
       if (typeof body.provider === "string") patch.provider = body.provider
       if (typeof body.model === "string") patch.model = body.model
       if (typeof body.effort === "string" && EFFORTS.includes(body.effort)) patch.effort = body.effort as Effort
-      setSidekick(patch)
+      if (sessionId) {
+        const current = Store.sidekickOverrideOf(sessionId) ?? {}
+        Store.setSidekickOverride(sessionId, { ...current, config: { ...current.config, ...patch } })
+      } else {
+        setSidekick(patch)
+      }
       invalidateAgent()
-      return json({ config: getSidekick(), seats: getSidekickSeats() })
+      return json({ config: effectiveSidekickConfig(sessionId), seats: effectiveSidekickSeats(sessionId) })
     }
 
     // ---- Modes: named executor+advisor pairings (GET/POST /api/modes,

@@ -6,6 +6,7 @@ import type { AgentEvent, RewindPoint, SessionSummary } from "@chunky/protocol"
 import type { Goal } from "./goal.ts"
 import type { TodoSnapshot } from "./todos.ts"
 import type { AgentSelection } from "./providers/registry.ts"
+import type { SidekickConfig, SidekickSeat } from "./settings.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { pricingFor } from "./providers/models-catalog.ts"
 import { isIncognitoSession } from "./incognito.ts"
@@ -13,6 +14,12 @@ import { isIncognitoSession } from "./incognito.ts"
 /** A session's pinned model choice (type-only alias — the import is erased, so
  *  the store keeps zero runtime provider dependencies). */
 export type PinnedSelection = AgentSelection
+/** Per-session changes layered over the server-wide sidekick defaults. A null
+ * seat clears this session's override and therefore reveals the global seat. */
+export type SessionSidekickOverride = {
+  config?: Partial<SidekickConfig>
+  seats?: Record<string, SidekickSeat | null>
+}
 export type UsageLedgerInput = {
   sessionId: string; threadId?: string; role: "lead" | "sidekick" | "advisor" | "review" | "child"
   provider: string; model: string; effort?: string | null; delegationId?: string | null
@@ -106,6 +113,10 @@ db.exec(`
   // goal session keeps its orchestrator model while the user's session moves on.
   if (!cols.some((c) => c.name === "selection")) {
     db.exec("ALTER TABLE sessions ADD COLUMN selection TEXT")
+  }
+  // Optional session-local sidekick configuration, parallel to `selection`.
+  if (!cols.some((c) => c.name === "sidekick")) {
+    db.exec("ALTER TABLE sessions ADD COLUMN sidekick TEXT")
   }
   if (!cols.some((c) => c.name === "incognito")) db.exec("ALTER TABLE sessions ADD COLUMN incognito INTEGER NOT NULL DEFAULT 0")
   if (!cols.some((c) => c.name === "incognito_allow")) db.exec("ALTER TABLE sessions ADD COLUMN incognito_allow TEXT")
@@ -452,17 +463,36 @@ export const Store = {
     backend(sessionId).query("UPDATE sessions SET selection=? WHERE id=?").run(selection ? JSON.stringify(selection) : null, sessionId)
   },
 
+  /** Session-local sidekick patch, or null when this session follows global
+   * sidekick settings exactly. Corrupt legacy values are ignored safely. */
+  sidekickOverrideOf(sessionId: string): SessionSidekickOverride | null {
+    const row = backend(sessionId).query("SELECT sidekick FROM sessions WHERE id=?").get(sessionId) as { sidekick: string | null } | null
+    if (!row?.sidekick) return null
+    try {
+      const parsed = JSON.parse(row.sidekick) as SessionSidekickOverride
+      return parsed && typeof parsed === "object" ? parsed : null
+    } catch {
+      return null
+    }
+  },
+
+  /** Persist (or clear) this session's sidekick patch. */
+  setSidekickOverride(sessionId: string, override: SessionSidekickOverride | null): void {
+    backend(sessionId).query("UPDATE sessions SET sidekick=? WHERE id=?").run(override ? JSON.stringify(override) : null, sessionId)
+  },
+
   /** Atomically materialize a current-state child. Snapshot commits remain
    * reachable by their parent refs; copied turn metadata lets the child rewind. */
   forkSession(childId: string, parentId: string, workspace: string, kind: "normal" | "worktree", directive?: string, worktree?: { gitCommonDir: string; branch: string }): void {
     if (isIncognitoSession(parentId)) {
       throw new Error("cannot fork an incognito session")
     }
-    const parent = db.query("SELECT title, selection FROM sessions WHERE id = ?").get(parentId) as { title: string; selection: string | null }
+    const parent = db.query("SELECT title, selection, sidekick FROM sessions WHERE id = ?").get(parentId) as { title: string; selection: string | null; sidekick: string | null }
     const now = Date.now()
     retrySqliteTransaction(db, () => {
       stmtCreate.run(childId, `${parent.title} · fork`, now, now, workspace)
       if (parent.selection) stmtPinSelection.run(parent.selection, childId)
+      if (parent.sidekick) db.query("UPDATE sessions SET sidekick=? WHERE id=?").run(parent.sidekick, childId)
       stmtCopyEvents.run(childId, parentId)
       stmtCopyTurns.run(childId, parentId)
       const last = stmtLastSeq.get(parentId) as { n: number | null }

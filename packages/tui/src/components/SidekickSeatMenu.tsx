@@ -23,6 +23,8 @@ type Row = { kind: "default"; config: SidekickResponse["config"] } | { kind: "se
 
 interface Props {
   baseUrl: string
+  /** Attached session whose effective seats are displayed. */
+  sessionId?: string | null
   /** Called with the selected seat; undefined means the default seat. */
   onDone: (seatName?: string) => void
   onCancel: () => void
@@ -41,7 +43,7 @@ function validSeatName(name: string) {
 }
 
 /** First step of /sidekick: make the default and named seats discoverable. */
-export function SidekickSeatMenu({ baseUrl, onDone, onCancel, currentModel }: Props) {
+export function SidekickSeatMenu({ baseUrl, sessionId, onDone, onCancel, currentModel }: Props) {
   const [config, setConfig] = useState<SidekickResponse["config"]>()
   const [seats, setSeats] = useState<Record<string, SeatSpec>>({})
   const [loading, setLoading] = useState(true)
@@ -55,7 +57,7 @@ export function SidekickSeatMenu({ baseUrl, onDone, onCancel, currentModel }: Pr
     let cancelled = false
     ;(async () => {
       try {
-        const res = await fetch(baseUrl + "/api/sidekick")
+        const res = await fetch(baseUrl + "/api/sidekick" + (sessionId ? `?sessionId=${encodeURIComponent(sessionId)}` : ""))
         const body = (await res.json()) as SidekickResponse
         if (!res.ok) throw new Error("could not load sidekick seats")
         if (!cancelled) {
@@ -71,7 +73,7 @@ export function SidekickSeatMenu({ baseUrl, onDone, onCancel, currentModel }: Pr
       }
     })()
     return () => { cancelled = true }
-  }, [baseUrl])
+  }, [baseUrl, sessionId])
 
   const rows = useMemo<Row[]>(
     () => [

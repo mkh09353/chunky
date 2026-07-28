@@ -29,8 +29,11 @@ import {
   type Speed,
   loadSettings,
   type CustomProvider,
+  type SidekickConfig,
+  type SidekickSeat,
 } from "../settings.ts"
 import { AuthStore } from "./auth-store.ts"
+import { Store } from "../store.ts"
 
 export type { LoginInitiation } from "@chunky/protocol"
 export type { ModelInfo } from "./models-catalog.ts"
@@ -369,8 +372,28 @@ export function resolveReviewSelection(sessionId?: string): AgentSelection | nul
  *  (the hands-on loop stays out of the lead's context), so an unconfigured seat
  *  falls back to the executor's selection. Configure the seat (e.g. a cheaper
  *  model at higher effort) to also buy the cost win. */
-export function sidekickFor(executor: AgentSelection): AgentSelection | null {
-  const cfg = getSidekick()
+/** Global sidekick defaults merged with this session's sparse override. */
+export function effectiveSidekickConfig(sessionId?: string): SidekickConfig {
+  const global = getSidekick()
+  const override = sessionId ? Store.sidekickOverrideOf(sessionId) : null
+  return { ...global, ...override?.config }
+}
+
+/** Global named seats merged with this session's sparse patches. */
+export function effectiveSidekickSeats(sessionId?: string): Record<string, SidekickSeat> {
+  const seats = { ...getSidekickSeats() }
+  const patches = sessionId ? Store.sidekickOverrideOf(sessionId)?.seats : undefined
+  if (patches) {
+    for (const [name, patch] of Object.entries(patches)) {
+      // null clears this session's override, leaving the global seat effective.
+      if (patch !== null) seats[name] = patch
+    }
+  }
+  return seats
+}
+
+export function sidekickFor(executor: AgentSelection, sessionId?: string): AgentSelection | null {
+  const cfg = effectiveSidekickConfig(sessionId)
   if (!cfg.enabled) return null
   if (!cfg.provider || !cfg.model || !providers[cfg.provider]) {
     return Object.freeze({ provider: executor.provider, model: executor.model, effort: executor.effort, speed: executor.speed })
@@ -380,11 +403,12 @@ export function sidekickFor(executor: AgentSelection): AgentSelection | null {
 
 /** Configured NAMED seat names (e.g. ["backend", "frontend"]), sorted. Empty
  *  when none are configured or the master switch is off. */
-export function listSidekickSeats(): string[] {
-  if (!getSidekick().enabled) return []
-  return Object.keys(getSidekickSeats())
+export function listSidekickSeats(sessionId?: string): string[] {
+  if (!effectiveSidekickConfig(sessionId).enabled) return []
+  const seats = effectiveSidekickSeats(sessionId)
+  return Object.keys(seats)
     .filter((name) => {
-      const seat = getSidekickSeats()[name]
+      const seat = seats[name]
       return seat && providers[seat.provider] != null
     })
     .sort()
@@ -393,9 +417,9 @@ export function listSidekickSeats(): string[] {
 /** Resolve one NAMED seat to a selection, or null when it doesn't exist (or its
  *  provider isn't registered, or the master switch is off). The DEFAULT seat is
  *  resolved by sidekickFor, not here. */
-export function resolveSidekickSeat(name: string): AgentSelection | null {
-  if (!getSidekick().enabled) return null
-  const seat = getSidekickSeats()[name]
+export function resolveSidekickSeat(name: string, sessionId?: string): AgentSelection | null {
+  if (!effectiveSidekickConfig(sessionId).enabled) return null
+  const seat = effectiveSidekickSeats(sessionId)[name]
   if (!seat || !providers[seat.provider]) return null
   return Object.freeze({ provider: seat.provider, model: seat.model, effort: seat.effort, speed: undefined })
 }

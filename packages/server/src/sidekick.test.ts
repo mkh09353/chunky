@@ -18,8 +18,9 @@ process.env.CHUNKY_SETTINGS = join(mkdtempSync(join(tmpdir(), "chunky-sidekick-"
 
 import type { AgentEvent } from "@chunky/protocol"
 import { executorToolsFor, getSidekickAgent, invalidateAgent } from "./agent.ts"
-import { listSidekickSeats, resolveSidekickSeat, sidekickFor, type AgentSelection } from "./providers/registry.ts"
+import { effectiveSidekickConfig, effectiveSidekickSeats, listSidekickSeats, resolveSidekickSeat, sidekickFor, type AgentSelection } from "./providers/registry.ts"
 import { currentModeSpec, isValidSeatName, setSidekick, setSidekickSeat } from "./settings.ts"
+import { Store } from "./store.ts"
 import { type AgentForSelection, ThreadManager } from "./threads.ts"
 import { composeBrief } from "./tools/sidekick.ts"
 
@@ -86,6 +87,25 @@ async function main() {
     "configured sidekick seat should resolve as set",
   )
   console.log(`ok  configured seat resolves: ${configured!.provider}/${configured!.model} (${configured!.effort})`)
+
+  // Session patches win over global settings without mutating those settings;
+  // null named-seat entries intentionally reveal the global seat again.
+  const overrideSession = `sidekick-override-${process.pid}`
+  Store.createSession(overrideSession)
+  Store.setSidekickOverride(overrideSession, {
+    config: { enabled: false, model: "session-only" },
+    seats: {
+      frontend: { provider: "zen", model: "glm-5.2", effort: "high" },
+      backend: null,
+    },
+  })
+  assert(effectiveSidekickConfig(overrideSession).enabled === false && effectiveSidekickConfig(overrideSession).model === "session-only", "session default patch overrides the global sidekick")
+  assert(effectiveSidekickSeats(overrideSession).frontend?.model === "glm-5.2", "session named-seat patch overrides the global map")
+  assert(effectiveSidekickSeats(overrideSession).backend == null, "null named-seat patch without a global seat stays absent")
+  assert(sidekickFor(EXECUTOR, overrideSession) === null, "session-only disabled flag suppresses its sidekick")
+  Store.setSidekickOverride(overrideSession, { seats: { frontend: null } })
+  assert(effectiveSidekickSeats(overrideSession).frontend == null, "null named-seat patch clears a session override")
+  console.log("ok  session sidekick overrides merge without changing global config")
 
   // NO same-model auto-suppress (unlike the advisor): context isolation still pays.
   const sameAsExecutor: AgentSelection = Object.freeze({ provider: "codex", model: "gpt-5.5" })

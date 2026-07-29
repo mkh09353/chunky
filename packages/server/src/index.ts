@@ -110,6 +110,7 @@ import { getModelAvailability, manageModelCatalog, setModelAvailability, type Mo
 import { assertSelectionAllowed, isIncognitoSession, incognitoAllowlistFor, providerScope } from "./incognito.ts"
 import { manageSkillRepos, type SkillRepoMutationAction } from "./skill-repos.ts"
 import { resetTasks, liveTaskCounts } from "./tasks.ts"
+import { resetDetachedSpawns } from "./detached-spawns.ts"
 import { installBackgroundDispatcher } from "./background-dispatch.ts"
 import { databaseErrorMessage } from "./sqlite.ts"
 import { dreamRepoMemory, memoryRepoKey } from "./memory.ts"
@@ -170,6 +171,7 @@ function scheduleDream(sessionId: string): void {
 export async function shutdownServer(signal: NodeJS.Signals): Promise<never> {
   if (shuttingDown) return new Promise(() => {})
   shuttingDown = true
+  await resetDetachedSpawns()
   await resetTasks()
   process.removeAllListeners(signal)
   process.kill(process.pid, signal)

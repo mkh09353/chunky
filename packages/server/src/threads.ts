@@ -39,6 +39,7 @@ import { createDelegateWatchdog } from "./watchdog.ts"
 import { Store } from "./store.ts"
 import { appendReminder } from "./tasks.ts"
 import { routeBackgroundNotice } from "./background-dispatch.ts"
+import { createDetachedSpawn, detachedSpawnLimit, finishDetachedSpawn, type DetachedSpawnRecord } from "./detached-spawns.ts"
 
 /** Reasoning-effort cap for `big`-tier workflow agents: keep a lower configured
  *  effort, clamp anything at/above medium (or unset) to medium. */
@@ -150,7 +151,10 @@ export class ThreadManager implements ThreadSpawner {
   /** Release the root registration when the session turn ends. */
   dispose(): void {
     unregisterThread(this.rootId)
-    this.selections.clear()
+    // Detached children remain registered until their own finally block. Keep
+    // their captured selection so their full child toolset (including nested
+    // spawn_thread) continues to work after the originating root turn ends.
+    this.selections.delete(this.rootId)
   }
 
   /**
@@ -267,6 +271,97 @@ export class ThreadManager implements ThreadSpawner {
       if (sessionChildren?.size === 0) runningChildrenBySession.delete(this.rootId)
     }
 
+  }
+
+  /** Start an independent child run without awaiting it. All mutable run inputs
+   * are selected before this returns: the originating manager may be disposed
+   * when the root turn ends, but this child owns its controller and stream. */
+  launchDetachedSpawn(opts: {
+    callerThreadId: string
+    title: string
+    instructions: string
+    selection?: AgentSelectionOverride
+  }): string {
+    const parentSelection = this.selections.get(opts.callerThreadId)
+    if (!parentSelection) return "error: detached spawn_thread caller is no longer active."
+    let selection: AgentSelection
+    try {
+      selection = childSelection(parentSelection, opts.selection)
+      assertSelectionAllowed(this.rootId, selection)
+    } catch (err) {
+      return `error: ${(err as Error).message}`
+    }
+    const childThreadId = randomUUID()
+    const record = createDetachedSpawn(this.rootId, childThreadId, opts.title)
+    if (!record) return `error: detached spawn limit reached (${detachedSpawnLimit()} running children in this session). Wait for one to finish or use workflow.`
+
+    // Capture every per-run value now. In particular, do not resolve selection
+    // or workspace from the thread registry after the caller's turn disposes.
+    const sessionId = this.rootId
+    const workspace = this.workspace
+    const emit = this.emit
+    const agentFor = this.agentFor
+    const preflightAgentProvider = this.preflightAgentProvider
+    const parentThreadId = opts.callerThreadId === sessionId ? null : opts.callerThreadId
+    const delegationId = randomUUID()
+    Store.createDelegation({ id: delegationId, sessionId, kind: "child", provider: selection.provider, model: selection.model ?? "unknown", effort: selection.effort ?? undefined, briefSnippet: opts.instructions })
+    if (isIncognitoSession(sessionId)) registerIncognitoThread(childThreadId)
+    registerThread(childThreadId, this)
+    this.selections.set(childThreadId, selection)
+    emit({ type: "thread.spawn", threadId: childThreadId, parentThreadId, title: opts.title, model: selection.model })
+    emit({ type: "thread.status", threadId: childThreadId, status: "running", title: opts.title })
+    void this.runDetachedSpawn({ record, selection, instructions: opts.instructions, delegationId, workspace, emit, agentFor, preflightAgentProvider })
+    return `Detached child "${opts.title}" launched: ${record.id}. It runs concurrently; its report will wake you or arrive as a reminder.`
+  }
+
+  private async runDetachedSpawn(opts: {
+    record: DetachedSpawnRecord
+    selection: AgentSelection
+    instructions: string
+    delegationId: string
+    workspace: string
+    emit: Emit
+    agentFor: AgentForSelection
+    preflightAgentProvider: boolean
+  }): Promise<void> {
+    const { record, selection, instructions, delegationId, workspace, emit, agentFor, preflightAgentProvider } = opts
+    let report = ""
+    const dog = createDelegateWatchdog({ emit, label: `detached child thread "${record.title}"`, parent: record.abort })
+    try {
+      if (preflightAgentProvider) await getProvider(selection.provider)?.ensureAuth?.()
+      if (providerRuntime(selection.provider) === "anthropic-sdk") {
+        const { runAnthropicAgent } = await import("./anthropic-runner.ts")
+        report = await runAnthropicAgent({
+          selection, threadId: record.childThreadId, prompt: instructions, emit: dog.emit, eventThreadId: record.childThreadId,
+          freshSession: true, workspace, abort: dog.abort,
+          usageContext: { sessionId: record.sessionId, role: "child", delegationId },
+        })
+      } else {
+        const stream = await AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () =>
+          agentFor(selection, workspace, undefined, record.sessionId).stream(
+            { messages: [{ role: "user", content: instructions }] },
+            { configurable: { thread_id: record.childThreadId, workspace }, streamMode: ["updates", "messages"], recursionLimit: RECURSION_LIMIT, signal: dog.abort.signal } as any,
+          ),
+        )
+        report = await translateStream(stream, record.childThreadId, dog.emit, undefined, undefined, { sessionId: record.sessionId, selection, role: "child", delegationId })
+      }
+      report = `${ThreadManager.nonEmptyReport(report, "detached child thread")}\n\n[delegation: ${delegationId}]`
+    } catch (err) {
+      const message = dog.timedOut() ? dog.timeoutMessage() : ((err as Error)?.message ?? String(err))
+      emit({ type: "error", message, threadId: record.childThreadId } as AgentEvent)
+      report = `error: ${message}`
+    } finally {
+      dog.dispose()
+      finishDetachedSpawn(record, report || "error: detached child thread finished without producing a report")
+      Store.completeDelegation(delegationId, !record.result!.startsWith("error:"))
+      emit({ type: "thread.status", threadId: record.childThreadId, status: "idle", title: record.title })
+      unregisterThread(record.childThreadId)
+      this.selections.delete(record.childThreadId)
+      const reminder = `Detached child "${record.title}" (${record.id}) finished. Report:\n${record.result}`
+      const shownText = `Detached child "${record.title}" (${record.id}) finished.`
+      const wakePrompt = `${reminder}\n\nAssess this detached child report and act on any valid findings before finalizing.`
+      if (routeBackgroundNotice(record.sessionId, wakePrompt, shownText, "spawn_thread") === "reminder") appendReminder(record.sessionId, reminder)
+    }
   }
 
   /**

@@ -28,6 +28,7 @@ import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { RemoveMessage, SystemMessage } from "@langchain/core/messages"
 import { Store } from "./store.ts"
 import { snapshotSessionTasks } from "./tasks.ts"
+import { runningDetachedSpawnSummaries } from "./detached-spawns.ts"
 import { todoSummary } from "./todos.ts"
 import { formatSystemReminder } from "./system-reminder.ts"
 import { activeSidekickSummaries, runningChildSummaries } from "./threads.ts"
@@ -77,6 +78,7 @@ export function makePostCompactionReminder() {
         goal: goal ? { objective: goal.objective, status: goal.status, mode: goal.mode ?? "direct", turns: goal.turns, maxTurns: goal.maxTurns } : undefined,
         sidekicks: activeSidekickSummaries(sessionId),
         children: runningChildSummaries(sessionId),
+        detachedSpawns: runningDetachedSpawnSummaries(sessionId),
         tasks: snapshotSessionTasks(sessionId).map((task) => ({ taskId: task.taskId, status: task.status, command: task.command.split(/\r?\n/, 1)[0] })),
         todos: Store.getTodos(sessionId).map((todo) => ({ id: todo.id, content: todo.content, status: todo.status, assignee: todo.assignee })),
       }

@@ -31,6 +31,15 @@ export interface ThreadSpawner {
     selection?: AgentSelectionOverride
   }): Promise<string>
 
+  /** Launch a child which reports back asynchronously instead of blocking the
+   * calling tool turn. */
+  launchDetachedSpawn?(opts: {
+    callerThreadId: string
+    title: string
+    instructions: string
+    selection?: AgentSelectionOverride
+  }): string
+
   /**
    * Consult the always-on advisor — a persistent side thread on a stronger model
    * (stable thread_id, so it remembers earlier consults this session). Returns

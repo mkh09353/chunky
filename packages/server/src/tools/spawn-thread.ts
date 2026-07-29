@@ -13,6 +13,7 @@ export interface SpawnThreadInput {
   model?: string
   effort?: Effort
   speed?: Speed
+  detach?: boolean
 }
 
 export const spawnThreadInputShape = {
@@ -28,6 +29,7 @@ export const spawnThreadInputShape = {
   model: z.string().optional().describe("Optional model id for the child; defaults to the inherited/provider selection."),
   effort: z.enum(["low", "medium", "high", "xhigh", "max"]).optional().describe("Optional reasoning effort for the child."),
   speed: z.enum(["standard", "fast"]).optional().describe("Optional speed setting for the child."),
+  detach: z.boolean().optional().describe("Run concurrently and return immediately with a run id; the final report wakes the lead or arrives as a reminder."),
 }
 
 export async function runSpawnThread(input: SpawnThreadInput, callerThreadId: string | undefined): Promise<string> {
@@ -36,7 +38,7 @@ export async function runSpawnThread(input: SpawnThreadInput, callerThreadId: st
     return "error: spawn_thread is only available inside an active session run."
   }
 
-  const { title, instructions, provider, model, effort, speed } = input
+  const { title, instructions, provider, model, effort, speed, detach } = input
 
   // Guard the provider override: the model sometimes invents a plausible-but-
   // unregistered id (e.g. "cursor"), which would otherwise throw deep in
@@ -48,6 +50,13 @@ export async function runSpawnThread(input: SpawnThreadInput, callerThreadId: st
   }
 
   const hasSelectionOverride = provider !== undefined || model !== undefined || effort !== undefined || speed !== undefined
+  if (detach) {
+    if (!ctx.launchDetachedSpawn) return "error: detached spawn_thread is not available inside this active session run."
+    return ctx.launchDetachedSpawn({
+      callerThreadId, title, instructions,
+      selection: hasSelectionOverride ? { provider, model, effort, speed } : undefined,
+    })
+  }
   const text = await ctx.spawn({
     callerThreadId,
     title,
@@ -67,7 +76,9 @@ export const spawnThread = tool(
     description:
       "Delegate a focused subtask to an independent child agent thread that streams its own work live and can " +
       "spawn its own children. Omit model-selection fields to inherit this thread's model, or choose a configured " +
-      "provider/model when a different model is better suited. Returns the child thread's final answer.",
+      "provider/model when a different model is better suited. By default returns the child thread's final answer; " +
+      "with detach=true it returns immediately with a run id and the report later arrives via a wake/reminder. Use " +
+      "detach for 2+ independent subtasks, and synchronous mode when you need the answer to proceed.",
     schema: z.object(spawnThreadInputShape),
   },
 )

@@ -18,6 +18,7 @@ import { Store } from "./store.ts"
 import { taggedEmitter, type Emit } from "./event-emitter.ts"
 import { buildSystemPrompt } from "./prompt.ts"
 import { appBrowserTier } from "./app-browser.ts"
+import { hasAppZoo } from "./app-zoo.ts"
 import { listSidekickSeats, resolveReviewSelection, sidekickFor, type AgentSelection } from "./providers/registry.ts"
 import { ANTHROPIC_SDK_ISOLATION_OPTIONS, anthropicOAuthEnvironment } from "./providers/anthropic-sdk.ts"
 import { promptTokensOf, usageForAnthropicCache, usageFromAnthropicAssistant, usageFromAnthropicResult } from "./usage.ts"
@@ -66,6 +67,7 @@ import { readRepoMemory } from "./memory.ts"
 import { remember, rememberInputShape } from "./tools/remember.ts"
 import { review, reviewInputShape } from "./tools/review.ts"
 import { browserTools, open_app_browser } from "./tools/browser.ts"
+import { zooTools } from "./tools/zoo.ts"
 
 const SERVER_NAME = "chunky"
 const ALLOWED_TOOLS = [`mcp__${SERVER_NAME}__*`]
@@ -96,6 +98,7 @@ const CHUNKY_TOOLS = [
   review,
   ...browserTools,
   open_app_browser,
+  ...zooTools,
 ]
 const SDK_TOOL_NAMES = new Set(CHUNKY_TOOLS.map((chunkyTool) => `mcp__${SERVER_NAME}__${chunkyTool.name}`))
 const knownSessions = new Set<string>()
@@ -204,6 +207,13 @@ export function createChunkySdkMcpServer(
     (args) => browserTool.invoke(args, runConfig),
     emit,
   ))
+  const wrappedZooTools = (hasAppZoo() ? zooTools : []).map((zooTool: any) => wrapChunkyTool(
+    zooTool.name,
+    zooTool.description,
+    zooTool.schema.shape,
+    (args) => zooTool.invoke(args, runConfig),
+    emit,
+  ))
   return createSdkMcpServer({
     name: SERVER_NAME,
     version: "0.0.0",
@@ -255,6 +265,7 @@ export function createChunkySdkMcpServer(
       ),
       wrapChunkyTool(remember.name, remember.description, rememberInputShape, (args) => remember.invoke(args, runConfig), emit),
       ...wrappedAppBrowserTools,
+      ...wrappedZooTools,
       wrapChunkyTool(
         fileTools.edit.name,
         fileTools.edit.description,
@@ -412,6 +423,7 @@ export async function buildAnthropicOptions(
         hasSidekick: sidekickFor(selection, request.usageContext?.sessionId) != null,
         hasReview: resolveReviewSelection(request.usageContext?.sessionId) != null,
         appBrowser: appBrowserTier(),
+        appZoo: hasAppZoo(),
         sidekickSeats: listSidekickSeats(request.usageContext?.sessionId),
         agentsMd: request.agentsMd,
         repoMemory: readRepoMemory(workspace, threadId),

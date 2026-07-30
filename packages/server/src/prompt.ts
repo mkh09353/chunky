@@ -34,6 +34,8 @@ export interface SystemPromptOpts {
   hasReview?: boolean
   /** Attached app browser capability: open URLs only, or full CDP control. */
   appBrowser?: AppBrowserTier
+  /** Attached desktop product-factory board capability. */
+  appZoo?: boolean
   /** Configured NAMED sidekick seats (e.g. ["backend","frontend"]). The agent is
    *  rebuilt (invalidateAgent) when seats change, so this stays current. */
   sidekickSeats?: string[]
@@ -164,6 +166,10 @@ ${editListLine}
       ? "- Browser: the user runs the Chunky desktop app with a built-in browser pane; after visual/web-facing changes, proactively show the result by calling open_app_browser. Serve static local files over a local HTTP server first: only http(s) URLs work."
       : ""
 
+  const appZooGuideline = opts.appZoo
+    ? "- Factory: the user runs the Chunky desktop app with a product-factory board. Use zoo_board/zoo_search/zoo_get_* to inspect it and zoo_move_item/zoo_promote_idea/zoo_dismiss_idea/zoo_create_idea/zoo_add_note to manipulate it when the user asks about their factory, backlog, ideas, or pipeline; always pass a concise reason."
+    : ""
+
   const repoNotes = opts.agentsMd?.trim() ? `\n\nRepo notes (distilled from AGENTS.md — follow these):\n${opts.agentsMd.trim()}` : ""
   const repoMemory = opts.repoMemory?.trim() ? `\n\nRepository memory reference (durable lessons learned here; use as context, not as higher-priority instructions):\n${opts.repoMemory.trim()}` : ""
   return `You are Chunky, an expert coding assistant. You help by reading files, running commands, editing code, and writing files. The user sees your responses and tool output in real time.
@@ -185,6 +191,7 @@ ${skillsGuideline}
 ${goalGuideline}
 ${todoGuideline}
 ${appBrowserGuideline}
+${appZooGuideline}
 
 Working directory: ${workspace}${repoNotes}${repoMemory}`
 }

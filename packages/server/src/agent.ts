@@ -64,6 +64,8 @@ import { resolveFileToolProfile } from "./settings.ts"
 import { hashlineRead, hashlineEdit } from "./tools/hashline/index.ts"
 import { browserTools, open_app_browser } from "./tools/browser.ts"
 import { appBrowserTier, onAppBrowserTierChange } from "./app-browser.ts"
+import { hasAppZoo, onAppZooChange } from "./app-zoo.ts"
+import { zooTools } from "./tools/zoo.ts"
 import { rateDelegate } from "./tools/rate-delegate.ts"
 import { remember } from "./tools/remember.ts"
 import { review } from "./tools/review.ts"
@@ -256,6 +258,7 @@ export function executorToolsFor(selection: AgentSelection, sessionId?: string) 
     manageSkillReposTool,
     ...skillTools,
     ...(browserTier === "cdp" ? [...browserTools, open_app_browser] : browserTier === "open" ? [open_app_browser] : []),
+    ...(hasAppZoo() ? zooTools : []),
     ...(advisorSel ? [advisor] : []),
     ...(reviewSel ? [review] : []),
   ]
@@ -332,6 +335,7 @@ export function buildAgent(
       hasSidekick: plan.hasSidekick,
       hasReview: plan.hasReview,
       appBrowser: appBrowserTier(),
+      appZoo: hasAppZoo(),
       sidekickSeats: plan.sidekickSeats,
       agentsMd,
       repoMemory,
@@ -401,6 +405,7 @@ export function invalidateAgent(): void {
 // Browser announcements change both the prompt and bound tool schemas. Subscribe
 // once at module load so the next cached-agent lookup always reflects that tier.
 onAppBrowserTierChange(() => invalidateAgent())
+onAppZooChange(() => invalidateAgent())
 
 /**
  * Build the READ-ONLY advisor agent for one selection. It gets ONLY read + bash

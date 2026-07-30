@@ -404,6 +404,8 @@ export const ROUTES = {
   // endpoint dies with the app, and a persisted port would just be a lie after
   // a restart.
   appBrowser: `/api/app/browser`,
+  // GET -> AppZooResponse. POST AppZooAnnounce -> AppZooResponse.
+  appZoo: `/api/app/zoo`,
 } as const
 
 /** The desktop app's built-in browser pane, as a remotely drivable target.
@@ -436,6 +438,15 @@ export interface AppBrowserAnnounce {
  *  desktop app has checked in since the server started. */
 export interface AppBrowserResponse {
   browser: AppBrowserEndpoint | null
+}
+
+export interface AppZooAnnounce {
+  port: number
+  token: string
+}
+
+export interface AppZooResponse {
+  connected: boolean
 }
 
 /** Body for POST ROUTES.goal. Exactly one of `objective` (set + start the goal)

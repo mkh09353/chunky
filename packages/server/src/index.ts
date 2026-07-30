@@ -21,6 +21,8 @@ import {
   type AppBrowserAnnounce,
   type AppBrowserEndpoint,
   type AppBrowserResponse,
+  type AppZooAnnounce,
+  type AppZooResponse,
 } from "@chunky/protocol"
 import { effectiveSessionSelection, runAgent, type InputImage, type InterjectionBoundary } from "./run.ts"
 import { shipHandoffPrompt } from "./tools/ship.ts"
@@ -124,6 +126,7 @@ import {
 } from "./launcher-discovery.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { getAppBrowserEndpoint, setAppBrowserEndpoint } from "./app-browser.ts"
+import { hasAppZoo, setAppZooEndpoint } from "./app-zoo.ts"
 
 type Subscriber = ReadableStreamDefaultController<Uint8Array>
 
@@ -774,6 +777,17 @@ const server = Bun.serve(withCors({
       const body = (await req.json().catch(() => ({}))) as Partial<AppBrowserAnnounce>
       try { return json({ browser: setAppBrowserEndpoint(body as AppBrowserAnnounce) } satisfies AppBrowserResponse) }
       catch (err) { return json({ error: (err as Error).message }, 400) }
+    }
+
+    // Desktop Zoo loopback service announcement. The bearer token remains
+    // process-local and is never included in this route's response.
+    if (pathname === ROUTES.appZoo && (req.method === "GET" || req.method === "POST")) {
+      if (req.method === "GET") return json({ connected: hasAppZoo() } satisfies AppZooResponse)
+      const body = (await req.json().catch(() => ({}))) as Partial<AppZooAnnounce>
+      try {
+        setAppZooEndpoint(body as AppZooAnnounce)
+        return json({ connected: true } satisfies AppZooResponse)
+      } catch (err) { return json({ error: (err as Error).message }, 400) }
     }
 
     if (pathname === "/api/skills" && req.method === "GET") {

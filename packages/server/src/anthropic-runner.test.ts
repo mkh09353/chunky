@@ -3,6 +3,7 @@
 import type { AgentEvent } from "@chunky/protocol"
 import type { SDKMessage } from "@anthropic-ai/claude-agent-sdk"
 import { buildSystemPrompt } from "./prompt.ts"
+import { resetAppBrowserEndpoint } from "./app-browser.ts"
 import {
   buildAnthropicOptions,
   runChunkyToolForSdk,
@@ -40,6 +41,7 @@ async function main() {
   process.env.CHUNKY_SETTINGS = join(mkdtempSync(join(tmpdir(), "chunky-anthropic-test-")), "settings.json")
   const events: AgentEvent[] = []
   const emit = (event: AgentEvent) => events.push(event)
+  resetAppBrowserEndpoint()
 
   const fresh = await buildAnthropicOptions(
     { selection, threadId: "11111111-1111-4111-8111-111111111111", emit },

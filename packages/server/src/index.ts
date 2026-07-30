@@ -209,6 +209,19 @@ function emitTo(sessionId: string, ev: AgentEvent): void {
   }
 }
 
+/** Push an event only to currently attached clients of one session. It is
+ * deliberately never persisted, so reconnect/replay cannot repeat UI actions. */
+function emitLiveTo(sessionId: string, ev: AgentEvent): void {
+  const frame = encoder.encode(sse(ev))
+  for (const controller of subscribers(sessionId)) {
+    try {
+      controller.enqueue(frame)
+    } catch {
+      // subscriber gone; cleaned up by its stream's cancel handler.
+    }
+  }
+}
+
 /** Push a server-wide configuration change to every currently attached session.
  * It intentionally is not persisted into individual session histories. */
 function broadcastLive(ev: AgentEvent): void {
@@ -394,6 +407,9 @@ installSessionBus({
   },
   emitEvent(sessionId, ev) {
     emitTo(sessionId, ev)
+  },
+  emitLiveEvent(sessionId, ev) {
+    emitLiveTo(sessionId, ev)
   },
   dispatch(sessionId, text) {
     // A bus delivery can originate INSIDE another session's tool call

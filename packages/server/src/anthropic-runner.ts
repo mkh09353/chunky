@@ -17,6 +17,7 @@ import type { MessageEndReason, UsageDelta } from "@chunky/protocol"
 import { Store } from "./store.ts"
 import { taggedEmitter, type Emit } from "./event-emitter.ts"
 import { buildSystemPrompt } from "./prompt.ts"
+import { appBrowserTier } from "./app-browser.ts"
 import { listSidekickSeats, resolveReviewSelection, sidekickFor, type AgentSelection } from "./providers/registry.ts"
 import { ANTHROPIC_SDK_ISOLATION_OPTIONS, anthropicOAuthEnvironment } from "./providers/anthropic-sdk.ts"
 import { promptTokensOf, usageForAnthropicCache, usageFromAnthropicAssistant, usageFromAnthropicResult } from "./usage.ts"
@@ -64,6 +65,7 @@ import { resolveFileToolProfile, type FileToolProfile } from "./settings.ts"
 import { readRepoMemory } from "./memory.ts"
 import { remember, rememberInputShape } from "./tools/remember.ts"
 import { review, reviewInputShape } from "./tools/review.ts"
+import { browserTools, open_app_browser } from "./tools/browser.ts"
 
 const SERVER_NAME = "chunky"
 const ALLOWED_TOOLS = [`mcp__${SERVER_NAME}__*`]
@@ -92,6 +94,8 @@ const CHUNKY_TOOLS = [
   shipGoal,
   remember,
   review,
+  ...browserTools,
+  open_app_browser,
 ]
 const SDK_TOOL_NAMES = new Set(CHUNKY_TOOLS.map((chunkyTool) => `mcp__${SERVER_NAME}__${chunkyTool.name}`))
 const knownSessions = new Set<string>()
@@ -189,6 +193,17 @@ export function createChunkySdkMcpServer(
     workspace,
     emitToolProgress: (toolCallId: string, chunk: string) => emit({ type: "tool.progress", id: toolCallId, chunk }),
   } }
+  const browserTier = appBrowserTier()
+  const appBrowserTools = browserTier === "cdp"
+    ? [...browserTools, open_app_browser]
+    : browserTier === "open" ? [open_app_browser] : []
+  const wrappedAppBrowserTools = appBrowserTools.map((browserTool: any) => wrapChunkyTool(
+    browserTool.name,
+    browserTool.description,
+    browserTool.schema.shape,
+    (args) => browserTool.invoke(args, runConfig),
+    emit,
+  ))
   return createSdkMcpServer({
     name: SERVER_NAME,
     version: "0.0.0",
@@ -239,6 +254,7 @@ export function createChunkySdkMcpServer(
         emit,
       ),
       wrapChunkyTool(remember.name, remember.description, rememberInputShape, (args) => remember.invoke(args, runConfig), emit),
+      ...wrappedAppBrowserTools,
       wrapChunkyTool(
         fileTools.edit.name,
         fileTools.edit.description,
@@ -395,6 +411,7 @@ export async function buildAnthropicOptions(
         fileToolProfile: resolveFileToolProfile(),
         hasSidekick: sidekickFor(selection, request.usageContext?.sessionId) != null,
         hasReview: resolveReviewSelection(request.usageContext?.sessionId) != null,
+        appBrowser: appBrowserTier(),
         sidekickSeats: listSidekickSeats(request.usageContext?.sessionId),
         agentsMd: request.agentsMd,
         repoMemory: readRepoMemory(workspace, threadId),

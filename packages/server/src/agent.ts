@@ -62,7 +62,8 @@ import { recall } from "./tools/recall.ts"
 import { updateTodos } from "./tools/todos.ts"
 import { resolveFileToolProfile } from "./settings.ts"
 import { hashlineRead, hashlineEdit } from "./tools/hashline/index.ts"
-import { browserTools } from "./tools/browser.ts"
+import { browserTools, open_app_browser } from "./tools/browser.ts"
+import { appBrowserTier, onAppBrowserTierChange } from "./app-browser.ts"
 import { rateDelegate } from "./tools/rate-delegate.ts"
 import { remember } from "./tools/remember.ts"
 import { review } from "./tools/review.ts"
@@ -228,6 +229,7 @@ export function executorToolsFor(selection: AgentSelection, sessionId?: string) 
   const advisorSel = advisorFor(selection)
   const sidekickSel = sidekickFor(selection, sessionId)
   const reviewSel = resolveReviewSelection(sessionId)
+  const browserTier = appBrowserTier()
   const tools = [
     ...fileToolsFor(selection.model, selection.provider),
     dualTool(bash),
@@ -253,7 +255,7 @@ export function executorToolsFor(selection: AgentSelection, sessionId?: string) 
     manageModels,
     manageSkillReposTool,
     ...skillTools,
-    ...browserTools,
+    ...(browserTier === "cdp" ? [...browserTools, open_app_browser] : browserTier === "open" ? [open_app_browser] : []),
     ...(advisorSel ? [advisor] : []),
     ...(reviewSel ? [review] : []),
   ]
@@ -329,6 +331,7 @@ export function buildAgent(
       portableToolSearch: providerId === "grok",
       hasSidekick: plan.hasSidekick,
       hasReview: plan.hasReview,
+      appBrowser: appBrowserTier(),
       sidekickSeats: plan.sidekickSeats,
       agentsMd,
       repoMemory,
@@ -394,6 +397,10 @@ export function getAgent(
 export function invalidateAgent(): void {
   agentCache.clear()
 }
+
+// Browser announcements change both the prompt and bound tool schemas. Subscribe
+// once at module load so the next cached-agent lookup always reflects that tier.
+onAppBrowserTierChange(() => invalidateAgent())
 
 /**
  * Build the READ-ONLY advisor agent for one selection. It gets ONLY read + bash

@@ -37,6 +37,9 @@ function fakeImpl() {
     emitEvent(sessionId: string, ev: unknown) {
       events.push({ sessionId, ev })
     },
+    emitLiveEvent(sessionId: string, ev: unknown) {
+      events.push({ sessionId, ev })
+    },
     dispatch(sessionId: string, text: string) {
       delivered[delivered.length - 1]!.prompt = text
       runningSet.add(sessionId)

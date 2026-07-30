@@ -18,6 +18,8 @@ export interface SessionBusImpl {
   /** Emit (persist + fan out) an arbitrary protocol event to a session's stream —
    *  e.g. the goal.update marker a ship_goal stamps onto the session it creates. */
   emitEvent(sessionId: string, ev: AgentEvent): void
+  /** Emit only to current subscribers; never persist or replay this event. */
+  emitLiveEvent(sessionId: string, ev: AgentEvent): void
   /** Start an agent run on the session. Resolves when the run fully completes. */
   dispatch(sessionId: string, text: string): Promise<void>
   /** Whether the session has an in-flight run right now. */
@@ -70,6 +72,12 @@ export function sessionIsRunning(sessionId: string): boolean {
 export function emitToSession(sessionId: string, ev: AgentEvent): void {
   if (!impl) throw new Error("session bus not installed (server not fully started)")
   impl.emitEvent(sessionId, ev)
+}
+
+/** Emit an event only to current SSE subscribers. It is never stored or replayed. */
+export function emitLiveToSession(sessionId: string, ev: AgentEvent): void {
+  if (!impl) throw new Error("session bus not installed (server not fully started)")
+  impl.emitLiveEvent(sessionId, ev)
 }
 
 function startDelivery(sessionId: string, msg: QueuedMessage): void {

@@ -38,6 +38,9 @@ export type AgentEvent =
   | { type: "session.rewound"; sessionId: string; turn: number }
   /** Live task counts; deliberately not persisted in transcript history. */
   | { type: "background.changed"; sessionId: string; tasks: number; monitors: number }
+  /** Ask only currently attached app clients for this session to open a URL in
+   * their browser pane. LIVE-ONLY: never persisted or replayed. */
+  | { type: "app.open_url"; url: string }
   /** A saved mode changed the server-wide executor/agent configuration. This is
    * live-only and broadcasts to every currently attached session stream. */
   | { type: "mode.applied"; name: string; spec: ModeSpec }

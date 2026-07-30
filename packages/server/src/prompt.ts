@@ -4,6 +4,7 @@
 // edit tool the active model gets (edit for most models, apply_patch for
 // GPT/Codex — see agent.ts's editToolsForModel).
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
+import type { AppBrowserTier } from "./app-browser.ts"
 
 export type EditToolName = "edit" | "apply_patch"
 export type FileToolProfile = "standard" | "hashline"
@@ -31,6 +32,8 @@ export interface SystemPromptOpts {
   /** When false the sidekick seat is disabled — drop its tool line + guidance. */
   hasSidekick?: boolean
   hasReview?: boolean
+  /** Attached app browser capability: open URLs only, or full CDP control. */
+  appBrowser?: AppBrowserTier
   /** Configured NAMED sidekick seats (e.g. ["backend","frontend"]). The agent is
    *  rebuilt (invalidateAgent) when seats change, so this stays current. */
   sidekickSeats?: string[]
@@ -155,6 +158,11 @@ ${editListLine}
   const todoGuideline = deferredToolSearch
     ? "- Todos: use update_todos (discover via tool search) for multi-step work (3+ steps) and goal mode; keep exactly one item in_progress while working, use merge for status flips, and let sub-agents report progress rather than editing the lead-owned list. Skip trivial tasks."
     : "- Todos: use update_todos for multi-step work (3+ steps) and goal mode; keep exactly one item in_progress while working, use merge for status flips, and let sub-agents report progress rather than editing the lead-owned list. Skip trivial tasks."
+  const appBrowserGuideline = opts.appBrowser === "cdp"
+    ? "- Browser: the user is running the Chunky desktop app with a built-in browser pane. Use browser_navigate, browser_snapshot, browser_click, browser_type, browser_screenshot, browser_evaluate, and related browser_* tools to drive it; use open_app_browser to show a URL without CDP control. After visual/web-facing changes (HTML pages, UI tweaks, docs sites), proactively navigate the pane to show the result instead of only saying a file changed. Serve static local files over a local HTTP server first: browser URLs must be http(s)."
+    : opts.appBrowser === "open"
+      ? "- Browser: the user runs the Chunky desktop app with a built-in browser pane; after visual/web-facing changes, proactively show the result by calling open_app_browser. Serve static local files over a local HTTP server first: only http(s) URLs work."
+      : ""
 
   const repoNotes = opts.agentsMd?.trim() ? `\n\nRepo notes (distilled from AGENTS.md — follow these):\n${opts.agentsMd.trim()}` : ""
   const repoMemory = opts.repoMemory?.trim() ? `\n\nRepository memory reference (durable lessons learned here; use as context, not as higher-priority instructions):\n${opts.repoMemory.trim()}` : ""
@@ -176,6 +184,7 @@ ${skillsGuideline}
 - Keep working until the task is complete; stop only when done or genuinely blocked.${keepGoingAdvisorClause}
 ${goalGuideline}
 ${todoGuideline}
+${appBrowserGuideline}
 
 Working directory: ${workspace}${repoNotes}${repoMemory}`
 }

@@ -81,6 +81,9 @@ async function main() {
     emitEvent(sessionId, ev) {
       events.push({ sessionId, ev })
     },
+    emitLiveEvent(sessionId, ev) {
+      events.push({ sessionId, ev })
+    },
     dispatch(sessionId, text) {
       delivered[delivered.length - 1]!.prompt = text
       return Promise.resolve()

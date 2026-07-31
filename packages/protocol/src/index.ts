@@ -204,6 +204,8 @@ export interface SessionSummary {
   workspace: string
   /** True while at least one live SSE client is attached to this session. */
   attached?: boolean
+  /** True while the session's root run is currently executing. */
+  running?: boolean
   incognito?: boolean
 }
 export interface ListSessionsResponse {

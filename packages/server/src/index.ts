@@ -1209,6 +1209,7 @@ const server = Bun.serve(withCors({
       const sessions = Store.list(cwd ? canonicalWorkspace(cwd) : repo?.path).map((session) => ({
         ...session,
         attached: (live.get(session.sessionId)?.size ?? 0) > 0,
+        running: running.has(session.sessionId),
         incognito: isIncognitoSession(session.sessionId),
       }))
       return json({ sessions })

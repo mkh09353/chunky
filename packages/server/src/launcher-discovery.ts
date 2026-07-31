@@ -51,6 +51,7 @@ interface LauncherServerRuntimeDependencies {
   fetchIdentity(port: number): Promise<LauncherServerIdentity | null>
   sleep(ms: number): Promise<void>
   now(): number
+  warn(message: string): void
   beforeStaleLockQuarantine?(observedToken: string): Promise<void>
   beforeLockReleaseQuarantine?(ownedToken: string): Promise<void>
 }
@@ -72,6 +73,9 @@ const defaultDependencies: LauncherServerRuntimeDependencies = {
   },
   now() {
     return Date.now()
+  },
+  warn(message) {
+    console.warn(message)
   },
 }
 
@@ -293,6 +297,28 @@ async function pruneStaleRecords(
   }
 }
 
+/** Healthy servers for this workspace from another runtime identity. They stay
+ * running: they may own active leases or turns, but launchers should make their
+ * presence visible before starting a parallel server. */
+async function healthyOtherVersionRecords(
+  serversDir: string,
+  workspace: string,
+  version: string,
+  buildId: string,
+  fetchIdentity: LauncherServerRuntimeDependencies["fetchIdentity"],
+): Promise<LauncherServerRecord[]> {
+  const others: LauncherServerRecord[] = []
+  for (const entry of readdirSync(serversDir, { withFileTypes: true })) {
+    if (!entry.isFile() || !entry.name.endsWith(".json")) continue
+    const record = readRecord(join(serversDir, entry.name))
+    if (!record || record.workspace !== workspace) continue
+    if (record.version === version && record.buildId === buildId) continue
+    const identity = await fetchIdentity(record.port)
+    if (identity && sameIdentity(record, identity)) others.push(record)
+  }
+  return others
+}
+
 function lockOwner(lockPath: string): LockOwner | null {
   try {
     const value = JSON.parse(readFileSync(join(lockPath, "owner.json"), "utf8")) as Partial<LockOwner>
@@ -401,7 +427,7 @@ async function releaseLock(
 export async function ensureWorkspaceServer(
   config: LauncherServerConfig,
   dependencies: LauncherServerStartDependencies & Partial<LauncherServerRuntimeDependencies>,
-): Promise<{ record: LauncherServerRecord; started: boolean }> {
+): Promise<{ record: LauncherServerRecord; started: boolean; otherVersionServers: LauncherServerRecord[] }> {
   const deps = { ...defaultDependencies, ...dependencies }
   const workspace = canonicalWorkspace(config.workspace)
   const key = serverIdentityKey(workspace, config.version, config.buildId)
@@ -414,10 +440,12 @@ export async function ensureWorkspaceServer(
   const deadline = deps.now() + startupTimeoutMs
   mkdirSync(serversDir, { recursive: true })
   await pruneStaleRecords(serversDir, workspace, deps.fetchIdentity)
+  const otherVersionServers = await healthyOtherVersionRecords(serversDir, workspace, config.version, config.buildId, deps.fetchIdentity)
+  let warnedAboutOtherVersion = false
 
   while (deps.now() <= deadline) {
     const existing = await healthyRecord(recordPath, workspace, config.version, config.buildId, deps.fetchIdentity)
-    if (existing) return { record: existing, started: false }
+    if (existing) return { record: existing, started: false, otherVersionServers }
 
     const lockToken = await acquireLock(lockPath, deps.now(), staleLockMs, deps.beforeStaleLockQuarantine)
     if (!lockToken) {
@@ -428,7 +456,7 @@ export async function ensureWorkspaceServer(
     try {
       // A prior lock owner may have completed between our health check and mkdir.
       const raced = await healthyRecord(recordPath, workspace, config.version, config.buildId, deps.fetchIdentity)
-      if (raced) return { record: raced, started: false }
+      if (raced) return { record: raced, started: false, otherVersionServers }
       if (!ownsLock(lockPath, lockToken)) continue
 
       // A matching record that failed health/version checks owns a process we
@@ -448,6 +476,12 @@ export async function ensureWorkspaceServer(
         id: randomUUID(),
       }
       if (!ownsLock(lockPath, lockToken)) continue
+      if (!warnedAboutOtherVersion) {
+        for (const other of otherVersionServers) {
+          deps.warn(`[@chunky/launcher] another Chunky v${other.version} serving this workspace at port ${other.port}; starting separate v${config.version} server — consider updating`)
+        }
+        warnedAboutOtherVersion = true
+      }
       const child = await deps.startServer(identity)
       const record: LauncherServerRecord = {
         schema: 1,
@@ -462,7 +496,7 @@ export async function ensureWorkspaceServer(
           if (live && sameIdentity(record, live)) {
             if (!ownsLock(lockPath, lockToken)) throw new Error("lost Chunky server startup lock")
             writeRecord(recordPath, record)
-            return { record, started: true }
+            return { record, started: true, otherVersionServers }
           }
           await deps.sleep(pollIntervalMs)
         }

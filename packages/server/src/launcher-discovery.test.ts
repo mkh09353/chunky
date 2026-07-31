@@ -220,6 +220,35 @@ describe("launcher server discovery", () => {
     expect(existsSync(oldPath)).toBe(false)
   })
 
+  test("starts separately but warns about a healthy other-version server", async () => {
+    const stateDir = tempDir()
+    const h = harness(stateDir)
+    const servers = join(stateDir, "servers")
+    mkdirSync(servers, { recursive: true })
+    const other = {
+      schema: 1 as const,
+      id: "other-id",
+      workspace: h.config.workspace,
+      version: "0.3.29",
+      buildId: "other-build",
+      nonce: "other-nonce",
+      port: 5088,
+      pid: 88,
+      startedAt: Date.now(),
+    }
+    writeFileSync(join(servers, `${serverIdentityKey(other.workspace, other.version, other.buildId)}.json`), JSON.stringify(other))
+    h.live.set(other.port, other)
+    const warnings: string[] = []
+
+    const result = await ensureWorkspaceServer(h.config, { ...h.deps, warn: (message) => warnings.push(message) })
+
+    expect(result.started).toBe(true)
+    expect(h.starts).toBe(1)
+    expect(result.otherVersionServers).toMatchObject([{ version: "0.3.29", port: 5088 }])
+    expect(warnings).toEqual([expect.stringContaining("another Chunky v0.3.29 serving this workspace at port 5088")])
+    expect(h.live.has(5088)).toBe(true)
+  })
+
   test("keys discovery by canonical workspace and application version", () => {
     const root = tempDir()
     mkdirSync(join(root, "project"))

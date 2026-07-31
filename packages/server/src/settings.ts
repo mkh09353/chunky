@@ -5,7 +5,7 @@
 // model id and its reasoning options {effort, speed}. Keeping the selection
 // per-provider means switching provider and back restores that provider's last
 // model + knobs. Missing/corrupt file → defaults (never throws).
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { randomBytes } from "node:crypto"
 import { join } from "node:path"
 
@@ -262,9 +262,38 @@ export function setTheme(theme: "auto" | "dark" | "light"): void {
 }
 
 function save(next: Settings): void {
-  cache = next
+  const path = settingsPath()
+  const previous = cache && cacheFile === path ? cache : loadSettings()
   try {
-    writeFileSync(settingsPath(), JSON.stringify(next, null, 2))
+    // Another compatible Chunky runtime can legitimately have a server for the
+    // same state directory. Preserve its top-level writes that this process did
+    // not make after loading its (possibly stale) cache. A setting deliberately
+    // changed here remains last-writer-wins at that top-level key.
+    let onDisk: Settings = previous
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(path, "utf8"))
+      if (parsed && typeof parsed === "object") onDisk = parsed as Settings
+    } catch {
+      // A missing/corrupt file must not prevent a settings update. The cached
+      // value remains the best safe fallback.
+    }
+
+    const merged: Settings = { ...onDisk }
+    for (const key of new Set([...Object.keys(previous), ...Object.keys(next)])) {
+      const name = key as keyof Settings
+      if (previous[name] === next[name]) continue
+      if (name in next) (merged as Record<string, unknown>)[key] = next[name]
+      else delete (merged as Record<string, unknown>)[key]
+    }
+
+    // rename within the settings directory is atomic, so readers see either the
+    // old complete JSON document or the new complete JSON document, never a
+    // truncated write.
+    const temporary = `${path}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`
+    writeFileSync(temporary, JSON.stringify(merged, null, 2), { mode: 0o600 })
+    renameSync(temporary, path)
+    cache = merged
+    cacheFile = path
   } catch (err) {
     console.warn(`[@chunky/server] could not persist settings: ${(err as Error).message}`)
   }

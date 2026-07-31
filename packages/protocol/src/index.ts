@@ -206,6 +206,9 @@ export interface SessionSummary {
   attached?: boolean
   /** True while the session's root run is currently executing. */
   running?: boolean
+  /** True while the root run or any delegate thread (child, sidekick, detached
+   * spawn, or workflow agent) is still running; excludes background tasks/monitors. */
+  busy?: boolean
   incognito?: boolean
 }
 export interface ListSessionsResponse {

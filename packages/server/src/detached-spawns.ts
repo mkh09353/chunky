@@ -33,6 +33,10 @@ export function runningDetachedSpawnCount(sessionId: string): number {
   return [...(recordsBySession.get(sessionId)?.values() ?? [])].filter((record) => record.status === "running").length
 }
 
+export function hasRunningDetachedSpawns(sessionId: string): boolean {
+  return runningDetachedSpawnCount(sessionId) > 0
+}
+
 export function createDetachedSpawn(sessionId: string, childThreadId: string, title: string): DetachedSpawnRecord | undefined {
   if (runningDetachedSpawnCount(sessionId) >= MAX_RUNNING_PER_SESSION) return undefined
   let resolveDone!: () => void

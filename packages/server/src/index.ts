@@ -114,7 +114,8 @@ import { getModelAvailability, manageModelCatalog, setModelAvailability, type Mo
 import { assertSelectionAllowed, isIncognitoSession, incognitoAllowlistFor, providerScope } from "./incognito.ts"
 import { manageSkillRepos, type SkillRepoMutationAction } from "./skill-repos.ts"
 import { resetTasks, liveTaskCounts } from "./tasks.ts"
-import { resetDetachedSpawns } from "./detached-spawns.ts"
+import { hasRunningDetachedSpawns, resetDetachedSpawns } from "./detached-spawns.ts"
+import { hasLiveThreadDelegates } from "./threads.ts"
 import { installBackgroundDispatcher } from "./background-dispatch.ts"
 import { databaseErrorMessage } from "./sqlite.ts"
 import { dreamRepoMemory, memoryRepoKey } from "./memory.ts"
@@ -1241,6 +1242,7 @@ const server = Bun.serve(withCors({
         ...session,
         attached: (live.get(session.sessionId)?.size ?? 0) > 0,
         running: running.has(session.sessionId),
+        busy: running.has(session.sessionId) || hasLiveThreadDelegates(session.sessionId) || hasRunningDetachedSpawns(session.sessionId),
         incognito: isIncognitoSession(session.sessionId),
       }))
       return json({ sessions })

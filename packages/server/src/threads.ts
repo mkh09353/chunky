@@ -89,6 +89,12 @@ export function runningChildSummaries(sessionId: string): { threadId: string; ti
   return [...(runningChildrenBySession.get(sessionId)?.values() ?? [])].map((value) => ({ ...value }))
 }
 
+/** Live delegate activity only; background tasks and monitors are intentionally excluded. */
+export function hasLiveThreadDelegates(sessionId: string): boolean {
+  return (runningChildrenBySession.get(sessionId)?.size ?? 0) > 0 ||
+    (activeSidekicks.get(sessionId)?.size ?? 0) > 0
+}
+
 export class ThreadManager implements ThreadSpawner {
   private readonly rootId: string
   private readonly emit: Emit

@@ -5,7 +5,8 @@
 // opencode persists so the login flows here can round-trip identically.
 //
 // Path: process.env.CHUNKY_AUTH || "auth.json" (relative to the server cwd = repo root).
-import { chmodSync, existsSync, readFileSync, writeFileSync } from "node:fs"
+import { chmodSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { dirname } from "node:path"
 
 export interface OAuthInfo {
   type: "oauth"
@@ -43,7 +44,12 @@ function writeAll(data: Record<string, AuthInfo>): void {
   const p = authPath()
   // Write then chmod: writeFileSync's `mode` only applies on create, so we
   // chmod unconditionally to guarantee 0600 even when the file already existed.
-  writeFileSync(p, JSON.stringify(data, null, 2), { mode: 0o600 })
+  // Atomic replacement prevents a reader from seeing a truncated shared auth file.
+  // Callers read the entire store before changing one provider, preserving others.
+  mkdirSync(dirname(p), { recursive: true })
+  const temp = `${p}.${process.pid}.tmp`
+  writeFileSync(temp, JSON.stringify(data, null, 2), { mode: 0o600 })
+  renameSync(temp, p)
   try {
     chmodSync(p, 0o600)
   } catch {

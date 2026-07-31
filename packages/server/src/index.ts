@@ -23,6 +23,8 @@ import {
   type AppBrowserResponse,
   type AppZooAnnounce,
   type AppZooResponse,
+  type AuthTestResult,
+  type AuthLogoutResult,
 } from "@chunky/protocol"
 import { effectiveSessionSelection, runAgent, type InputImage, type InterjectionBoundary } from "./run.ts"
 import { shipHandoffPrompt } from "./tools/ship.ts"
@@ -683,6 +685,35 @@ const server = Bun.serve(withCors({
       } catch (err) {
         return json({ error: (err as Error)?.message ?? String(err) }, 502)
       }
+    }
+
+    // POST /api/auth/:id/test -> AuthTestResult. OAuth providers refresh/probe
+    // through ensureAuth; key-only providers report their existing readiness.
+    const testMatch = pathname.match(/^\/api\/auth\/([^/]+)\/test$/)
+    if (testMatch && req.method === "POST") {
+      const id = testMatch[1]!
+      const provider = getProvider(id)
+      if (!provider) return json({ ok: false, error: `unknown provider "${id}"` } satisfies AuthTestResult, 404)
+      try {
+        await Promise.race([
+          provider.ensureAuth ? provider.ensureAuth() : Promise.resolve(),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timed out")), 15_000)),
+        ])
+        if (!provider.ready()) return json({ ok: false, error: `provider "${id}" is not ready` } satisfies AuthTestResult)
+        return json({ ok: true } satisfies AuthTestResult)
+      } catch (err) {
+        return json({ ok: false, error: (err as Error)?.message ?? String(err) } satisfies AuthTestResult)
+      }
+    }
+
+    // POST /api/auth/:id/logout -> AuthLogoutResult. ready() is intentionally
+    // unchanged; its normal AuthStore lookup immediately reflects this removal.
+    const logoutMatch = pathname.match(/^\/api\/auth\/([^/]+)\/logout$/)
+    if (logoutMatch && req.method === "POST") {
+      const id = logoutMatch[1]!
+      if (!getProvider(id)) return json({ error: `unknown provider "${id}"` }, 404)
+      AuthStore.remove(id)
+      return json({ ok: true } satisfies AuthLogoutResult)
     }
 
     // GET /api/auth/:id/status -> { ready }

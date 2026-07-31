@@ -1,5 +1,5 @@
 import { describe, expect, test, beforeEach, afterAll } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, readFileSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 
@@ -21,5 +21,16 @@ describe("AuthStore API credentials", () => {
     AuthStore.set("test", oauth)
     expect(AuthStore.get("test")).toEqual(oauth)
     expect(AuthStore.getApiKey("test")).toBeUndefined()
+  })
+  test("remove persists deletion without clobbering another provider", () => {
+    AuthStore.set("test", { type: "api", key: "remove-me" })
+    AuthStore.set("other", { type: "api", key: "keep-me" })
+    AuthStore.remove("test")
+    expect(AuthStore.getApiKey("test")).toBeUndefined()
+    expect(AuthStore.getApiKey("other")).toBe("keep-me")
+    expect(JSON.parse(readFileSync(process.env.CHUNKY_AUTH!, "utf8"))).toEqual({
+      other: { type: "api", key: "keep-me" },
+    })
+    AuthStore.remove("other")
   })
 })

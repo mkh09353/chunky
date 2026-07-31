@@ -337,6 +337,17 @@ export type LoginInitiation =
   | { kind: "browser-opened"; instructions: string }
   | { kind: "ready"; instructions: string }
 
+/** Result of POST ROUTES.authTest: provider credential preflight. */
+export interface AuthTestResult {
+  ok: boolean
+  error?: string
+}
+
+/** Result of POST ROUTES.authLogout after persisted provider credentials are removed. */
+export interface AuthLogoutResult {
+  ok: boolean
+}
+
 // ---- Endpoints (relative to http://localhost:<port>) ----
 export const ROUTES = {
   serverInfo: `/api/info`,
@@ -345,6 +356,10 @@ export const ROUTES = {
   onboardingComplete: `/api/onboarding/complete`,
   onboardingApply: `/api/onboarding/apply`,
   customProvider: `/api/providers/custom`,
+  // POST -> AuthTestResult. Preflight provider credentials (OAuth refresh where needed).
+  authTest: (provider: string) => `/api/auth/${encodeURIComponent(provider)}/test`,
+  // POST -> AuthLogoutResult. Remove the provider’s persisted credentials.
+  authLogout: (provider: string) => `/api/auth/${encodeURIComponent(provider)}/logout`,
   // POST CreateSessionRequest -> CreateSessionResponse (pinned to repoId's
   // workspace; the default repo when omitted).
   createSession: `/api/sessions`,

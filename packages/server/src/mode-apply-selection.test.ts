@@ -9,15 +9,28 @@
 // The apply handler is inline in Bun.serve (not separately exported), and
 // importing index.ts would start a real server, so this test drives the exact
 // registry/settings primitives the handler composes rather than the HTTP route.
-import { describe, expect, test } from "bun:test"
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test"
 import { rmSync } from "node:fs"
 
-process.env.CHUNKY_SETTINGS ||= "/tmp/chunky-mode-apply-test.json"
-try {
-  rmSync("/tmp/chunky-mode-apply-test.json")
-} catch {
-  /* not there yet */
-}
+// bun test shares one process across files. `||=` used to let ANOTHER suite's
+// CHUNKY_SETTINGS win, which pointed these mode writes at that suite's temp
+// directory — a directory it deletes when it finishes. Own the variable for the
+// duration of each test here, then hand back whatever was inherited so this
+// file cannot push the same problem onto the next one.
+const SETTINGS_PATH = "/tmp/chunky-mode-apply-test.json"
+const inheritedSettings = process.env.CHUNKY_SETTINGS
+rmSync(SETTINGS_PATH, { force: true })
+
+beforeEach(() => {
+  process.env.CHUNKY_SETTINGS = SETTINGS_PATH
+})
+
+afterEach(() => {
+  if (inheritedSettings === undefined) delete process.env.CHUNKY_SETTINGS
+  else process.env.CHUNKY_SETTINGS = inheritedSettings
+})
+
+afterAll(() => rmSync(SETTINGS_PATH, { force: true }))
 
 const { saveMode, getMode, deleteMode } = await import("./settings.ts")
 const { setActiveProviderId, setSelection, activeSelection, getProvider } = await import("./providers/registry.ts")

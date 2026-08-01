@@ -28,7 +28,8 @@ import {
 import { mockRun } from "@chunky/protocol/mock"
 import { mockThreadsRun } from "./mockThreads.js"
 import { initialState, popUser, pushUser, reduce, type TranscriptState } from "./transcript.js"
-import { abortableSleep, isIntentionalAbort, reconnectDelay, retryableHttpMessage } from "./reconnect.js"
+import { abortableSleep, isIntentionalAbort, reconnectDelay, retryableHttpMessage, shouldReresolve } from "./reconnect.js"
+import { findWorkspaceServer, serverIsRetiring } from "./serverDiscovery.js"
 import { ACCENT, BORDER, setIncognitoTheme, WARNING } from "./theme.js"
 import { activeExecutorModelLabel, prettyModel } from "./providerMark.js"
 import { WelcomeBanner } from "./components/WelcomeBanner.js"
@@ -70,6 +71,8 @@ import { MIN_NOTIFY_MS, notifyTurnEnd, notifyTurnStart, resetTerminalTitle } fro
 
 interface Props {
   mode: "mock" | "live"
+  /** Where the launcher pointed us. The TUI re-resolves from the launcher's
+   *  discovery records if that server is replaced while we are attached. */
   baseUrl: string
   cwd: string
   /** In mock mode, auto-run one demo turn on mount (lets the UI stream with no TTY). */
@@ -119,7 +122,11 @@ interface PendingSend {
   guardTokens: number
 }
 
-export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Props) {
+export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo = "basic" }: Props) {
+  // The server we talk to can change under us (a newer build supersedes the one
+  // the launcher found), so this is state, not a constant. Everything derived
+  // from it re-runs on change, and the reattach replays full history.
+  const [baseUrl, setBaseUrl] = useState(launchedBaseUrl)
   const [updateNotice, setUpdateNotice] = useState<string | null>(null)
   useEffect(() => {
     if (mode !== "live") return
@@ -499,6 +506,22 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
         resumeReplayRef.current = resumeTargetRef.current != null
         // New conversation: nothing tracked yet, so the cold banner must go.
         setCacheCold(null)
+        /** After a failed attachment, ask the launcher records whether this
+         *  workspace is being served somewhere else now (our server was
+         *  replaced and is draining, or died). Returns true once we have
+         *  pointed at the replacement: the effect re-runs and reattaches to
+         *  the SAME session, whose history lives in the shared store. */
+        const handOverToReplacement = async (attempts: number, failure?: unknown): Promise<boolean> => {
+          const retiring = await serverIsRetiring(baseUrl)
+          if (!shouldReresolve({ attempts, error: failure, retiring })) return false
+          const next = await findWorkspaceServer(cwd, baseUrl)
+          if (!next || next === baseUrl || cancelled) return false
+          printLine(`Chunky server moved — reconnecting to ${next}`)
+          resumeTargetRef.current = sessionIdRef.current ?? resumeTargetRef.current
+          setBaseUrl(next)
+          return true
+        }
+
         let attempt = 0
         while (!cancelled) {
           try {
@@ -522,11 +545,13 @@ export function App({ mode, baseUrl, cwd, autoDemo = true, demo = "basic" }: Pro
             attempt = 1
             // EOF is a disconnect even when the server closed cleanly.
             await abortableSleep(reconnectDelay(attempt - 1), streamAbort.signal)
+            if (await handOverToReplacement(attempt)) break
           } catch (err) {
             if (isIntentionalAbort(err, streamAbort.signal, cancelled)) break
             attempt++
             setConnection("reconnecting")
             await abortableSleep(reconnectDelay(attempt), streamAbort.signal)
+            if (await handOverToReplacement(attempt, err)) break
           }
         }
       } catch (err) {

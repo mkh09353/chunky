@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { abortableSleep, isIntentionalAbort, reconnectDelay, retryableHttpMessage } from "./reconnect.js"
+import { abortableSleep, isIntentionalAbort, reconnectDelay, retryableHttpMessage, isConnectionRefused, RERESOLVE_AFTER_ATTEMPTS, RERESOLVE_AFTER_REFUSED_ATTEMPTS, shouldReresolve } from "./reconnect.js"
 import { replayHistory } from "./transcript.js"
 
 describe("SSE reconnect policy", () => {
@@ -42,5 +42,29 @@ describe("SSE reconnect policy", () => {
     expect(state.status).toBe("idle")
     expect(state.threads.child?.status).toBe("idle")
     expect(state.threads.main?.items.filter((item) => item.kind === "tool")).toHaveLength(1)
+  })
+})
+
+describe("re-resolution policy", () => {
+  test("a retiring server moves us immediately", () => {
+    expect(shouldReresolve({ attempts: 0, retiring: true })).toBe(true)
+  })
+
+  test("transient drops keep retrying the same server", () => {
+    expect(shouldReresolve({ attempts: 1 })).toBe(false)
+    expect(shouldReresolve({ attempts: 2 })).toBe(false)
+    expect(shouldReresolve({ attempts: 1, error: new Error("Reconnecting… (server unavailable: HTTP 502)") })).toBe(false)
+  })
+
+  test("enough consecutive failures, or a refused connection, look elsewhere", () => {
+    expect(shouldReresolve({ attempts: RERESOLVE_AFTER_ATTEMPTS })).toBe(true)
+    const refused = Object.assign(new Error("Unable to connect. Is the computer able to access the url?"), { code: "ConnectionRefused" })
+    expect(shouldReresolve({ attempts: RERESOLVE_AFTER_REFUSED_ATTEMPTS, error: refused })).toBe(true)
+    expect(shouldReresolve({ attempts: RERESOLVE_AFTER_REFUSED_ATTEMPTS - 1, error: refused })).toBe(false)
+  })
+
+  test("recognises refusal wordings without mistaking HTTP failures for them", () => {
+    expect(isConnectionRefused(new Error("connect ECONNREFUSED 127.0.0.1:4620"))).toBe(true)
+    expect(isConnectionRefused(new Error("Reconnecting… (server unavailable: HTTP 503)"))).toBe(false)
   })
 })

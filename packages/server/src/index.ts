@@ -1539,6 +1539,12 @@ const server = Bun.serve(withCors({
         const stream = new ReadableStream<Uint8Array>({
           start(controller) {
             selfController = controller
+            // Flush the response head immediately. Without a first byte a
+            // client's fetch() does not resolve, so attaching to a session with
+            // NO history (a brand-new thread, or a reattach after a handover)
+            // would sit unconnected until the 20s keep-alive below. A comment
+            // frame carries no `data:` line, so every client ignores it.
+            controller.enqueue(encoder.encode(": ready\n\n"))
             for (const ev of history) {
               controller.enqueue(encoder.encode(sse(ev)))
             }

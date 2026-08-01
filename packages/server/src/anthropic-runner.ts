@@ -19,7 +19,7 @@ import { taggedEmitter, type Emit } from "./event-emitter.ts"
 import { buildSystemPrompt } from "./prompt.ts"
 import { appBrowserTier } from "./app-browser.ts"
 import { hasAppZoo } from "./app-zoo.ts"
-import { listSidekickSeats, resolveReviewSelection, sidekickFor, type AgentSelection } from "./providers/registry.ts"
+import { effectiveSidekickConfig, effectiveSidekickSeats, listSidekickSeats, resolveReviewSelection, sidekickFor, type AgentSelection } from "./providers/registry.ts"
 import { ANTHROPIC_SDK_ISOLATION_OPTIONS, anthropicOAuthEnvironment } from "./providers/anthropic-sdk.ts"
 import { promptTokensOf, usageForAnthropicCache, usageFromAnthropicAssistant, usageFromAnthropicResult } from "./usage.ts"
 import { cacheModelKey, noteRequest } from "./cache-watch.ts"
@@ -425,6 +425,8 @@ export async function buildAnthropicOptions(
         appBrowser: appBrowserTier(),
         appZoo: hasAppZoo(),
         sidekickSeats: listSidekickSeats(request.usageContext?.sessionId),
+        sidekickConfig: effectiveSidekickConfig(request.usageContext?.sessionId),
+        sidekickSeatConfigs: effectiveSidekickSeats(request.usageContext?.sessionId),
         agentsMd: request.agentsMd,
         repoMemory: readRepoMemory(workspace, threadId),
       }),

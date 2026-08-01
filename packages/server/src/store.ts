@@ -95,7 +95,7 @@ db.exec(`
   );
   CREATE TABLE IF NOT EXISTS ratings (
     delegation_id TEXT PRIMARY KEY, rating INTEGER NOT NULL, rework INTEGER NOT NULL DEFAULT 0,
-    reason TEXT NOT NULL, judge_provider TEXT NOT NULL, judge_model TEXT NOT NULL, ts INTEGER NOT NULL
+    reason TEXT NOT NULL, failure_diagnosis TEXT, judge_provider TEXT NOT NULL, judge_model TEXT NOT NULL, ts INTEGER NOT NULL
   );
 `)
 
@@ -121,6 +121,15 @@ db.exec(`
   }
   if (!cols.some((c) => c.name === "incognito")) db.exec("ALTER TABLE sessions ADD COLUMN incognito INTEGER NOT NULL DEFAULT 0")
   if (!cols.some((c) => c.name === "incognito_allow")) db.exec("ALTER TABLE sessions ADD COLUMN incognito_allow TEXT")
+}
+
+// Migration: ratings gained an optional diagnosis for learning from failed or
+// reworked delegations. Keep it nullable so historical ratings remain valid.
+{
+  const cols = db.query("PRAGMA table_info(ratings)").all() as { name: string }[]
+  if (!cols.some((c) => c.name === "failure_diagnosis")) {
+    db.exec("ALTER TABLE ratings ADD COLUMN failure_diagnosis TEXT")
+  }
 }
 
 // Mirror the complete, migrated durable schema exactly. Incognito rows never
@@ -226,7 +235,7 @@ function rowToGoal(row: GoalRow): Goal {
 export const Store = {
   createDelegation(d: DelegationInput): void { try { backend(d.sessionId).query("INSERT INTO delegations (id,session_id,kind,seat,provider,model,effort,brief_snippet,started_at) VALUES (?,?,?,?,?,?,?,?,?)").run(d.id,d.sessionId,d.kind,d.seat??null,d.provider,d.model,d.effort ?? null,d.briefSnippet.slice(0,200),Date.now()) } catch {} },
   completeDelegation(id: string, ok: boolean): void { try { for (const conn of [db, memoryDb]) conn.query("UPDATE delegations SET completed_at=?,ok=? WHERE id=?").run(Date.now(),ok?1:0,id) } catch {} },
-  rateDelegation(id: string, rating: number, rework: boolean, reason: string, judge: AgentSelection): void { for (const conn of [db, memoryDb]) conn.query("INSERT INTO ratings (delegation_id,rating,rework,reason,judge_provider,judge_model,ts) VALUES (?,?,?,?,?,?,?) ON CONFLICT(delegation_id) DO UPDATE SET rating=excluded.rating,rework=excluded.rework,reason=excluded.reason,judge_provider=excluded.judge_provider,judge_model=excluded.judge_model,ts=excluded.ts").run(...([id,rating,rework?1:0,reason,judge.provider,judge.model,Date.now()] as any)) },
+  rateDelegation(id: string, rating: number, rework: boolean, reason: string, judge: AgentSelection, diagnosis?: string): void { for (const conn of [db, memoryDb]) conn.query("INSERT INTO ratings (delegation_id,rating,rework,reason,failure_diagnosis,judge_provider,judge_model,ts) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(delegation_id) DO UPDATE SET rating=excluded.rating,rework=excluded.rework,reason=excluded.reason,failure_diagnosis=excluded.failure_diagnosis,judge_provider=excluded.judge_provider,judge_model=excluded.judge_model,ts=excluded.ts").run(...([id,rating,rework?1:0,reason,diagnosis ?? null,judge.provider,judge.model,Date.now()] as any)) },
   resolveDelegation(sessionId: string, ref: string): string | null { const conn=backend(sessionId); const seat = ref.startsWith("last:") ? ref.slice(5) : null; const row = conn.query(`SELECT id FROM delegations WHERE session_id=? AND completed_at IS NOT NULL ${seat ? "AND seat=?" : ""} ORDER BY completed_at DESC LIMIT 1`).get(...(seat ? [sessionId,seat] : [sessionId])) as {id:string}|null; return ref !== "last" && !ref.startsWith("last:") ? (conn.query("SELECT id FROM delegations WHERE session_id=? AND id=?").get(sessionId,ref) as {id:string}|null)?.id ?? null : row?.id ?? null },
   /** Best effort by design: accounting must never affect an agent run. */
   logUsage(u: UsageLedgerInput): void {

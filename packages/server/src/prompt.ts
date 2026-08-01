@@ -39,6 +39,10 @@ export interface SystemPromptOpts {
   /** Configured NAMED sidekick seats (e.g. ["backend","frontend"]). The agent is
    *  rebuilt (invalidateAgent) when seats change, so this stays current. */
   sidekickSeats?: string[]
+  /** Effective default sidekick configuration, used to identify equivalent workers. */
+  sidekickConfig?: { enabled: boolean; provider?: string; model?: string }
+  /** Effective named seat configurations, keyed by their routing names. */
+  sidekickSeatConfigs?: Record<string, { provider: string; model: string }>
 }
 
 export function buildSystemPrompt(
@@ -141,8 +145,37 @@ ${editListLine}
     seatNames.length > 0
       ? ` Route each brief to the right named seat by domain (${seatNames.join("/")}) and keep a domain's follow-ups on the same seat. Seats run CONCURRENTLY: when a task splits into independent pieces, send briefs to multiple seats in the SAME turn instead of serializing them — one seat idle while another grinds is wasted wall-clock time. When you parallelize, write the shared contract verbatim into BOTH briefs, then one integration brief to a single seat. Don't force a split on work that is genuinely sequential.`
       : ""
+  const configuredSeats = opts.sidekickSeatConfigs ?? {}
+  const twinWorkerNames = (() => {
+    if (!hasSidekick) return []
+    const twins = new Set<string>()
+    const defaultSeat = opts.sidekickConfig
+    if (defaultSeat?.enabled && defaultSeat.provider && defaultSeat.model) {
+      for (const [name, seat] of Object.entries(configuredSeats)) {
+        if (seat.provider === defaultSeat.provider && seat.model === defaultSeat.model) {
+          twins.add("default")
+          twins.add(name)
+        }
+      }
+    }
+    const names = Object.keys(configuredSeats)
+    for (let i = 0; i < names.length; i++) {
+      for (let j = i + 1; j < names.length; j++) {
+        const left = configuredSeats[names[i]!]
+        const right = configuredSeats[names[j]!]
+        if (left && right && left.provider === right.provider && left.model === right.model) {
+          twins.add(names[i]!)
+          twins.add(names[j]!)
+        }
+      }
+    }
+    return [...twins]
+  })()
+  const twinWorkersGuideline = twinWorkerNames.length > 0
+    ? `\n- TWIN WORKERS: you have equivalent sidekick workers (${twinWorkerNames.join(" and ")}). They work synchronously one brief at a time, so a single busy worker serializes everything. Actively look for a split: when a task has two separable parts (or a recon half and an independent implementation half), write two self-contained briefs — including any shared contract verbatim in both — and dispatch them to both workers in the SAME turn. Prefer using both over queuing two briefs on one. Don't force a split on genuinely sequential work.`
+    : ""
   const sidekickGuideline = hasSidekick
-    ? `\n- Sidekick: your default delegate, for exploration as much as implementation. On a nontrivial task, make your FIRST handoff reconnaissance — the sidekick explores and reports back paths + key snippets, and you write the implementation brief from its report instead of reading the repo yourself. Briefs are specs: goal, explicit constraints and edge cases, definition of done. Review its work via git diff/git show (don't pull its files into your context), then call rate_delegate — the sub-scores are anchored, just answer them from the evidence. If the work is wrong, hand back a follow-up brief with specific feedback instead of rewriting it yourself.${seatsGuideline} Running multiple delegates at once is fine and often right: while the sidekick works a brief, independent one-shot chunks can go to spawn_thread in the same turn rather than queuing behind it.`
+    ? `\n- Sidekick: your default delegate, for exploration as much as implementation. On a nontrivial task, make your FIRST handoff reconnaissance — the sidekick explores and reports back paths + key snippets, and you write the implementation brief from its report instead of reading the repo yourself. Briefs are specs: goal, explicit constraints and edge cases, definition of done. Review its work via git diff/git show (don't pull its files into your context), then call rate_delegate — the sub-scores are anchored, just answer them from the evidence. If the work is wrong, hand back a follow-up brief with specific feedback instead of rewriting it yourself.${seatsGuideline}${twinWorkersGuideline} Running multiple delegates at once is fine and often right: while the sidekick works a brief, independent one-shot chunks can go to spawn_thread in the same turn rather than queuing behind it.`
     : ""
   const workflowLabel = deferredToolSearch ? "Workflow (discover via tool search)" : "Workflow"
   const multiAgentGuideline =

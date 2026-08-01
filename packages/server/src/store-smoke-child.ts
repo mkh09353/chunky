@@ -2,6 +2,7 @@ import { mkdtemp } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { expect } from "bun:test"
+import { openSqlite } from "./sqlite.ts"
 
 const dir = await mkdtemp(join(tmpdir(), "chunky-store-smoke-"))
 process.env.CHUNKY_DB = join(dir, "smoke.db")
@@ -30,7 +31,8 @@ if (Store.resolveDelegation("smoke-session", pricedId) !== pricedId) throw new E
 Store.rateDelegation(pricedId, 8, false, "clear and correct", selection)
 const last = Store.resolveDelegation("smoke-session", "last")
 if (last !== unknownId) throw new Error(`last resolver failed: ${last}`)
-Store.rateDelegation(last!, 6, true, "needed a follow-up", selection)
+const diagnosis = "The model ignored a constraint; make the brief restate it and verify it in review."
+Store.rateDelegation(last!, 6, true, "needed a follow-up", selection, diagnosis)
 const lastBackend = Store.resolveDelegation("smoke-session", "last:backend")
 if (lastBackend !== pricedId) throw new Error(`last:seat resolver failed: ${lastBackend}`)
 
@@ -47,4 +49,6 @@ expect(scoreboard).toEqual(expect.arrayContaining([
   expect.objectContaining({ provider: "openai", model: "gpt-4o", kind: "sidekick", samples: 1, avgRating: 8, ratedCount: 1, totalTokens: 1200 }),
   expect.objectContaining({ provider: "mystery", model: "not-in-catalog", kind: "child", samples: 1, avgRating: 6, ratedCount: 1, totalCost: null, totalTokens: 60 }),
 ]))
+const rating = openSqlite(process.env.CHUNKY_DB!).query("SELECT failure_diagnosis FROM ratings WHERE delegation_id=?").get(unknownId) as { failure_diagnosis: string | null }
+expect(rating.failure_diagnosis).toBe(diagnosis)
 console.log("store smoke: delegation lifecycle, usage attribution, pricing, scoreboard, and rating resolvers passed")

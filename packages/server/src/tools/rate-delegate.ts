@@ -17,6 +17,7 @@ export const rateDelegateInputShape = {
   report: z.number().int().min(0).max(2).describe("Report quality + honesty: 2 = precise, actionable, and candid about its own gaps/skips; 1 = adequate; 0 = vague, misleading, or silently omitted failures/skips."),
   exceeded: z.number().int().min(0).max(1).optional().describe("1 ONLY if it delivered clear value beyond the brief (caught a bug the brief missed, fixed a pre-existing issue) — name it in reason. Default 0."),
   rework: z.boolean().optional().describe("true if you had to send a follow-up brief to fix or finish this work (mechanical fact, not a judgment). Caps the rating at 7."),
+  diagnosis: z.string().min(1).optional().describe("When the rating lands below 8 or rework=true, REQUIRED: one or two lines on WHAT went wrong (root cause: bad brief/harness vs model error — ignored constraint, hallucinated API, weak verification) and a concrete suggestion to prevent it next time. Omit for clean high-scoring runs."),
   reason: z.string().min(1).describe("One concise line of evidence justifying the sub-scores; if exceeded=1, name the extra value."),
 }
 
@@ -29,10 +30,10 @@ export const rateDelegate = tool(async (input, config?: unknown) => {
   const rework = input.rework ?? false
   const rating = computeRating({ compliance: input.compliance, correctness: input.correctness, report: input.report, exceeded: input.exceeded ?? 0, rework })
   const reason = `[c${input.compliance}/3 x${input.correctness}/3 r${input.report}/2 +${input.exceeded ?? 0}] ${input.reason}`
-  Store.rateDelegation(id, rating, rework, reason, activeSelection())
+  Store.rateDelegation(id, rating, rework, reason, activeSelection(), input.diagnosis)
   return `Rated delegation ${id}: ${rating}/10 (compliance ${input.compliance}/3, correctness ${input.correctness}/3, report ${input.report}/2, exceeded +${input.exceeded ?? 0}${rework ? ", capped at 7 for rework" : ""})`
 }, {
   name: "rate_delegate",
-  description: "Rate completed delegated work via anchored sub-scores; the 1–10 rating is COMPUTED (1 + compliance + correctness + report + exceeded, capped at 7 when rework=true), never chosen directly. Score strictly from evidence (the diff, test output, the report) — most solid runs should land 7–8; 9–10 must be rare and earned.",
+  description: "Rate completed delegated work via anchored sub-scores; the 1–10 rating is COMPUTED (1 + compliance + correctness + report + exceeded, capped at 7 when rework=true), never chosen directly. Score strictly from evidence (the diff, test output, the report) — most solid runs should land 7–8; 9–10 must be rare and earned. Low scores (below 8) and rework MUST include a diagnosis explaining what went wrong and how to prevent it next time.",
   schema: z.object(rateDelegateInputShape),
 })

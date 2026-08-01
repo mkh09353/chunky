@@ -24,7 +24,10 @@ export async function suggestedModes(ready: Set<string>): Promise<OnboardingSugg
     } catch {}
   }
   const result: OnboardingSuggestion[] = []
-  if (ready.has("codex") && ready.has("anthropic")) result.push({ name: "fire",  description: "Anthropic Fable leads, with Codex workers and advice (Opus on frontend).", spec: { provider: "anthropic", model, effort: "low", sidekick: { provider: "codex", model: "gpt-5.6-terra", effort: "high" }, advisor: { provider: "codex", model: "gpt-5.6-sol" }, sidekickSeats: { frontend: { provider: "anthropic", model: opus } } } })
+  if (ready.has("codex") && ready.has("anthropic")) {
+    result.push({ name: "fire", description: "Anthropic Fable leads, with Codex workers and advice (Opus on frontend).", spec: { provider: "anthropic", model, effort: "low", sidekick: { provider: "codex", model: "gpt-5.6-terra", effort: "high" }, advisor: { provider: "codex", model: "gpt-5.6-sol" }, sidekickSeats: { frontend: { provider: "anthropic", model: opus } } } })
+    result.push({ name: "tibo", description: "Sol leads with twin Luna sidekicks; Opus advises and owns frontend.", spec: { provider: "codex", model: "gpt-5.6-sol", effort: "high", advisor: { provider: "anthropic", model: opus }, sidekick: { provider: "codex", model: "gpt-5.6-luna", effort: "xhigh" }, sidekickSeats: { luna2: { provider: "codex", model: "gpt-5.6-luna", effort: "xhigh" }, frontend: { provider: "anthropic", model: opus } } } })
+  }
   else if (ready.has("grok") && ready.has("anthropic")) {
     let grok = "grok-4.5"
     try { grok = (await listModelsFor("grok")).find((m) => /grok-4\.5/i.test(m.id))?.id ?? grok } catch {}
@@ -47,7 +50,8 @@ export async function suggestedModes(ready: Set<string>): Promise<OnboardingSugg
 // Keep this cheap name-only check in sync with the branches in suggestedModes.
 function suggestedModeNames(ready: Set<string>): string[] {
   const names: string[] = []
-  if ((ready.has("codex") || ready.has("grok")) && ready.has("anthropic")) names.push("fire")
+  if (ready.has("codex") && ready.has("anthropic")) names.push("fire", "tibo")
+  else if (ready.has("grok") && ready.has("anthropic")) names.push("fire")
   else if (ready.has("codex") || ready.has("anthropic")) names.push("default")
   if (ready.has("codex") || ready.has("anthropic")) names.push("cheap")
   return names

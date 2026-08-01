@@ -28,10 +28,14 @@ import {
   type RelayBeginPairingResponse,
   type RelayPollPairingResponse,
   type RelayStatusResponse,
+  type SessionSummary,
+  type ShellSessionsResponse,
+  type SessionDelta,
 } from "@chunky/protocol"
 import { effectiveSessionSelection, runAgent, type InputImage, type InterjectionBoundary } from "./run.ts"
 import { shipHandoffPrompt } from "./tools/ship.ts"
 import { Store } from "./store.ts"
+import { subscribeSessionChanges } from "./session-changes.ts"
 import { markSessionIncognito, validateIncognitoMode } from "./incognito.ts"
 import { restoreSnapshot, snapshotWorkspace, snapshotWorkspaceAsync } from "./shadow-git.ts"
 import { createForkWorktree, removeForkWorktree } from "./worktree-fork.ts"
@@ -131,6 +135,7 @@ import {
   SERVER_LEASES_PATH,
   ServerLeaseTracker,
 } from "./launcher-discovery.ts"
+import { DRAIN_POLL_MS, DRAIN_REFUSAL, DRAIN_TIMEOUT_MS, DrainCoordinator, drainStep } from "./drain.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { getAppBrowserEndpoint, setAppBrowserEndpoint } from "./app-browser.ts"
 import { hasAppZoo, setAppZooEndpoint } from "./app-zoo.ts"
@@ -220,6 +225,36 @@ function emitTo(sessionId: string, ev: AgentEvent): void {
     }
   }
 }
+
+/** The mobile shell intentionally contains only the public SessionSummary fields. */
+function shellSummary(sessionId: string): SessionSummary | null {
+  const session = Store.summary(sessionId)
+  return session && {
+    ...session,
+    attached: (live.get(sessionId)?.size ?? 0) > 0,
+    running: running.has(sessionId),
+    incognito: isIncognitoSession(sessionId),
+  }
+}
+
+function shellSessions(): SessionSummary[] {
+  return Store.listShell().map((session) => ({
+    ...session,
+    attached: (live.get(session.sessionId)?.size ?? 0) > 0,
+    running: running.has(session.sessionId),
+    incognito: isIncognitoSession(session.sessionId),
+  }))
+}
+
+/** Session changes are emitted by Store; the stream subscriber supplies the fan-out. */
+function notifyShellSessionChanged(sessionId: string): void {
+  // The Store listener below is process-local, so running transitions use the same path.
+  shellChangeListeners.forEach((listener) => listener(sessionId))
+}
+
+type ShellChangeListener = (sessionId: string) => void
+const shellChangeListeners = new Set<ShellChangeListener>()
+subscribeSessionChanges((sessionId) => notifyShellSessionChanged(sessionId))
 
 /** Push an event only to currently attached clients of one session. It is
  * deliberately never persisted, so reconnect/replay cannot repeat UI actions. */
@@ -312,6 +347,7 @@ function startRun(
   }
   const ac = new AbortController()
   running.set(sessionId, ac)
+  notifyShellSessionChanged(sessionId)
   const done = runAgent(sessionId, text, (ev) => emitTo(sessionId, ev), images, ac, {
     ...options,
     onToolBoundary: (): InterjectionBoundary | undefined => {
@@ -329,7 +365,10 @@ function startRun(
     })
     .finally(() => {
       if (turn != null) Store.completeTurn(sessionId, turn, anchorLatestCheckpoint(sessionId, turn))
-      if (running.get(sessionId) === ac) running.delete(sessionId)
+      if (running.get(sessionId) === ac) {
+        running.delete(sessionId)
+        notifyShellSessionChanged(sessionId)
+      }
       if (runDone.get(sessionId) === done) runDone.delete(sessionId)
       scheduleDream(sessionId)
       drainQueue(sessionId)
@@ -466,6 +505,13 @@ function json(body: unknown, status = 200, req?: Request): Response {
   })
 }
 
+/** A retiring server still serves reads and finishes its in-flight runs, but
+ *  refuses anything that would START a new turn — that work belongs to its
+ *  successor. Returns null while this server is healthy. */
+function refuseWhileRetiring(req: Request): Response | null {
+  return drain.draining ? json({ error: DRAIN_REFUSAL }, 503, req) : null
+}
+
 /** Apply request-specific CORS after a route has constructed its response. */
 function finalizeCors(req: Request, response: Response): Response {
   const origin = req.headers.get("origin")
@@ -491,6 +537,11 @@ function withCors<T extends { fetch: (req: Request, ...args: any[]) => Response 
 const port = Number(process.env.CHUNKY_PORT) || DEFAULT_PORT
 const launcherManaged = !!process.env.CHUNKY_SERVER_NONCE
 const serverLeases = launcherManaged ? new ServerLeaseTracker(() => Date.now(), 30_000, 30_000) : null
+// Retirement after a launcher replaced this build with a newer one. Draining
+// refuses NEW turns but never interrupts work already in flight (see drain.ts).
+// The timeout is tunable so tests need not wait five minutes.
+const drainTimeoutMs = Number(process.env.CHUNKY_DRAIN_TIMEOUT_MS) || DRAIN_TIMEOUT_MS
+const drain = new DrainCoordinator(() => Date.now(), drainTimeoutMs)
 
 // This is deliberately fire-and-forget: a GitHub outage must never affect boot.
 const previousUpdateCheck = readPersistedCheck()
@@ -524,7 +575,16 @@ const server = Bun.serve(withCors({
       const nonce = process.env.CHUNKY_SERVER_NONCE
       const id = process.env.CHUNKY_SERVER_ID
       if (!workspace || !version || !buildId || !nonce || !id) return json({ error: "launcher identity unavailable" }, 404)
-      return json({ workspace, version, buildId, nonce, id, port: server.port })
+      // `retiring` is additive: launchers that predate draining ignore it,
+      // newer ones use it to stop handing this server new clients.
+      const retirement = drain.snapshot()
+      return json({
+        workspace, version, buildId, nonce, id, port: server.port,
+        retiring: retirement.retiring,
+        ...(retirement.retiring
+          ? { retiringSince: retirement.since, retiringDeadline: retirement.deadline }
+          : {}),
+      })
     }
     // CORS preflight cannot carry the actual bearer header. It is harmless on
     // its own (no application route is dispatched) and lets real webviews make
@@ -1263,6 +1323,63 @@ const server = Bun.serve(withCors({
       }
     }
 
+    // GET /api/sessions/shell -> compact, cross-repository session summaries.
+    // Store.listShell reads session rows only; it never materializes transcripts.
+    if (req.method === "GET" && pathname === ROUTES.shellSessions) {
+      return json({ sessions: shellSessions() } satisfies ShellSessionsResponse)
+    }
+
+    // GET /api/sessions/stream -> one snapshot followed by debounced state deltas.
+    if (req.method === "GET" && pathname === ROUTES.sessionStream) {
+      let unsubscribe: (() => void) | undefined
+      let heartbeat: ReturnType<typeof setInterval> | undefined
+      let debounce: ReturnType<typeof setTimeout> | undefined
+      let controller: ReadableStreamDefaultController<Uint8Array> | undefined
+      const changed = new Set<string>()
+      const send = (event: "snapshot" | "delta", data: unknown) => {
+        controller?.enqueue(encoder.encode(`event: ${event}\ndata: ${JSON.stringify(data)}\n\n`))
+      }
+      const flush = () => {
+        debounce = undefined
+        const upsert: SessionSummary[] = []
+        const remove: string[] = []
+        for (const sessionId of changed) {
+          const summary = shellSummary(sessionId)
+          if (summary) upsert.push(summary)
+          else remove.push(sessionId)
+        }
+        changed.clear()
+        if (upsert.length || remove.length) send("delta", { upsert, remove } satisfies SessionDelta)
+      }
+      const stream = new ReadableStream<Uint8Array>({
+        start(nextController) {
+          controller = nextController
+          // Subscribe before taking the snapshot so a mutation cannot be lost in
+          // between. The listener only schedules asynchronous work, preserving
+          // the snapshot as the stream's first frame.
+          unsubscribe = (() => {
+            const listener: ShellChangeListener = (sessionId) => {
+              changed.add(sessionId)
+              if (!debounce) debounce = setTimeout(flush, 250)
+            }
+            shellChangeListeners.add(listener)
+            return () => shellChangeListeners.delete(listener)
+          })()
+          send("snapshot", { sessions: shellSessions() } satisfies ShellSessionsResponse)
+          heartbeat = setInterval(() => {
+            try { controller?.enqueue(encoder.encode(": ping\n\n")) } catch { /* cancel cleans up */ }
+          }, 15_000)
+        },
+        cancel() {
+          if (heartbeat) clearInterval(heartbeat)
+          if (debounce) clearTimeout(debounce)
+          unsubscribe?.()
+          changed.clear()
+        },
+      })
+      return new Response(stream, { headers: { "Content-Type": "text/event-stream", "Cache-Control": "no-cache, no-transform", Connection: "keep-alive", ...corsHeaders(req) } })
+    }
+
     // GET /api/sessions?repo=<id> -> ListSessionsResponse for that repo (or the
     // default one). Threads are scoped per repo so each folder has its own list.
     if (req.method === "GET" && pathname === ROUTES.listSessions) {
@@ -1346,6 +1463,8 @@ const server = Bun.serve(withCors({
       }
 
       if (kind === "fork" && req.method === "POST") {
+        const retiring = refuseWhileRetiring(req)
+        if (retiring) return retiring
         if (isIncognitoSession(sessionId)) return json({ error: "cannot fork an incognito session" }, 403)
         let body: ForkRequest
         try { body = await req.json() as ForkRequest } catch { return json({ error: "invalid JSON body" }, 400) }
@@ -1424,6 +1543,7 @@ const server = Bun.serve(withCors({
               controller.enqueue(encoder.encode(sse(ev)))
             }
             subscribers(sessionId).add(controller)
+            notifyShellSessionChanged(sessionId)
             // Heartbeat: an SSE comment every 20s so an otherwise-idle stream keeps
             // bytes flowing. The server never times these out (idleTimeout: 0), but
             // the TUI runs on Bun and Bun's client-side fetch aborts an idle response
@@ -1441,6 +1561,7 @@ const server = Bun.serve(withCors({
           cancel() {
             if (heartbeat) clearInterval(heartbeat)
             subscribers(sessionId).delete(selfController)
+            notifyShellSessionChanged(sessionId)
           },
         })
         return new Response(stream, {
@@ -1530,6 +1651,11 @@ const server = Bun.serve(withCors({
           }
         }
 
+        // A retiring server must not accept new prompts — not even queued
+        // behind a running turn, which would extend the drain indefinitely.
+        const retiring = refuseWhileRetiring(req)
+        if (retiring) return retiring
+
         if (visibleText) Store.setTitleIfDefault(sessionId, visibleText) // first message becomes the resume label
 
         // Echo the user turn into the event stream so it is persisted and
@@ -1569,6 +1695,8 @@ const server = Bun.serve(withCors({
       // creates + starts the fresh workflows-mode goal session. The prompt is
       // hidden (like a goal kickoff) — the user sees the brief being written.
       if (kind === "ship" && req.method === "POST") {
+        const retiring = refuseWhileRetiring(req)
+        if (retiring) return retiring
         let notes: string | undefined
         try {
           const body = (await req.json().catch(() => ({}))) as ShipRequest
@@ -1615,6 +1743,8 @@ const server = Bun.serve(withCors({
               turns: 0,
               maxTurns,
             }
+            const retiringForGoal = refuseWhileRetiring(req)
+            if (retiringForGoal) return retiringForGoal
             Store.putGoal(goal)
             emitTo(sessionId, {
               type: "goal.update",
@@ -1638,6 +1768,8 @@ const server = Bun.serve(withCors({
           if (body.action === "resume") {
             const existing = Store.getGoal(sessionId)
             if (!existing) return json({ error: "no goal to resume" }, 400)
+            const retiringForResume = refuseWhileRetiring(req)
+            if (retiringForResume) return retiringForResume
             // Resume grants a fresh turn budget and dispatches a new run.
             const resumed = Store.updateGoal(sessionId, { status: "active", turns: 0 })!
             emitTo(sessionId, {
@@ -1671,17 +1803,45 @@ const ownershipId = process.env.CHUNKY_SERVER_ID
 const cleanupDiscovery = () => {
   if (discoveryRecord && ownershipId) removeDiscoveryRecordIfOwned(discoveryRecord, ownershipId)
 }
+/** Finish retirement: nothing is in flight (or the drain timed out), so let go
+ *  of the registration and exit through the normal shutdown path. */
+function finishRetirement(): void {
+  cleanupDiscovery()
+  relayUplink?.stop()
+  relayUplink = undefined
+  server.stop(true)
+  process.exitCode = 0
+  void shutdownServer("SIGTERM")
+}
+
+/**
+ * A successor claimed this workspace's registration (the launcher deleted or
+ * replaced our discovery record). Retire gracefully: refuse new turns, let the
+ * in-flight ones finish while their clients keep streaming, and only abort
+ * after the drain timeout.
+ */
+function beginRetirement(reason: string): void {
+  if (!drain.begin()) return
+  console.log(`[@chunky/server] ${reason}; draining ${running.size} in-flight run(s) before exit`)
+  const tick = () => {
+    const done = drainStep(drain, {
+      runningCount: () => running.size,
+      abortAll: () => { for (const controller of running.values()) controller.abort() },
+      finish: finishRetirement,
+      log: (message) => console.warn(`[@chunky/server] ${message}`),
+    })
+    if (done) clearInterval(timer)
+  }
+  const timer = setInterval(tick, DRAIN_POLL_MS)
+  timer.unref?.()
+  // An idle server retires immediately instead of waiting out the first tick.
+  tick()
+}
+
 const stopOwnershipPoller = discoveryRecord && ownershipId
   ? startOwnershipPoller(discoveryRecord, ownershipId, () => {
-      // A successor took the registration. Abort active work before stopping
-      // the listener, matching the normal SIGTERM shutdown path.
-      for (const controller of running.values()) controller.abort()
-      relayUplink?.stop()
-      relayUplink = undefined
-      cleanupDiscovery()
-      server.stop(true)
-      process.exitCode = 0
-    })
+      beginRetirement("this server's registration was taken over by a newer build")
+    }, Number(process.env.CHUNKY_OWNERSHIP_POLL_MS) || undefined)
   : undefined
 const shutdown = () => {
   stopOwnershipPoller?.()

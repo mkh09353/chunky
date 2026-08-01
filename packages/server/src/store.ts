@@ -3,6 +3,7 @@
 // replays the full prior run — i.e. "resume". Kept deliberately tiny.
 import { openSqlite, retrySqliteTransaction } from "./sqlite.ts"
 import type { AgentEvent, RewindPoint, SessionSummary } from "@chunky/protocol"
+import { notifySessionChanged } from "./session-changes.ts"
 import type { Goal } from "./goal.ts"
 import type { TodoSnapshot } from "./todos.ts"
 import type { AgentSelection } from "./providers/registry.ts"
@@ -250,9 +251,11 @@ export const Store = {
     const now = Date.now()
     if (isIncognitoSession(id)) {
       memoryDb.query("INSERT INTO sessions (id,title,created_at,last_activity,workspace,incognito) VALUES (?,?,?,?,?,1)").run(id,title,now,now,workspace)
+      notifySessionChanged(id)
       return
     }
     stmtCreate.run(id, title, now, now, workspace)
+    notifySessionChanged(id)
   },
   setIncognito(sessionId: string, allow: string[] | null): void {
     if (isIncognitoSession(sessionId)) {
@@ -287,9 +290,11 @@ export const Store = {
       const row = memoryDb.query("SELECT COALESCE(MAX(seq),-1)+1 n FROM events WHERE session_id=?").get(sessionId) as { n: number }
       memoryDb.query("INSERT INTO events VALUES (?,?,?)").run(sessionId, row.n, JSON.stringify(ev))
       memoryDb.query("UPDATE sessions SET last_activity=? WHERE id=?").run(Date.now(), sessionId)
+      notifySessionChanged(sessionId)
       return
     }
     retrySqliteTransaction(db, () => appendEventTx(sessionId, ev, Date.now()))
+    notifySessionChanged(sessionId)
   },
 
   /** Sequence assigned to the next persisted event (for a turn boundary). */
@@ -375,12 +380,27 @@ export const Store = {
   /** Set a session title once (first user message makes a nice resume label). */
   setTitleIfDefault(sessionId: string, title: string): void {
     const trimmed = title.trim().slice(0, 80)
-    if (trimmed) backend(sessionId).query("UPDATE sessions SET title=? WHERE id=?").run(trimmed, sessionId)
+    if (trimmed) { backend(sessionId).query("UPDATE sessions SET title=? WHERE id=?").run(trimmed, sessionId); notifySessionChanged(sessionId) }
   },
 
   /** Replace a session title unconditionally. */
   setTitle(sessionId: string, title: string): void {
     backend(sessionId).query("UPDATE sessions SET title=? WHERE id=?").run(title, sessionId)
+    notifySessionChanged(sessionId)
+  },
+
+  /** Compact shell lookup: row only, never hydrates transcript events. */
+  summary(sessionId: string): SessionSummary | null {
+    const row = backend(sessionId).query("SELECT id,title,created_at,last_activity,workspace,incognito FROM sessions WHERE id=?").get(sessionId) as { id: string; title: string; created_at: number; last_activity: number; workspace: string; incognito: number } | null
+    return row && { sessionId: row.id, title: row.title, createdAt: row.created_at, lastActivity: row.last_activity, workspace: row.workspace, incognito: !!row.incognito }
+  },
+
+  /** Unbounded compact row query for the mobile cross-repository shell. */
+  listShell(): SessionSummary[] {
+    const rows = [...db.query("SELECT id,title,created_at,last_activity,workspace,incognito FROM sessions").all(), ...memoryDb.query("SELECT id,title,created_at,last_activity,workspace,incognito FROM sessions").all()] as Array<{ id: string; title: string; created_at: number; last_activity: number; workspace: string; incognito: number }>
+    const deduped = new Map<string, SessionSummary>()
+    for (const row of rows) deduped.set(row.id, { sessionId: row.id, title: row.title, createdAt: row.created_at, lastActivity: row.last_activity, workspace: row.workspace, incognito: !!row.incognito })
+    return [...deduped.values()].sort((a, b) => b.lastActivity - a.lastActivity)
   },
 
   /** List sessions, optionally scoped to one workspace (repo). Omit `workspace`
@@ -499,6 +519,7 @@ export const Store = {
       stmtBranch.run(childId, parentId, last.n ?? -1, kind, directive ?? null, now)
       if (kind === "worktree" && worktree) stmtWorktree.run(childId, workspace, worktree.gitCommonDir, worktree.branch, parentId, now)
     })
+    notifySessionChanged(childId)
   },
 
   forkBranchOf(sessionId: string): { parentSessionId: string; kind: "normal" | "worktree"; directive: string | null } | null {

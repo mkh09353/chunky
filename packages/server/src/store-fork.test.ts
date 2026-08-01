@@ -44,3 +44,21 @@ test("rewindTranscript removes events at its turn boundary and later turns while
   expect(Store.getGoal(id)).toBeNull()
   expect(Store.getTodos(id)).toEqual([])
 })
+
+test("listShell aggregates workspaces as compact summaries sorted by activity", async () => {
+  const older = `shell-old-${crypto.randomUUID()}`
+  const newer = `shell-new-${crypto.randomUUID()}`
+  Store.createSession(older, "Older", "/repo-one")
+  // Ensure the activity timestamps differ without relying on timer resolution.
+  await Bun.sleep(2)
+  Store.createSession(newer, "Newer", "/repo-two")
+
+  const sessions = Store.listShell().filter((session) => session.sessionId === older || session.sessionId === newer)
+  expect(sessions).toEqual([
+    expect.objectContaining({ sessionId: newer, title: "Newer", workspace: "/repo-two" }),
+    expect.objectContaining({ sessionId: older, title: "Older", workspace: "/repo-one" }),
+  ])
+  for (const session of sessions) expect(Object.keys(session).sort()).toEqual([
+    "createdAt", "incognito", "lastActivity", "sessionId", "title", "workspace",
+  ])
+})

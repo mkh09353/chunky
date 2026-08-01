@@ -214,6 +214,15 @@ export interface SessionSummary {
 export interface ListSessionsResponse {
   sessions: SessionSummary[]
 }
+/** GET ROUTES.shellSessions — compact cross-repository resume list. */
+export interface ShellSessionsResponse {
+  sessions: SessionSummary[]
+}
+/** SSE event payload for ROUTES.sessionStream. */
+export interface SessionDelta {
+  upsert: SessionSummary[]
+  remove: string[]
+}
 export interface RewindPoint { turn: number; createdAt: number; userText: string; complete: boolean }
 export interface RewindPointsResponse { points: RewindPoint[] }
 export interface RewindRequest { turn: number }
@@ -399,6 +408,8 @@ export const ROUTES = {
   // workspace; the default repo when omitted).
   createSession: `/api/sessions`,
   listSessions: `/api/sessions`, // GET ?repo=<id>&cwd=<path> -> ListSessionsResponse
+  shellSessions: `/api/sessions/shell`, // GET -> ShellSessionsResponse
+  sessionStream: `/api/sessions/stream`, // GET SSE: snapshot + SessionDelta
   renameSession: (id: string) => `/api/sessions/${id}`,
   // GET  -> ReposResponse. POST AddRepoRequest -> ReposResponse (add a folder;
   // it also becomes the default repo).

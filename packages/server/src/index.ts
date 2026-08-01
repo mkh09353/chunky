@@ -25,6 +25,9 @@ import {
   type AppZooResponse,
   type AuthTestResult,
   type AuthLogoutResult,
+  type RelayBeginPairingResponse,
+  type RelayPollPairingResponse,
+  type RelayStatusResponse,
 } from "@chunky/protocol"
 import { effectiveSessionSelection, runAgent, type InputImage, type InterjectionBoundary } from "./run.ts"
 import { shipHandoffPrompt } from "./tools/ship.ts"
@@ -109,6 +112,7 @@ import {
   selectRepo,
 } from "./repos.ts"
 import { loadRelayConfig } from "./relay/config.ts"
+import { RelayPairing, relayStatus } from "./relay/pairing.ts"
 import { startUplink } from "./relay/uplink.ts"
 import { getModelAvailability, manageModelCatalog, setModelAvailability, type ModelCatalogAction } from "./model-catalog.ts"
 import { assertSelectionAllowed, isIncognitoSession, incognitoAllowlistFor, providerScope } from "./incognito.ts"
@@ -153,6 +157,8 @@ const dreamTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const DREAM_IDLE_MS = 10 * 60_000
 
 let shuttingDown = false
+const relayPairing = new RelayPairing()
+let relayUplink: ReturnType<typeof startUplink> | undefined
 
 function scheduleDream(sessionId: string): void {
   if (isIncognitoSession(sessionId)) return
@@ -548,6 +554,31 @@ const server = Bun.serve(withCors({
 
     if (req.method === "OPTIONS") {
       return new Response(null, { status: 204, headers: corsHeaders(req) })
+    }
+
+    // ---- Desktop relay pairing (authenticated local API) ----
+    if (req.method === "GET" && pathname === ROUTES.relay) {
+      return json(relayStatus() satisfies RelayStatusResponse)
+    }
+    if (req.method === "POST" && pathname === ROUTES.relayBegin) {
+      try {
+        return json(await relayPairing.begin() satisfies RelayBeginPairingResponse)
+      } catch (err) {
+        return json({ error: (err as Error).message }, 409)
+      }
+    }
+    if (req.method === "POST" && pathname === ROUTES.relayPoll) {
+      const { result, config } = await relayPairing.poll()
+      // A successful claim is QR-secret authenticated and persisted before it
+      // reaches here. Keep the handle to prevent duplicate uplinks on re-poll.
+      if (config && process.env.CHUNKY_RELAY !== "0" && !relayUplink) {
+        relayUplink = startUplink({
+          config,
+          localBaseUrl: `http://127.0.0.1:${server.port}`,
+          log: (message) => console.log(`[relay] ${message}`),
+        })
+      }
+      return json(result satisfies RelayPollPairingResponse)
     }
 
     // ---- Provider / OAuth routes (additive; independent of sessions) ----
@@ -1645,6 +1676,8 @@ const stopOwnershipPoller = discoveryRecord && ownershipId
       // A successor took the registration. Abort active work before stopping
       // the listener, matching the normal SIGTERM shutdown path.
       for (const controller of running.values()) controller.abort()
+      relayUplink?.stop()
+      relayUplink = undefined
       cleanupDiscovery()
       server.stop(true)
       process.exitCode = 0
@@ -1654,6 +1687,8 @@ const shutdown = () => {
   stopOwnershipPoller?.()
   cleanupDiscovery()
   for (const controller of running.values()) controller.abort()
+  relayUplink?.stop()
+  relayUplink = undefined
   server.stop(true)
 }
 process.once("SIGTERM", shutdown)
@@ -1682,7 +1717,7 @@ if (serverLeases) {
 if (process.env.CHUNKY_RELAY !== "0") {
   const relayConfig = loadRelayConfig()
   if (relayConfig) {
-    startUplink({
+    relayUplink = startUplink({
       config: relayConfig,
       localBaseUrl: `http://127.0.0.1:${server.port}`,
       log: (s) => console.log(`[relay] ${s}`),

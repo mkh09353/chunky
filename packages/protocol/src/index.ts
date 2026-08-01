@@ -351,6 +351,33 @@ export interface AuthLogoutResult {
   ok: boolean
 }
 
+// ---- Desktop relay pairing (local server API) ----
+// Responses deliberately omit relay/account tokens, device private keys, pairing
+// claims, and pairing secrets. `qrPayload` is the one ephemeral exception: the
+// canonical chunky1 QR string necessarily contains its one-time pairing secret.
+export interface RelayPeerStatus {
+  deviceId: string
+  name: string
+}
+export interface RelayStatusResponse {
+  paired: boolean
+  enabled: boolean
+  relayUrl?: string
+  peers?: RelayPeerStatus[]
+}
+export interface RelayBeginPairingResponse {
+  /** Ephemeral canonical chunky1 pairing string; contains a one-time secret. */
+  qrPayload: string
+  relayUrl: string
+  name: string
+  expiresAt: number
+}
+export type RelayPollPairingResponse =
+  | { status: "pending"; expiresAt: number }
+  | { status: "claimed"; peer: RelayPeerStatus }
+  | { status: "expired" }
+  | { status: "error"; error: string }
+
 // ---- Endpoints (relative to http://localhost:<port>) ----
 export const ROUTES = {
   serverInfo: `/api/info`,
@@ -359,6 +386,11 @@ export const ROUTES = {
   onboardingComplete: `/api/onboarding/complete`,
   onboardingApply: `/api/onboarding/apply`,
   customProvider: `/api/providers/custom`,
+  // Local authenticated desktop pairing API. No unpair route: the hosted relay
+  // protocol has no targeted revocation operation.
+  relay: `/api/relay`,
+  relayBegin: `/api/relay/begin`,
+  relayPoll: `/api/relay/poll`,
   // POST -> AuthTestResult. Preflight provider credentials (OAuth refresh where needed).
   authTest: (provider: string) => `/api/auth/${encodeURIComponent(provider)}/test`,
   // POST -> AuthLogoutResult. Remove the provider’s persisted credentials.

@@ -31,6 +31,8 @@ import {
   type SessionSummary,
   type ShellSessionsResponse,
   type SessionDelta,
+  type PromoteQueueRequest,
+  type PromoteQueueResult,
 } from "@chunky/protocol"
 import { effectiveSessionSelection, runAgent, type InputImage, type InterjectionBoundary } from "./run.ts"
 import { shipHandoffPrompt } from "./tools/ship.ts"
@@ -421,6 +423,54 @@ function dispatchRun(
 ): void {
   running.get(sessionId)?.abort()
   void startRun(sessionId, text, images, options, turn)
+}
+
+/** Submit an already-prepared message through the same delivery semantics as
+ * POST /messages. Queue promotion calls this after synchronously claiming its
+ * entry, so the queue drainer cannot execute the text a second time. */
+async function deliverMessage(
+  req: Request,
+  sessionId: string,
+  text: string,
+  visibleText: string,
+  images: InputImage[] | undefined,
+  delivery: "auto" | "queue" | "interject" | "steer",
+  force: boolean,
+): Promise<Response> {
+  if (delivery === "interject" && running.has(sessionId)) {
+    const buffer = interjections.get(sessionId) ?? new InterjectionBuffer()
+    buffer.push({ id: randomUUID(), text: visibleText, images })
+    interjections.set(sessionId, buffer)
+    emitTo(sessionId, { type: "message.interjection", sessionId, text: visibleText, injected: false })
+    return new Response(null, { status: 202, headers: corsHeaders(req) })
+  }
+  if (delivery === "steer") await abortForSteer(sessionId)
+
+  if (!force && delivery !== "steer") {
+    const model = effectiveSessionSelection(sessionId).model
+    const guardTokens = getCacheGuardTokens()
+    const cold = model ? checkCacheCold(sessionId, model, Date.now()) : undefined
+    if (guardTokens != null && exceedsGuard(cold, guardTokens)) {
+      return json({ blocked: "cache-cold", warning: cacheColdPayload(cold), guardTokens } satisfies SendBlockedResponse, 409)
+    }
+  }
+  const retiring = refuseWhileRetiring(req)
+  if (retiring) return retiring
+  if (visibleText) Store.setTitleIfDefault(sessionId, visibleText)
+
+  if (running.has(sessionId) || queueBusy.has(sessionId)) {
+    const queue = promptQueues.get(sessionId) ?? new PromptQueue()
+    try { queue.enqueue({ prompt: text, shown: visibleText, images, kind: "prompt" }) }
+    catch { return json({ error: "prompt queue is full" }, 429) }
+    promptQueues.set(sessionId, queue)
+    emitTo(sessionId, { type: "queue.changed", sessionId, entries: queue.snapshot(), running: running.has(sessionId) })
+    return new Response(null, { status: 202, headers: corsHeaders(req) })
+  }
+
+  const turn = visibleText ? beginUserTurn(sessionId, visibleText) : undefined
+  if (visibleText) emitTo(sessionId, { type: "message.user", text: visibleText })
+  dispatchRun(sessionId, text, images, { suppressCacheWarning: force }, turn)
+  return new Response(null, { status: 202, headers: corsHeaders(req) })
 }
 
 /** Record a visible root user turn before its transcript event so rewind can
@@ -1450,6 +1500,37 @@ const server = Bun.serve(withCors({
       return json({ ok: true })
     }
 
+    const queueRoute = pathname.match(/^\/api\/sessions\/([^/]+)\/queue\/([^/]+)(?:\/(promote))?$/)
+    if (queueRoute) {
+      const [, sessionId, entryId, action] = queueRoute
+      if (!Store.exists(sessionId)) return json({ error: "unknown session" }, 404)
+      const queue = promptQueues.get(sessionId)
+      if (req.method === "DELETE" && !action) {
+        const removed = queue?.remove(entryId) != null
+        if (!removed) return json({ error: "unknown queue entry" }, 404)
+        emitTo(sessionId, { type: "queue.changed", sessionId, entries: queue!.snapshot(), running: running.has(sessionId) })
+        return json({ removed: true })
+      }
+      if (req.method === "POST" && action === "promote") {
+        let body: PromoteQueueRequest
+        try { body = await req.json() as PromoteQueueRequest } catch { return json({ error: "invalid JSON body" }, 400) }
+        if (body.delivery !== "steer" && body.delivery !== "interject") return json({ error: "invalid delivery" }, 400)
+        // Do not claim an entry when a retiring server cannot resubmit it.
+        const retiring = refuseWhileRetiring(req)
+        if (retiring) return retiring
+        // take() is synchronous with the queue drainer's shift(): once this
+        // returns an entry, no drain can claim it; once drained, do nothing.
+        const claimed = queue?.take(entryId) ?? { outcome: "not-found" as const }
+        if (claimed.outcome !== "removed") {
+          return json({ outcome: claimed.outcome === "drained" ? "already-running" : "not-found" } satisfies PromoteQueueResult)
+        }
+        emitTo(sessionId, { type: "queue.changed", sessionId, entries: queue!.snapshot(), running: running.has(sessionId) })
+        await deliverMessage(req, sessionId, claimed.entry.prompt, claimed.entry.shown, claimed.entry.images, body.delivery, true)
+        return json({ outcome: "promoted" } satisfies PromoteQueueResult)
+      }
+      return new Response("not found", { status: 404, headers: corsHeaders(req) })
+    }
+
     // Match /api/sessions/:id/(events|messages|interrupt|goal|ship|cache)
     const m = pathname.match(/^\/api\/sessions\/([^/]+)\/(events|messages|interrupt|goal|todos|ship|cache|rewind-points|rewind|fork)$/)
     if (m) {
@@ -1624,67 +1705,7 @@ const server = Bun.serve(withCors({
           text = `<skill-context name="${loaded.name}">\n${loaded.body}\n</skill-context>\n\n${text}`
         }
 
-        // Steer: the client held this message until a tool boundary and now wants
-        // to cut into the in-flight turn. Abort the current run and WAIT for it to
-        // tear down before emitting/starting below, so events stay ordered. The
-        // agent is checkpointed per-node, so the completed tool result survives
-        // into the superseding turn. Cache is warm mid-turn → skip the cold guard.
-        if (delivery === "interject" && running.has(sessionId)) {
-          const buffer = interjections.get(sessionId) ?? new InterjectionBuffer()
-          buffer.push({ id: randomUUID(), text: visibleText, images })
-          interjections.set(sessionId, buffer)
-          emitTo(sessionId, { type: "message.interjection", sessionId, text: visibleText, injected: false })
-          return new Response(null, { status: 202, headers: corsHeaders(req) })
-        }
-        if (delivery === "steer") await abortForSteer(sessionId)
-
-        // Cache guard: BEFORE running (or billing) anything, refuse a send that
-        // would rebuild a big cold cache. 409 carries the details; the client
-        // asks the user and re-POSTs with force: true (or starts a fresh thread).
-        if (!force && delivery !== "steer") {
-          const model = effectiveSessionSelection(sessionId).model
-          const guardTokens = getCacheGuardTokens()
-          const cold = model ? checkCacheCold(sessionId, model, Date.now()) : undefined
-          if (guardTokens != null && exceedsGuard(cold, guardTokens)) {
-            return json(
-              {
-                blocked: "cache-cold",
-                warning: cacheColdPayload(cold),
-                guardTokens,
-              } satisfies SendBlockedResponse,
-              409,
-            )
-          }
-        }
-
-        // A retiring server must not accept new prompts — not even queued
-        // behind a running turn, which would extend the drain indefinitely.
-        const retiring = refuseWhileRetiring(req)
-        if (retiring) return retiring
-
-        if (visibleText) Store.setTitleIfDefault(sessionId, visibleText) // first message becomes the resume label
-
-        // Echo the user turn into the event stream so it is persisted and
-        // replayed on resume (clients render it instead of an optimistic local
-        // echo). Emitted before the run so it lands ahead of the assistant reply.
-        if (running.has(sessionId) || queueBusy.has(sessionId)) {
-          const queue = promptQueues.get(sessionId) ?? new PromptQueue()
-          try { queue.enqueue({ prompt: text, shown: visibleText, images, kind: "prompt" }) }
-          catch { return json({ error: "prompt queue is full" }, 429) }
-          promptQueues.set(sessionId, queue)
-          emitTo(sessionId, { type: "queue.changed", sessionId, entries: queue.snapshot(), running: running.has(sessionId) })
-          return new Response(null, { status: 202, headers: corsHeaders(req) })
-        }
-
-        const turn = visibleText ? beginUserTurn(sessionId, visibleText) : undefined
-        if (visibleText) emitTo(sessionId, { type: "message.user", text: visibleText })
-
-        // Abort any prior in-flight turn, then run this one (tracked so /interrupt
-        // can cancel it). If a goal is active, runAgent keeps continuing it after.
-        // A force-confirmed send skips the redundant turn-start cache notice.
-        dispatchRun(sessionId, text, images, { suppressCacheWarning: force }, turn)
-
-        return new Response(null, { status: 202, headers: corsHeaders(req) })
+        return await deliverMessage(req, sessionId, text, visibleText, images, delivery, force)
       }
 
       // POST .../interrupt -> abort the session's in-flight turn (Esc).

@@ -21,6 +21,29 @@ describe("prompt queue", () => {
     expect(q.snapshot().map((entry) => entry.id)).toEqual(["kept"])
   })
 
+  test("remove handles head, middle, and absent entries while preserving positions", () => {
+    const q = new PromptQueue()
+    q.enqueue({ id: "head", prompt: "a", shown: "A", kind: "prompt" })
+    q.enqueue({ id: "middle", prompt: "b", shown: "B", kind: "prompt" })
+    q.enqueue({ id: "tail", prompt: "c", shown: "C", kind: "prompt" })
+    expect(q.remove("head")?.prompt).toBe("a")
+    expect(q.remove("middle")?.prompt).toBe("b")
+    expect(q.remove("missing")).toBeUndefined()
+    expect(q.snapshot()).toEqual([expect.objectContaining({ id: "tail", position: 0 })])
+  })
+
+  test("promotion claim wins over drain, while a prior drain reports already running", () => {
+    const q = new PromptQueue()
+    q.enqueue({ id: "promote-first", prompt: "promote", shown: "Promote", kind: "prompt" })
+    expect(q.take("promote-first")).toMatchObject({ outcome: "removed", entry: { prompt: "promote" } })
+    expect(q.shift()).toBeUndefined()
+
+    q.enqueue({ id: "drain-first", prompt: "drain", shown: "Drain", kind: "prompt" })
+    expect(q.shift()?.id).toBe("drain-first")
+    expect(q.take("drain-first")).toEqual({ outcome: "drained" })
+    expect(q.take("unknown")).toEqual({ outcome: "not-found" })
+  })
+
   test("interjections are FIFO, standalone, preserve images, and can be cleared", () => {
     const b = new InterjectionBuffer()
     const images = [{ base64: "abc", mediaType: "image/png" }]

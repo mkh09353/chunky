@@ -10,13 +10,34 @@ export interface PendingPrompt {
 export class PromptQueue {
   // Version is intentionally fixed at 1 until edit/reorder routes exist.
   private entries: PendingPrompt[] = []
+  // Distinguishes a removed/unknown id from one the synchronous drainer has
+  // already claimed. Bounded: queue entry IDs are UUIDs.
+  private readonly drainedIds: string[] = []
   constructor(private readonly cap = 20) {}
   enqueue(input: Omit<PendingPrompt, "id" | "version" | "createdAt"> & Partial<Pick<PendingPrompt, "id" | "version" | "createdAt">>): PendingPrompt {
     if (this.entries.length >= this.cap) throw new Error(`prompt queue is full (${this.cap})`)
     const entry = { id: input.id ?? randomUUID(), version: input.version ?? 1, createdAt: input.createdAt ?? Date.now(), ...input } as PendingPrompt
     this.entries.push(entry); return entry
   }
-  shift(): PendingPrompt | undefined { return this.entries.shift() }
+  shift(): PendingPrompt | undefined {
+    const entry = this.entries.shift()
+    if (entry) {
+      this.drainedIds.push(entry.id)
+      if (this.drainedIds.length > 1_000) this.drainedIds.shift()
+    }
+    return entry
+  }
+  /** Remove a still-queued entry. */
+  remove(id: string): PendingPrompt | undefined {
+    const index = this.entries.findIndex((entry) => entry.id === id)
+    return index < 0 ? undefined : this.entries.splice(index, 1)[0]
+  }
+  /** Atomically claim an entry for promotion, distinguishing a prior drain. */
+  take(id: string): { outcome: "removed"; entry: PendingPrompt } | { outcome: "drained" | "not-found" } {
+    const entry = this.remove(id)
+    if (entry) return { outcome: "removed", entry }
+    return { outcome: this.drainedIds.includes(id) ? "drained" : "not-found" }
+  }
   get length(): number { return this.entries.length }
   snapshot(): QueueEntry[] { return this.entries.map((e, position) => ({ id: e.id, version: e.version, text: e.prompt, shown: e.shown, kind: e.kind, position, createdAt: e.createdAt })) }
 }

@@ -30,6 +30,8 @@ export interface QueueEntry {
   id: string; version: number; text: string; shown: string
   kind: "prompt" | "steer" | "interject"; position: number; createdAt: number
 }
+export interface PromoteQueueRequest { delivery: "steer" | "interject" }
+export interface PromoteQueueResult { outcome: "promoted" | "already-running" | "not-found" }
 
 export type AgentEvent =
   | { type: "session.status"; sessionId: string; status: "idle" | "running" }
@@ -428,6 +430,8 @@ export const ROUTES = {
   // POST SendMessageRequest -> 202, or 409 SendBlockedResponse when the cache
   // guard blocks (resend with force: true after the user confirms).
   sendMessage: (id: string) => `/api/sessions/${id}/messages`,
+  queueEntry: (sessionId: string, entryId: string) => `/api/sessions/${sessionId}/queue/${entryId}`,
+  promoteQueueEntry: (sessionId: string, entryId: string) => `/api/sessions/${sessionId}/queue/${entryId}/promote`,
   // GET -> CacheStatusResponse. Would a send right now re-send a cold cache?
   cacheStatus: (id: string) => `/api/sessions/${id}/cache`,
   // GET -> CacheGuardResponse. POST SetCacheGuardRequest -> CacheGuardResponse.

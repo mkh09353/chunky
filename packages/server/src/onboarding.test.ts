@@ -17,6 +17,13 @@ describe("onboarding suggestions", () => {
     expect(modes[0]?.spec).toMatchObject({ provider: "anthropic", sidekick: { provider: "codex", model: "gpt-5.6-terra", effort: "high" }, advisor: { provider: "codex", model: "gpt-5.6-sol" } })
     expect(`${modes[0]?.spec.provider}/${modes[0]?.spec.model}`).not.toBe(`${modes[0]?.spec.advisor?.provider}/${modes[0]?.spec.advisor?.model}`)
   })
+  test("grok and anthropic suggest fire with a grok sidekick", async () => {
+    const modes = await suggestedModes(new Set(["grok", "anthropic"]))
+    expect(modes[0]?.name).toBe("fire")
+    expect(modes[0]?.spec).toMatchObject({ provider: "anthropic", effort: "low", sidekick: { provider: "grok", model: "grok-4.5", effort: "high" }, advisor: { provider: "anthropic", effort: "medium" } })
+    expect(modes[0]?.spec.advisor?.model).toMatch(/opus/i)
+    expect(modes[0]?.spec.sidekickSeats?.frontend?.provider).toBe("anthropic")
+  })
   test("single provider and empty rules", async () => {
     expect((await suggestedModes(new Set(["codex"]))) [0]?.spec.provider).toBe("codex")
     expect((await suggestedModes(new Set(["anthropic"]))) [0]?.spec.provider).toBe("anthropic")

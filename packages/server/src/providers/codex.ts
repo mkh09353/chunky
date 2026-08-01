@@ -494,9 +494,13 @@ export const codexProvider: ProviderDef = {
   ensureAuth: async (): Promise<void> => {
     await validAuth()
   },
-  buildModel: (selection: ModelSelection): BaseChatModel =>
-    new ChatOpenAI({
-      model: selection.model || DEFAULT_MODEL,
+  buildModel: (selection: ModelSelection): BaseChatModel => {
+    const model = selection.model || DEFAULT_MODEL
+    // Luna's Responses Lite endpoint defaults to Codex Fast unless the user
+    // explicitly selected a speed. Other Codex models keep their normal default.
+    const speed = selection.speed ?? (model === RESPONSES_LITE_MODEL ? "fast" : undefined)
+    return new ChatOpenAI({
+      model,
       apiKey: "oauth",
       streaming: true,
       // Fail fast on auth errors instead of backing off through retries.
@@ -526,9 +530,10 @@ export const codexProvider: ProviderDef = {
         // its encrypted reasoning returned to carry state across turns / tool
         // round-trips (opencode's transform.ts does the same).
         include: ["reasoning.encrypted_content"],
-        ...(selection.speed === "fast" ? { service_tier: "priority" } : {}),
+        ...(speed === "fast" ? { service_tier: "priority" } : {}),
       },
-    }),
+    })
+  },
   login: async (method?: string) => {
     if (method === "browser") return startBrowserLogin()
     return startDeviceLogin()

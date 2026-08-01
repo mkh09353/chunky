@@ -19,6 +19,17 @@ describe("codex provider", () => {
     expect(model.invocationParams({}).store).toBe(false)
   })
 
+  test("defaults Luna to Fast while respecting an explicit speed", () => {
+    if (!codexProvider.buildModel) throw new Error("Codex must use the LangChain runtime")
+    const paramsFor = (selection: Record<string, unknown>) =>
+      (codexProvider.buildModel!(selection as any) as any).invocationParams({})
+
+    expect(paramsFor({ model: "gpt-5.6-luna" }).service_tier).toBe("priority")
+    expect(paramsFor({ model: "gpt-5.6-luna", speed: "standard" }).service_tier).toBeUndefined()
+    expect(paramsFor({ model: "gpt-5.6-luna", speed: "fast" }).service_tier).toBe("priority")
+    expect(paramsFor({ model: "gpt-5.6-terra" }).service_tier).toBeUndefined()
+  })
+
   test("uses the Responses Lite contract only for Luna", () => {
     const lunaHeaders = new Headers({ "content-length": "123", "session-id": "legacy-session" })
     const luna = JSON.parse(
@@ -31,6 +42,7 @@ describe("codex provider", () => {
           ],
           tools: [{ type: "function", name: "noop", parameters: {}, strict: null }],
           reasoning: { effort: "high" },
+          service_tier: "priority",
           parallel_tool_calls: true,
           max_output_tokens: 100,
         }),
@@ -45,6 +57,7 @@ describe("codex provider", () => {
     expect(lunaHeaders.has("content-length")).toBe(false)
     expect(luna.prompt_cache_key).toBe(lunaHeaders.get("session-id"))
     expect(luna.tool_choice).toBe("auto")
+    expect(luna.service_tier).toBe("priority")
     expect(luna.parallel_tool_calls).toBe(false)
     expect(luna.reasoning).toEqual({ effort: "high", context: "all_turns" })
     expect(luna.tools).toBeUndefined()

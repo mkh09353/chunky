@@ -51,6 +51,11 @@ const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"]
 const SPEEDS: Speed[] = ["standard", "fast"]
 const WINDOW = 10 // visible rows in the scrolling list
 
+/** Initial Codex speed choice for a model; users can still select either speed. */
+export function initialSpeedOption(model: string): number {
+  return model === "gpt-5.6-luna" ? SPEEDS.indexOf("fast") : SPEEDS.indexOf("standard")
+}
+
 /**
  * Case-insensitive subsequence fuzzy match. Returns a score (higher = better),
  * or -1 for no match. Rewards contiguous runs and early matches so that typing
@@ -196,7 +201,7 @@ export function ModelPicker({ baseUrl, sessionId, onDone, onCancel }: Props) {
           const eff = EFFORTS[optSel]!
           if (chosen && chosen.provider === "codex") {
             setEffort(eff)
-            setOptSel(0)
+            setOptSel(initialSpeedOption(chosen.model.id))
             setStep("speed")
           } else if (chosen) {
             void submit(chosen, eff)

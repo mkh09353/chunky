@@ -97,6 +97,11 @@ db.exec(`
     delegation_id TEXT PRIMARY KEY, rating INTEGER NOT NULL, rework INTEGER NOT NULL DEFAULT 0,
     reason TEXT NOT NULL, failure_diagnosis TEXT, judge_provider TEXT NOT NULL, judge_model TEXT NOT NULL, ts INTEGER NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS session_compaction_artifacts (
+    session_id TEXT PRIMARY KEY, provider TEXT NOT NULL, model TEXT NOT NULL,
+    replacement_history_json TEXT NOT NULL, boundary TEXT NOT NULL,
+    created_at INTEGER NOT NULL, usage_json TEXT
+  );
 `)
 
 // Migration: sessions gained a `workspace` column so each repo has its own
@@ -198,6 +203,11 @@ const stmtWorkspaceMeta = db.query("SELECT * FROM session_workspaces WHERE sessi
 const stmtUsage = db.query(`INSERT INTO usage_log
  (session_id,thread_id,role,provider,model,effort,delegation_id,ts,input_tokens,output_tokens,reasoning_tokens,cache_read_tokens,cache_write_tokens,cost)
  VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+const stmtSetCompaction = db.query(`INSERT INTO session_compaction_artifacts
+ (session_id,provider,model,replacement_history_json,boundary,created_at,usage_json)
+ VALUES (?,?,?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET provider=excluded.provider,
+ model=excluded.model,replacement_history_json=excluded.replacement_history_json,
+ boundary=excluded.boundary,created_at=excluded.created_at,usage_json=excluded.usage_json`)
 const appendEventTx = (sessionId: string, ev: AgentEvent, now: number) => {
   const row = stmtNextSeq.get(sessionId) as { n: number }
   stmtInsertEvent.run(sessionId, row.n, JSON.stringify(ev))
@@ -341,7 +351,7 @@ export const Store = {
   },
 
   rewindTranscript(sessionId: string, turn: number, startEventSeq: number): void {
-    const conn=backend(sessionId); conn.query("DELETE FROM events WHERE session_id=? AND seq>=?").run(sessionId,startEventSeq); conn.query("DELETE FROM session_turns WHERE session_id=? AND turn_index>=?").run(sessionId,turn)
+    const conn=backend(sessionId); conn.query("DELETE FROM events WHERE session_id=? AND seq>=?").run(sessionId,startEventSeq); conn.query("DELETE FROM session_turns WHERE session_id=? AND turn_index>=?").run(sessionId,turn); conn.query("DELETE FROM session_compaction_artifacts WHERE session_id=?").run(sessionId)
   },
 
   history(sessionId: string): AgentEvent[] {
@@ -489,8 +499,24 @@ export const Store = {
 
   /** Pin (or with null, unpin) the session's model selection. */
   pinSelection(sessionId: string, selection: PinnedSelection | null): void {
-    backend(sessionId).query("UPDATE sessions SET selection=? WHERE id=?").run(selection ? JSON.stringify(selection) : null, sessionId)
+    const conn = backend(sessionId)
+    const previous = conn.query("SELECT selection FROM sessions WHERE id=?").get(sessionId) as { selection: string | null } | null
+    conn.query("UPDATE sessions SET selection=? WHERE id=?").run(selection ? JSON.stringify(selection) : null, sessionId)
+    try {
+      const old = previous?.selection ? JSON.parse(previous.selection) as PinnedSelection : null
+      if (old?.provider !== selection?.provider || old?.model !== selection?.model) conn.query("DELETE FROM session_compaction_artifacts WHERE session_id=?").run(sessionId)
+    } catch { conn.query("DELETE FROM session_compaction_artifacts WHERE session_id=?").run(sessionId) }
   },
+
+  setCompactionArtifact(sessionId: string, artifact: { provider: string; model: string; replacementHistory: unknown[]; boundary: string; usage?: unknown }): void {
+    backend(sessionId).query(`INSERT INTO session_compaction_artifacts (session_id,provider,model,replacement_history_json,boundary,created_at,usage_json) VALUES (?,?,?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET provider=excluded.provider,model=excluded.model,replacement_history_json=excluded.replacement_history_json,boundary=excluded.boundary,created_at=excluded.created_at,usage_json=excluded.usage_json`).run(sessionId, artifact.provider, artifact.model, JSON.stringify(artifact.replacementHistory), artifact.boundary, Date.now(), artifact.usage == null ? null : JSON.stringify(artifact.usage))
+  },
+  getCompactionArtifact(sessionId: string): { provider: string; model: string; replacementHistory: unknown[]; boundary: string; createdAt: number; usage?: unknown } | null {
+    const row = backend(sessionId).query("SELECT provider,model,replacement_history_json,boundary,created_at,usage_json FROM session_compaction_artifacts WHERE session_id=?").get(sessionId) as any
+    if (!row) return null
+    try { return { provider: row.provider, model: row.model, replacementHistory: JSON.parse(row.replacement_history_json), boundary: row.boundary, createdAt: row.created_at, usage: row.usage_json ? JSON.parse(row.usage_json) : undefined } } catch { return null }
+  },
+  clearCompactionArtifact(sessionId: string): void { backend(sessionId).query("DELETE FROM session_compaction_artifacts WHERE session_id=?").run(sessionId) },
 
   /** Session-local sidekick patch, or null when this session follows global
    * sidekick settings exactly. Corrupt legacy values are ignored safely. */
@@ -520,6 +546,7 @@ export const Store = {
     const now = Date.now()
     retrySqliteTransaction(db, () => {
       stmtCreate.run(childId, `${parent.title} · fork`, now, now, workspace)
+      db.query("DELETE FROM session_compaction_artifacts WHERE session_id=?").run(childId)
       if (parent.selection) stmtPinSelection.run(parent.selection, childId)
       if (parent.sidekick) db.query("UPDATE sessions SET sidekick=? WHERE id=?").run(parent.sidekick, childId)
       stmtCopyEvents.run(childId, parentId)

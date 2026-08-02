@@ -45,6 +45,34 @@ test("rewindTranscript removes events at its turn boundary and later turns while
   expect(Store.getTodos(id)).toEqual([])
 })
 
+test("compaction artifacts round-trip and clear", () => {
+  const id = `artifact-${crypto.randomUUID()}`
+  Store.createSession(id)
+  const artifact = { provider: "codex", model: "gpt-5.6-sol", replacementHistory: [{ type: "compaction", encrypted_content: "opaque" }], boundary: "summary" }
+  Store.setCompactionArtifact(id, artifact)
+  expect(Store.getCompactionArtifact(id)).toMatchObject(artifact)
+  Store.clearCompactionArtifact(id)
+  expect(Store.getCompactionArtifact(id)).toBeNull()
+})
+
+test("compaction artifacts invalidate on model changes, fork, and rewind", () => {
+  const id = `artifact-invalidate-${crypto.randomUUID()}`
+  Store.createSession(id)
+  Store.pinSelection(id, { provider: "codex", model: "gpt-5.6-sol" } as any)
+  Store.setCompactionArtifact(id, { provider: "codex", model: "gpt-5.6-sol", replacementHistory: [], boundary: "s" })
+  Store.pinSelection(id, { provider: "codex", model: "gpt-5.6-sol" } as any)
+  expect(Store.getCompactionArtifact(id)).not.toBeNull()
+  Store.pinSelection(id, { provider: "openai", model: "gpt-5" } as any)
+  expect(Store.getCompactionArtifact(id)).toBeNull()
+  Store.setCompactionArtifact(id, { provider: "codex", model: "gpt-5.6-sol", replacementHistory: [], boundary: "s" })
+  const child = `${id}-child`
+  Store.forkSession(child, id, "/tmp", "normal")
+  expect(Store.getCompactionArtifact(child)).toBeNull()
+  const turn = Store.startTurn(id, "x", null)
+  Store.rewindTranscript(id, turn, Store.turn(id, turn)!.startEventSeq)
+  expect(Store.getCompactionArtifact(id)).toBeNull()
+})
+
 test("listShell aggregates workspaces as compact summaries sorted by activity", async () => {
   const older = `shell-old-${crypto.randomUUID()}`
   const newer = `shell-new-${crypto.randomUUID()}`

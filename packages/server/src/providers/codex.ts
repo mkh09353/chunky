@@ -20,6 +20,7 @@ import type { LoginInitiation, ProviderDef } from "./registry.ts"
 import { enrichModels, type ModelInfo } from "./models-catalog.ts"
 import type { ModelSelection } from "../settings.ts"
 import { CHUNKY_USER_AGENT } from "./app-info.ts"
+import { Store } from "../store.ts"
 
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 const ISSUER = "https://auth.openai.com"
@@ -40,6 +41,25 @@ const CODEX_MODELS = ["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-5.5",
 // Per-process session id sent on the `session-id` header (matches codex CLI).
 const CODEX_SESSION_ID = crypto.randomUUID()
 const LUNA_CODEX_SESSION_ID = Bun.randomUUIDv7()
+
+export type CodexCompactionArtifact = { provider: string; model: string; replacementHistory: any[]; boundary: string }
+
+/** Replace a known summarization boundary with a persisted native history. */
+export function swapCodexCompactionHistory(bodyStr: string, artifact: CodexCompactionArtifact | null): string {
+  if (!artifact) return bodyStr
+  try {
+    const body = JSON.parse(bodyStr) as any
+    if (body.model !== artifact.model || !Array.isArray(body.input)) return bodyStr
+    const matches = body.input.map((item: any, index: number) => ({ item, index })).filter(({ item }) => {
+      const text = typeof item?.content === "string" ? item.content : Array.isArray(item?.content) ? item.content.map((x: any) => x?.text ?? "").join("") : ""
+      return text.includes(artifact.boundary)
+    })
+    if (matches.length !== 1) return bodyStr
+    const index = matches[0].index
+    body.input = [...body.input.slice(0, index), ...artifact.replacementHistory, ...body.input.slice(index + 1)]
+    return JSON.stringify(body)
+  } catch { return bodyStr }
+}
 
 const ACCESS_TOKEN_REFRESH_SKEW_MS = 60_000
 
@@ -345,7 +365,11 @@ async function injectingFetch(input: RequestInfo | URL, init?: RequestInit): Pro
   // messages are not allowed"); the Responses API wants the system prompt in
   // the top-level `instructions` field. Move any system/developer items there.
   if (typeof init?.body === "string" && target.pathname.endsWith("/responses")) {
-    init = { ...init, body: prepareCodexResponsesRequest(init.body, headers) }
+    let body = init.body
+    const sessionId = (init as any).__chunkySessionId as string | undefined
+    const artifact = sessionId ? Store.getCompactionArtifact(sessionId) : null
+    if (artifact) body = swapCodexCompactionHistory(body, artifact as any)
+    init = { ...init, body: prepareCodexResponsesRequest(body, headers) }
   }
 
   const res = await fetch(target, { ...init, headers })
@@ -502,7 +526,7 @@ export const codexProvider: ProviderDef = {
   ensureAuth: async (): Promise<void> => {
     await validAuth()
   },
-  buildModel: (selection: ModelSelection): BaseChatModel => {
+  buildModel: (selection: ModelSelection, sessionId?: string): BaseChatModel => {
     const model = selection.model || DEFAULT_MODEL
     // Luna's Responses Lite endpoint defaults to Codex Fast unless the user
     // explicitly selected a speed. Other Codex models keep their normal default.
@@ -529,7 +553,7 @@ export const codexProvider: ProviderDef = {
         // With useResponsesApi, ChatOpenAI POSTs to `${baseURL}/responses`,
         // i.e. the Codex responses endpoint. injectingFetch adds auth headers.
         baseURL: "https://chatgpt.com/backend-api/codex",
-        fetch: injectingFetch as unknown as typeof fetch,
+        fetch: ((input: RequestInfo | URL, init?: RequestInit) => injectingFetch(input, init && sessionId ? { ...init, __chunkySessionId: sessionId } as any : init)) as unknown as typeof fetch,
       },
       // Codex-only speed maps to service_tier through modelKwargs (spread into
       // the body). `zdrEnabled` above supplies store:false itself.

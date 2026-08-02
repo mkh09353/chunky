@@ -25,7 +25,7 @@ import {
   sidekickFor,
   type AgentSelection,
 } from "./providers/registry.ts"
-import { threadContextFor } from "./thread-context.ts"
+import { sessionForThread, threadContextFor } from "./thread-context.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { RemoveMessage, SystemMessage } from "@langchain/core/messages"
 import { Store } from "./store.ts"
@@ -71,6 +71,7 @@ import { zooTools } from "./tools/zoo.ts"
 import { rateDelegate } from "./tools/rate-delegate.ts"
 import { remember } from "./tools/remember.ts"
 import { review } from "./tools/review.ts"
+import { CODEX_API_ENDPOINT, codexRequestHeaders } from "./providers/codex.ts"
 
 export function makePostCompactionReminder() {
   let handledSummaryId: string | undefined
@@ -109,6 +110,53 @@ export function makePostCompactionReminder() {
   }
 }
 export const postCompactionReminder = makePostCompactionReminder()
+
+function responseItemsForCompaction(messages: any[]): any[] {
+  return messages.flatMap((message) => {
+    const role = message?._getType?.() === "human" ? "user" : message?._getType?.() === "ai" ? "assistant" : message?._getType?.() === "tool" ? "user" : undefined
+    if (!role) return []
+    const content = typeof message.content === "string" ? message.content : JSON.stringify(message.content)
+    return [{ type: "message", role, content: [{ type: role === "assistant" ? "output_text" : "input_text", text: content }] }]
+  })
+}
+
+export function remoteCompactionMiddleware(provider: string, model: string, options: { fetch?: typeof fetch; sessionId?: string } = {}) {
+  let snapshot: any[] | undefined
+  let handled: unknown
+  let pending: Promise<void> | undefined
+  return {
+    name: "remoteCodexCompaction",
+    beforeModel: async (state: { messages: any[] }) => { snapshot = state.messages.slice() },
+    afterModel: async (state: { messages: any[] }, runtime: { configurable?: { thread_id?: unknown } }) => {
+      if (provider !== "codex" || !snapshot) return
+      const summary = state.messages.findLast((m) => m?.additional_kwargs?.lc_source === "summarization")
+      if (!summary || summary.id === handled) return
+      handled = summary.id
+      const sessionId = options.sessionId ?? sessionForThread(typeof runtime.configurable?.thread_id === "string" ? runtime.configurable.thread_id : undefined)
+      if (!sessionId) return
+      pending = (async () => {
+        try {
+          const headers = await codexRequestHeaders()
+          headers.set("accept", "text/event-stream"); headers.set("content-type", "application/json")
+          const input = responseItemsForCompaction(snapshot!)
+          input.push({ type: "compaction_trigger" })
+          const response = await (options.fetch ?? fetch)(CODEX_API_ENDPOINT, { method: "POST", headers, body: JSON.stringify({ model, input, stream: true, store: false, include: ["reasoning.encrypted_content"] }) })
+          if (!response.ok || !response.body) return
+          let text = ""
+          for await (const chunk of response.body) text += new TextDecoder().decode(chunk)
+          const items: any[] = []
+          for (const line of text.split(/\r?\n/).filter((line) => line.startsWith("data:"))) {
+            try { const event = JSON.parse(line.slice(5)); if (event.type === "response.output_item.done" && event.item) items.push(event.item) } catch {}
+          }
+          const compaction = items.find((item) => item.type === "compaction" || item.type === "compaction_summary")
+          if (!compaction?.encrypted_content) return
+          Store.setCompactionArtifact(sessionId, { provider: "codex", model, replacementHistory: [compaction], boundary: typeof summary.content === "string" ? summary.content : String(summary.content) })
+        } catch (error) { console.warn(`[codex] remote compaction unavailable: ${(error as Error).message}`) }
+      })()
+    },
+    drain: async () => { await pending },
+  }
+}
 
 // Re-export pure gating/classification helpers for tests and callers.
 export {
@@ -356,6 +404,7 @@ export function buildAgent(
     // instances don't reliably report a context size. Move to { fraction } once model
     // profiles carry context windows.
     middleware: [
+      remoteCompactionMiddleware(providerId, modelId),
       summarizationMiddleware({
         model,
         trigger: { tokens: 150_000 },

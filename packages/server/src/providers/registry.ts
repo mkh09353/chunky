@@ -81,7 +81,7 @@ export type ProviderDef = ProviderBase &
   (
     | {
         runtime?: "langchain"
-        buildModel: (selection: ModelSelection) => BaseChatModel
+        buildModel: (selection: ModelSelection, sessionId?: string) => BaseChatModel
       }
     | {
         runtime: "anthropic-sdk"
@@ -326,7 +326,7 @@ export function resolveModel(selection: AgentSelection = activeSelection(), sess
     throw new Error(`provider "${selection.provider}" uses the ${p.runtime} agent runtime`)
   }
   const { provider: _provider, ...modelSelection } = selection
-  return p.buildModel(modelSelection)
+  return p.buildModel(modelSelection, sessionId)
 }
 
 export function providerRuntime(id: string): NonNullable<ProviderDef["runtime"]> {

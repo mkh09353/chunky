@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { codexProvider, prepareCodexResponsesRequest } from "./codex.ts"
+import { codexProvider, prepareCodexResponsesRequest, swapCodexCompactionHistory } from "./codex.ts"
 
 describe("codex provider", () => {
   test("advertises every current GPT-5.6 Codex model", async () => {
@@ -86,5 +86,32 @@ describe("codex provider", () => {
     expect(terraHeaders.get("session-id")).toBe("legacy-session")
     expect(terraHeaders.get("content-length")).toBe("123")
     expect(terra).toEqual({ model: "gpt-5.6-terra", input: [], tools: [], parallel_tool_calls: true })
+  })
+
+  test("swaps a matching compaction boundary", () => {
+    const result = JSON.parse(swapCodexCompactionHistory(JSON.stringify({ model: "gpt-5.6-sol", input: [
+      { role: "user", content: [{ type: "input_text", text: "old" }] },
+      { role: "user", content: [{ type: "input_text", text: "summary boundary" }] },
+      { role: "user", content: [{ type: "input_text", text: "tail" }] },
+    ] }), { provider: "codex", model: "gpt-5.6-sol", boundary: "summary boundary", replacementHistory: [{ type: "compaction", encrypted_content: "opaque" }] }))
+    expect(result.input.map((x: any) => x.type ?? x.content?.[0]?.text)).toEqual(["old", "compaction", "tail"])
+  })
+
+  test("refuses absent or mismatched compaction artifacts", () => {
+    const body = JSON.stringify({ model: "gpt-5.6-sol", input: [{ role: "user", content: "summary" }] })
+    expect(swapCodexCompactionHistory(body, null)).toBe(body)
+    expect(swapCodexCompactionHistory(body, { provider: "codex", model: "gpt-5.6-terra", boundary: "summary", replacementHistory: [] })).toBe(body)
+    expect(swapCodexCompactionHistory(body, { provider: "codex", model: "gpt-5.6-sol", boundary: "missing", replacementHistory: [] })).toBe(body)
+  })
+
+  test("matches wrapped summary text only when the boundary is unique", () => {
+    const artifact = { provider: "codex", model: "gpt-5.6-sol", boundary: "older summary", replacementHistory: [{ type: "compaction", encrypted_content: "opaque" }] }
+    const wrapped = JSON.stringify({ model: artifact.model, input: [{ role: "user", content: [{ type: "input_text", text: "prefix: older summary (wrapped)" }] }] })
+    expect(JSON.parse(swapCodexCompactionHistory(wrapped, artifact)).input[0].type).toBe("compaction")
+    const ambiguous = JSON.stringify({ model: artifact.model, input: [
+      { role: "user", content: "older summary" },
+      { role: "assistant", content: [{ type: "output_text", text: "older summary again" }] },
+    ] })
+    expect(swapCodexCompactionHistory(ambiguous, artifact)).toBe(ambiguous)
   })
 })

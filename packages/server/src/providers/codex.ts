@@ -23,7 +23,7 @@ import { CHUNKY_USER_AGENT } from "./app-info.ts"
 
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 const ISSUER = "https://auth.openai.com"
-const CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
+export const CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
 const CODEX_COMPATIBILITY_VERSION = "0.144.0"
 const RESPONSES_LITE_MODEL = "gpt-5.6-luna"
 const OAUTH_PORT = 1455
@@ -313,18 +313,26 @@ export function prepareCodexResponsesRequest(bodyStr: string, headers: Headers):
 
 /** Fetch that refreshes on demand, injects the bearer + ChatGPT-Account-Id, and
  *  routes chat/completions or responses requests to the Codex responses endpoint. */
-async function injectingFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+/** Build the common authenticated headers used by the Codex Responses fetch. */
+export async function codexRequestHeaders(base?: Headers): Promise<Headers> {
   const auth = await validAuth()
-
-  const headers = new Headers(input instanceof Request ? input.headers : undefined)
-  if (init?.headers) {
-    new Headers(init.headers as HeadersInit).forEach((value, key) => headers.set(key, value))
-  }
+  const headers = new Headers(base)
   headers.set("authorization", `Bearer ${auth.access}`)
   headers.set("User-Agent", CHUNKY_USER_AGENT)
   headers.set("originator", "chunky")
   headers.set("session-id", CODEX_SESSION_ID) // codex CLI sends one; helps attribution
   if (auth.accountId) headers.set("ChatGPT-Account-Id", auth.accountId)
+  return headers
+}
+
+async function injectingFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
+  const baseHeaders = new Headers(input instanceof Request ? input.headers : undefined)
+  if (init?.headers) {
+    new Headers(init.headers as HeadersInit).forEach((value, key) => baseHeaders.set(key, value))
+  }
+  // Authentication is applied after caller headers, preserving the provider's
+  // original precedence for bearer/identity headers.
+  const headers = await codexRequestHeaders(baseHeaders)
 
   const parsed =
     input instanceof URL ? input : new URL(typeof input === "string" ? input : (input as Request).url)

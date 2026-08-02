@@ -1,6 +1,6 @@
 {
   "name": "chunky-cli",
-  "version": "0.3.36",
+  "version": "0.3.37",
   "private": true,
   "license": "AGPL-3.0-only",
   "type": "module",

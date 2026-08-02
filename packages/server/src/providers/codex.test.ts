@@ -1,5 +1,8 @@
 import { describe, expect, test } from "bun:test"
-import { codexProvider, prepareCodexResponsesRequest, swapCodexCompactionHistory } from "./codex.ts"
+import { mkdirSync, mkdtempSync, writeFileSync, rmSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { AuthStore } from "./auth-store.ts"
+import { codexProvider, prepareCodexResponsesRequest, swapCodexCompactionHistory, tryImportCodexCliAuth, validAuth } from "./codex.ts"
 
 describe("codex provider", () => {
   test("advertises every current GPT-5.6 Codex model", async () => {
@@ -113,5 +116,49 @@ describe("codex provider", () => {
       { role: "assistant", content: [{ type: "output_text", text: "older summary again" }] },
     ] })
     expect(swapCodexCompactionHistory(ambiguous, artifact)).toBe(ambiguous)
+  })
+
+  test("imports and refreshes Codex CLI auth without writing the CLI file", async () => {
+    const dir = mkdtempSync(`${tmpdir()}/chunky-codex-cli-`)
+    const oldHome = process.env.CODEX_HOME, oldAuth = process.env.CHUNKY_AUTH, oldFetch = globalThis.fetch
+    process.env.CODEX_HOME = dir
+    process.env.CHUNKY_AUTH = `${dir}/chunky-auth.json`
+    writeFileSync(`${dir}/auth.json`, JSON.stringify({ tokens: { refresh_token: "cli-refresh", account_id: "acct-cli" } }))
+    globalThis.fetch = (async () => new Response(JSON.stringify({ access_token: "fresh-access", refresh_token: "fresh-refresh", expires_in: 3600 }), { status: 200 })) as typeof fetch
+    try {
+      expect(await tryImportCodexCliAuth()).toBe(true)
+      expect(AuthStore.get("codex")).toMatchObject({ access: "fresh-access", refresh: "fresh-refresh", accountId: "acct-cli" })
+      expect(await validAuth()).toMatchObject({ access: "fresh-access" })
+    } finally {
+      globalThis.fetch = oldFetch; if (oldHome == null) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = oldHome
+      if (oldAuth == null) delete process.env.CHUNKY_AUTH; else process.env.CHUNKY_AUTH = oldAuth
+      rmSync(dir, { recursive: true, force: true })
+    }
+  })
+
+  test("CLI auth import fails silently for malformed, missing, and rejected files", async () => {
+    const dir = mkdtempSync(`${tmpdir()}/chunky-codex-cli-`)
+    const oldHome = process.env.CODEX_HOME, oldAuth = process.env.CHUNKY_AUTH, oldFetch = globalThis.fetch
+    process.env.CODEX_HOME = dir; process.env.CHUNKY_AUTH = `${dir}/chunky-auth.json`
+    try {
+      writeFileSync(`${dir}/auth.json`, "not-json")
+      expect(await tryImportCodexCliAuth()).toBe(false)
+      const missing = mkdtempSync(`${tmpdir()}/chunky-codex-cli-missing-`)
+      process.env.CODEX_HOME = missing
+      expect(await tryImportCodexCliAuth()).toBe(false)
+      process.env.CODEX_HOME = dir
+      writeFileSync(`${dir}/auth.json`, JSON.stringify({ tokens: { refresh_token: "bad" } }))
+      // Import failures are cached per auth path, so use a fresh path for the rejected refresh.
+      const rejected = mkdtempSync(`${tmpdir()}/chunky-codex-cli-rejected-`)
+      process.env.CODEX_HOME = rejected
+      writeFileSync(`${rejected}/auth.json`, JSON.stringify({ tokens: { refresh_token: "bad" } }))
+      globalThis.fetch = (async () => new Response("no", { status: 401 })) as typeof fetch
+      expect(await tryImportCodexCliAuth()).toBe(false)
+      rmSync(missing, { recursive: true, force: true }); rmSync(rejected, { recursive: true, force: true })
+    } finally {
+      globalThis.fetch = oldFetch; if (oldHome == null) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = oldHome
+      if (oldAuth == null) delete process.env.CHUNKY_AUTH; else process.env.CHUNKY_AUTH = oldAuth
+      rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

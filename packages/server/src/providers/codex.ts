@@ -15,6 +15,8 @@
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import { ChatOpenAI } from "@langchain/openai"
 import { createServer } from "node:http"
+import { existsSync, readFileSync } from "node:fs"
+import { homedir } from "node:os"
 import { AuthStore, type OAuthInfo } from "./auth-store.ts"
 import type { LoginInitiation, ProviderDef } from "./registry.ts"
 import { enrichModels, type ModelInfo } from "./models-catalog.ts"
@@ -177,6 +179,30 @@ async function refreshAccessToken(refreshToken: string): Promise<TokenResponse> 
   return response.json() as Promise<TokenResponse>
 }
 
+type CodexCliAuth = {
+  tokens?: { id_token?: string; access_token?: string; refresh_token?: string; account_id?: string }
+}
+const failedCliAuthImports = new Set<string>()
+
+/** Import (read-only) the refresh token from a Codex CLI installation. */
+export async function tryImportCodexCliAuth(): Promise<boolean> {
+  const home = process.env.CODEX_HOME?.trim() || `${homedir()}/.codex`
+  const path = `${home}/auth.json`
+  if (failedCliAuthImports.has(path)) return false
+  try {
+    if (!existsSync(path)) throw new Error("missing auth file")
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as CodexCliAuth
+    const refresh = parsed.tokens?.refresh_token
+    if (!refresh) throw new Error("missing refresh token")
+    const tokens = await refreshAccessToken(refresh)
+    persist(tokens, refresh, parsed.tokens?.account_id)
+    return true
+  } catch {
+    failedCliAuthImports.add(path)
+    return false
+  }
+}
+
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -200,9 +226,15 @@ function persist(tokens: TokenResponse, prevRefresh?: string, prevAccountId?: st
 
 let refreshPromise: Promise<OAuthInfo> | undefined
 
-async function validAuth(): Promise<OAuthInfo> {
+export async function validAuth(): Promise<OAuthInfo> {
   const auth = AuthStore.get("codex")
-  if (!auth) throw new Error("codex: not logged in (run /login)")
+  if (!auth) {
+    if (await tryImportCodexCliAuth()) {
+      const imported = AuthStore.get("codex")
+      if (imported) return imported
+    }
+    throw new Error("codex: not logged in (run /login)")
+  }
 
   const expiresSoon = !auth.access || !auth.expires || auth.expires - Date.now() <= ACCESS_TOKEN_REFRESH_SKEW_MS
   if (!expiresSoon) return auth
@@ -212,6 +244,13 @@ async function validAuth(): Promise<OAuthInfo> {
     if (!refreshToken) throw new Error("codex: token expired and no refresh token; re-run /login")
     refreshPromise = refreshAccessToken(refreshToken)
       .then((tokens) => persist(tokens, refreshToken, auth.accountId))
+      .catch(async (error) => {
+        if (await tryImportCodexCliAuth()) {
+          const imported = AuthStore.get("codex")
+          if (imported) return imported
+        }
+        throw error
+      })
       .finally(() => {
         refreshPromise = undefined
       })

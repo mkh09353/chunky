@@ -42,6 +42,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS sessions (
     id            TEXT PRIMARY KEY,
     title         TEXT NOT NULL DEFAULT 'New session',
+    title_custom  INTEGER NOT NULL DEFAULT 0,
     created_at    INTEGER NOT NULL,
     last_activity INTEGER NOT NULL
   );
@@ -126,6 +127,7 @@ db.exec(`
   }
   if (!cols.some((c) => c.name === "incognito")) db.exec("ALTER TABLE sessions ADD COLUMN incognito INTEGER NOT NULL DEFAULT 0")
   if (!cols.some((c) => c.name === "incognito_allow")) db.exec("ALTER TABLE sessions ADD COLUMN incognito_allow TEXT")
+  if (!cols.some((c) => c.name === "title_custom")) db.exec("ALTER TABLE sessions ADD COLUMN title_custom INTEGER NOT NULL DEFAULT 0")
 }
 
 // Migration: ratings gained an optional diagnosis for learning from failed or
@@ -399,13 +401,30 @@ export const Store = {
   /** Set a session title once (first user message makes a nice resume label). */
   setTitleIfDefault(sessionId: string, title: string): void {
     const trimmed = title.trim().slice(0, 80)
-    if (trimmed) { backend(sessionId).query("UPDATE sessions SET title=? WHERE id=?").run(trimmed, sessionId); notifySessionChanged(sessionId) }
+    if (trimmed) {
+      const result = backend(sessionId).query("UPDATE sessions SET title=? WHERE id=? AND title='New session'").run(trimmed, sessionId)
+      if (result.changes) notifySessionChanged(sessionId)
+    }
   },
 
   /** Replace a session title unconditionally. */
   setTitle(sessionId: string, title: string): void {
-    backend(sessionId).query("UPDATE sessions SET title=? WHERE id=?").run(title, sessionId)
+    backend(sessionId).query("UPDATE sessions SET title=?, title_custom=1 WHERE id=?").run(title, sessionId)
     notifySessionChanged(sessionId)
+  },
+
+  /** Replace an automatically generated/default title, but never a user rename. */
+  setAutoTitle(sessionId: string, title: string): boolean {
+    const clean = title.trim().slice(0, 80)
+    if (!clean || isIncognitoSession(sessionId)) return false
+    const result = backend(sessionId).query("UPDATE sessions SET title=? WHERE id=? AND title_custom=0").run(clean, sessionId)
+    if (result.changes) notifySessionChanged(sessionId)
+    return result.changes > 0
+  },
+
+  canAutoTitle(sessionId: string): boolean {
+    const row = backend(sessionId).query("SELECT title_custom FROM sessions WHERE id=?").get(sessionId) as { title_custom: number } | null
+    return row != null && row.title_custom === 0
   },
 
   /** Compact shell lookup: row only, never hydrates transcript events. */

@@ -12,9 +12,24 @@ function sanitizeOscText(text: string): string {
   return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, "")
 }
 
-/** Set the terminal window title using OSC 0. */
-export function setTerminalTitle(title: string): void {
-  process.stdout.write(`\x1b]0;${sanitizeOscText(title)}\x07`)
+export type TerminalTitleStatus = "working" | "done" | "error" | "idle"
+
+const BRAILLE_SPINNER = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"]
+
+/** Set the terminal window title using the one status-aware title formatter. */
+export function updateTerminalTitle(status: TerminalTitleStatus, label?: string, frame = 0): void {
+  if (!process.stdout.isTTY) return
+  const indicator = status === "working" ? BRAILLE_SPINNER[frame % BRAILLE_SPINNER.length] : status === "done" ? "✓" : status === "error" ? "✗" : "○"
+  const sanitizedLabel = label ? sanitizeOscText(label) : ""
+  const cleanLabel = sanitizedLabel.length > 40 ? `${sanitizedLabel.slice(0, 37)}...` : sanitizedLabel
+  const title = cleanLabel ? `${indicator} | Chunky | ${cleanLabel}` : `${indicator} | Chunky`
+  process.stdout.write(`\x1b]0;${title}\x07`)
+}
+
+/** Restore the ordinary Chunky terminal title. */
+export function resetTerminalTitle(): void {
+  if (!process.stdout.isTTY) return
+  process.stdout.write(`\x1b]0;Chunky\x07`)
 }
 
 /** OSC 777 notify: ESC ] 777 ; notify ; title ; body BEL */
@@ -49,12 +64,6 @@ function playSound(): void {
 
 /** Mark the terminal as busy while the agent is responding. */
 export function notifyTurnStart(): void {
-  setTerminalTitle("Chunky — working…")
-}
-
-/** Restore the ordinary Chunky terminal title. */
-export function resetTerminalTitle(): void {
-  setTerminalTitle("Chunky")
 }
 
 /** Notify that the agent finished and is waiting for input. Body is the start
@@ -62,7 +71,6 @@ export function resetTerminalTitle(): void {
 export function notifyTurnEnd(finalText: string | null): void {
   const normalized = (finalText ?? "").replace(/\s+/g, " ").trim()
   const body = normalized.length > 200 ? normalized.slice(0, 199) + "…" : normalized
-  setTerminalTitle("● Chunky — done")
   osc777("Chunky", body || "Ready for input")
   playSound()
 }

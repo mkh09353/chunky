@@ -35,6 +35,7 @@ export interface PromoteQueueResult { outcome: "promoted" | "already-running" | 
 
 export type AgentEvent =
   | { type: "session.status"; sessionId: string; status: "idle" | "running" }
+  | { type: "session.title"; sessionId: string; title: string }
   /** Sent only to currently attached clients after a rewind. It is deliberately
    * not part of transcript history: clients must reconnect and replay. */
   | { type: "session.rewound"; sessionId: string; turn: number }

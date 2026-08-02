@@ -1,8 +1,13 @@
 import { describe, expect, test } from "bun:test"
 import { abortableSleep, isIntentionalAbort, reconnectDelay, retryableHttpMessage, isConnectionRefused, RERESOLVE_AFTER_ATTEMPTS, RERESOLVE_AFTER_REFUSED_ATTEMPTS, shouldReresolve } from "./reconnect.js"
 import { replayHistory } from "./transcript.js"
+import { reduce, initialState } from "./transcript.js"
 
 describe("SSE reconnect policy", () => {
+  test("session.title events are accepted by the transcript event path", () => {
+    const state = reduce(initialState, { type: "session.title", sessionId: "s", title: "Generated title" })
+    expect(state.status).toBe("idle")
+  })
   test("uses bounded exponential backoff", () => {
     expect(reconnectDelay(0)).toBe(500)
     expect(reconnectDelay(1)).toBe(1000)

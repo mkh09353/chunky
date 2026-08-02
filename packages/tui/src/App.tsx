@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { realpathSync } from "node:fs"
+import { basename } from "node:path"
 import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
 import { useRenderer } from "@opentui/react"
 import { rawModeSupported, useInput } from "./useInput.js"
@@ -67,7 +68,7 @@ import { openBrowser } from "./openBrowser.js"
 import { grabClipboardImage, type ClipboardImage } from "./clipboardImage.js"
 import { writeClipboard } from "./clipboard.js"
 import { ToastContext, ToastOverlay, useToastController } from "./components/Toast.js"
-import { MIN_NOTIFY_MS, notifyTurnEnd, notifyTurnStart, resetTerminalTitle } from "./notify.js"
+import { MIN_NOTIFY_MS, notifyTurnEnd, notifyTurnStart, resetTerminalTitle, updateTerminalTitle } from "./notify.js"
 
 interface Props {
   mode: "mock" | "live"
@@ -230,6 +231,9 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
   }, [])
 
   const [state, setState] = useState<TranscriptState>(initialState)
+  const [sessionLabel, setSessionLabel] = useState(() => basename(cwd) || "")
+  const [lastTurnErrored, setLastTurnErrored] = useState(false)
+  const [hasCompletedTurn, setHasCompletedTurn] = useState(false)
   const [connection, setConnection] = useState<"connecting" | "connected" | "reconnecting">("connecting")
   const [startedAt, setStartedAt] = useState<number | null>(null)
   const [threadsCollapsed, setThreadsCollapsed] = useState(false)
@@ -360,6 +364,22 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
   // Latest run state for `submit`, which is defined before `running` is derived.
   const runningRef = useRef(false)
   runningRef.current = state.status === "running"
+  const turnStartedRef = useRef(false)
+
+  // The title animation belongs to the component lifecycle, not the SSE
+  // reducer. This also ensures timers disappear during reconnects/unmount.
+  useEffect(() => {
+    const status = state.status === "running" ? "working" : lastTurnErrored ? "error" : hasCompletedTurn ? "done" : "idle"
+    let frame = 0
+    updateTerminalTitle(status, sessionLabel, frame)
+    if (state.status !== "running") return
+    const timer = setInterval(() => {
+      frame += 1
+      updateTerminalTitle("working", sessionLabel, frame)
+    }, 120)
+    ;(timer as unknown as { unref?: () => void }).unref?.()
+    return () => clearInterval(timer)
+  }, [state.status, sessionLabel, lastTurnErrored, hasCompletedTurn])
 
   const rawSupported = rawModeSupported
 
@@ -413,6 +433,7 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
         return
       }
       setState((s) => reduce(s, ev))
+      if (ev.type === "session.title" && ev.sessionId === sessionIdRef.current) setSessionLabel(ev.title)
       if (ev.type === "message.start" && !ev.threadId) lastAssistantRef.current = ""
       if (ev.type === "message.delta" && !ev.threadId) lastAssistantRef.current += ev.text
       if (ev.type === "queue.changed") setAuthoritativeQueueCount(ev.entries.length)
@@ -429,12 +450,19 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
       if (ev.type === "message.interjection" && !ev.injected && resumeReplayRef.current) {
         setState((s) => pushUser(s, ev.text))
       }
+      if (runningRef.current && (ev.type === "error" || (ev.type === "message.end" && ev.reason === "error"))) {
+        setLastTurnErrored(true)
+      }
       if (ev.type === "session.status") {
         setStartedAt(ev.status === "running" ? Date.now() : null)
         if (ev.status === "running") {
+          turnStartedRef.current = true
+          setLastTurnErrored(false)
           if (mode === "live") notifyTurnStart()
           runningSinceRef.current = Date.now()
         } else {
+          if (turnStartedRef.current) setHasCompletedTurn(true)
+          turnStartedRef.current = false
           const since = runningSinceRef.current
           runningSinceRef.current = null
           if (mode === "live" && since != null && Date.now() - since >= MIN_NOTIFY_MS) {
@@ -993,6 +1021,8 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
     setRewindPicker(null)
     setForkPicker(null)
     setState(initialState)
+    setLastTurnErrored(false)
+    setHasCompletedTurn(false)
     setStartedAt(null)
     setCacheCold(null)
     setPendingSend(null)
@@ -1092,6 +1122,7 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
         const res = await fetch(`${baseUrl + ROUTES.listSessions}?cwd=${encodeURIComponent(process.cwd())}`)
         const body = (await res.json()) as ListSessionsResponse
         parentTitle = body.sessions.find((s) => s.sessionId === id)?.title ?? parentTitle
+        if (parentTitle !== "New session" && parentTitle !== "this session") setSessionLabel(parentTitle)
       } catch {}
       if (fromPicker) setForkPicker((s) => (s ? { ...s, busy: true, error: null } : s))
       try {
@@ -1161,7 +1192,10 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
       }
       if (key.return) {
         const row = resumePicker.sessions[resumePicker.selected]
-        if (row) attachSession(row.sessionId)
+        if (row) {
+          if (row.title && row.title !== "New session") setSessionLabel(row.title)
+          attachSession(row.sessionId)
+        }
         return
       }
       if (key.escape) setResumePicker(null)

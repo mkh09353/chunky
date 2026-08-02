@@ -129,6 +129,7 @@ import { hasLiveThreadDelegates } from "./threads.ts"
 import { installBackgroundDispatcher } from "./background-dispatch.ts"
 import { databaseErrorMessage } from "./sqlite.ts"
 import { dreamRepoMemory, memoryRepoKey } from "./memory.ts"
+import { autoTitleSession } from "./auto-title.ts"
 import {
   canonicalWorkspace,
   removeDiscoveryRecordIfOwned,
@@ -367,6 +368,7 @@ function startRun(
     })
     .finally(() => {
       if (turn != null) Store.completeTurn(sessionId, turn, anchorLatestCheckpoint(sessionId, turn))
+      if (turn === 1 || turn === 2) void autoTitleSession(sessionId, turn, (ev) => emitTo(sessionId, ev))
       if (running.get(sessionId) === ac) {
         running.delete(sessionId)
         notifyShellSessionChanged(sessionId)

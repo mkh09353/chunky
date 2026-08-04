@@ -10,7 +10,7 @@ import { threadContextFor } from "../thread-context.ts"
 
 const DESCRIPTION = `Hand a work brief to your sidekick — a persistent worker agent (its own side thread, usually a cheaper model) that does the hands-on loop: exploring code, editing files, running builds and tests. It remembers earlier briefs this session, so follow-ups can be short ("fix the failing test in the diff you just wrote").
 
-This is your DEFAULT way to delegate — reconnaissance as much as implementation. On a nontrivial task, make your FIRST handoff exploration: have it map the relevant code and report back file paths, key snippets, and how the pieces connect, then write your implementation brief from its report instead of reading the repo yourself. Write briefs like specs, not like code: state the goal, enumerate the constraints and edge cases explicitly (a constraint you don't write down will not survive the handoff), and define done. Don't dictate the implementation line by line — specify outcomes and let it work.
+This is your DEFAULT way to delegate — reconnaissance as much as implementation. On a nontrivial task, make your FIRST handoff exploration: have it map the relevant code and report back file paths, key snippets, and how the pieces connect, then write your implementation brief from its report instead of reading the repo yourself. Write briefs like specs, not like code: state the goal, enumerate the constraints and edge cases explicitly (a constraint you don't write down will not survive the handoff), and define done. Don't dictate the implementation line by line — specify outcomes and let it work. Two sizing rules that pay for themselves: (1) a brief with 3+ separable deliverables degrades — trailing items get dropped — so split it into sequential briefs (the persistent context makes follow-ups cheap), with implement → verify/tests as the natural cut; (2) put required tests and verification in done_when as a hard gate, not as a trailing constraint bullet — done_when is the checklist the worker holds itself to before reporting.
 
 After it reports back, review with git diff/git show — do NOT pull its files into your context or rewrite its work yourself. If the work is wrong, hand back a follow-up brief with specific feedback instead of fixing it at lead prices.
 
@@ -55,6 +55,12 @@ export interface SidekickInput {
   pointers?: string
 }
 
+/** Standing conduct clause appended to every sidekick brief: keep working through
+ *  blockers instead of bouncing back to the lead, but never at the cost of the
+ *  brief's constraints, and never silently. */
+export const PERSISTENCE_CLAUSE =
+  "Persistence: if a step is blocked, attempt at least two workarounds before setting it aside, and continue with the remaining steps rather than stopping to report. Workarounds must stay within the constraints above — a constraint-violating workaround is worse than a blocked step. In your final report, list every blocker you hit and what you tried; do not paper over failures or claim unverified work as verified."
+
 /** Assemble the structured fields into the one plain-language brief the sidekick
  *  receives. Exported for tests. */
 export function composeBrief(input: SidekickInput): string {
@@ -62,6 +68,7 @@ export function composeBrief(input: SidekickInput): string {
   if (input.constraints?.length) parts.push(`Constraints:\n${input.constraints.map((c) => `- ${c}`).join("\n")}`)
   if (input.done_when) parts.push(`Done when: ${input.done_when}`)
   if (input.pointers) parts.push(`Where to look:\n${input.pointers}`)
+  parts.push(PERSISTENCE_CLAUSE)
   return parts.join("\n\n")
 }
 

@@ -22,7 +22,7 @@ import { effectiveSidekickConfig, effectiveSidekickSeats, listSidekickSeats, res
 import { currentModeSpec, isValidSeatName, setSidekick, setSidekickSeat } from "./settings.ts"
 import { Store } from "./store.ts"
 import { type AgentForSelection, ThreadManager } from "./threads.ts"
-import { composeBrief } from "./tools/sidekick.ts"
+import { composeBrief, PERSISTENCE_CLAUSE } from "./tools/sidekick.ts"
 
 const events: AgentEvent[] = []
 const emit = (ev: AgentEvent) => {
@@ -140,11 +140,15 @@ async function main() {
       brief.includes("- keep the public signature") &&
       brief.includes("- operator() must be O(1): NO full token scan") &&
       brief.includes("Done when: vitest run passes") &&
-      brief.includes("Where to look:\nsrc/net.ts:80"),
-    "composeBrief should assemble task, constraints, done_when, and pointers",
+      brief.includes("Where to look:\nsrc/net.ts:80") &&
+      brief.endsWith(PERSISTENCE_CLAUSE),
+    "composeBrief should assemble task, constraints, done_when, pointers, and the persistence clause",
   )
-  assert(composeBrief({ task: "just this" }) === "just this", "a task-only brief should be the bare task")
-  console.log("ok  composeBrief assembles the brief (and passes a bare task through)")
+  assert(
+    composeBrief({ task: "just this" }) === `just this\n\n${PERSISTENCE_CLAUSE}`,
+    "a task-only brief should be the bare task plus the standing persistence clause",
+  )
+  console.log("ok  composeBrief assembles the brief (with the standing persistence clause)")
 
   console.log("\n--- two handoffs on the same ThreadManager ---")
   // Leave agentFor/advisorAgentFor at their defaults (never invoked here); inject

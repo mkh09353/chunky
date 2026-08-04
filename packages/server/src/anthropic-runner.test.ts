@@ -6,14 +6,17 @@ import { buildSystemPrompt } from "./prompt.ts"
 import { resetAppBrowserEndpoint } from "./app-browser.ts"
 import {
   buildAnthropicOptions,
+  externalMcpConfig,
+  assertOAuthOnlyInit,
   runChunkyToolForSdk,
   translateAnthropicMessages,
   type AnthropicRunnerDependencies,
 } from "./anthropic-runner.ts"
 import { anthropicOAuthEnvironment } from "./providers/anthropic-sdk.ts"
+import { AuthStore } from "./providers/auth-store.ts"
 import type { AgentSelection } from "./providers/registry.ts"
 import { join } from "node:path"
-import { mkdtempSync } from "node:fs"
+import { mkdtempSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { toolResult } from "./tools/result.ts"
 
@@ -38,7 +41,10 @@ const fakeQuery = (() => {
 async function main() {
   // Keep prompt expectations independent of a developer's real settings file.
   const previousSettings = process.env.CHUNKY_SETTINGS
-  process.env.CHUNKY_SETTINGS = join(mkdtempSync(join(tmpdir(), "chunky-anthropic-test-")), "settings.json")
+  const testDir = mkdtempSync(join(tmpdir(), "chunky-anthropic-test-"))
+  process.env.CHUNKY_SETTINGS = join(testDir, "settings.json")
+  process.env.CHUNKY_AUTH = join(testDir, "auth.json")
+  writeFileSync(process.env.CHUNKY_SETTINGS, JSON.stringify({ mcpServers: { gmail: { url: "https://gmailmcp.googleapis.com/mcp/v1", oauth: { clientId: "client", clientSecret: "secret" } } } }))
   const events: AgentEvent[] = []
   const emit = (event: AgentEvent) => events.push(event)
   resetAppBrowserEndpoint()
@@ -64,6 +70,19 @@ async function main() {
   assert(fresh.env?.ANTHROPIC_PROFILE === undefined, "alternate Anthropic auth profiles must be removed")
   assert(fresh.env?.CLAUDE_CODE_USE_GATEWAY === undefined, "enterprise gateway auth must be removed")
   assert(fresh.mcpServers?.chunky?.type === "sdk", "Chunky tools must be an in-process SDK MCP server")
+  AuthStore.remove("mcp-gmail")
+  const unauthorized = await externalMcpConfig()
+  assert(Object.keys(unauthorized.servers).length === 0 && unauthorized.allowedTools.length === 0, "unauthorized MCP servers must be absent")
+  const initMessage = { type: "system", subtype: "init", apiKeySource: "none", tools: ["mcp__gmail__list"] } as any
+  let rejected = false
+  try { assertOAuthOnlyInit(initMessage) } catch { rejected = true }
+  assert(rejected, "unauthorized Gmail tools must be rejected")
+  AuthStore.set("mcp-gmail", { type: "oauth", access: "fake-access", refresh: "fake-refresh", expires: Date.now() + 120_000 })
+  const configured = await externalMcpConfig()
+  assert(configured.allowedTools.includes("mcp__gmail__*"), "authorized Gmail tools must be allowed")
+  assert((configured.servers.gmail as any).headers.Authorization === "Bearer fake-access", "authorized Gmail server receives bearer token")
+  assertOAuthOnlyInit(initMessage)
+  AuthStore.remove("mcp-gmail")
   const registeredTools = Object.keys((fresh.mcpServers?.chunky as any).instance._registeredTools).sort()
   assert(
     JSON.stringify(registeredTools) === JSON.stringify([

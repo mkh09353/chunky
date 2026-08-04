@@ -62,12 +62,13 @@ import { asToolRunResult } from "./tools/result.ts"
 import { getTaskOutput, getTaskOutputInputShape, killTask, killTaskInputShape } from "./tools/task.ts"
 import { hashlineEdit, hashlineRead } from "./tools/hashline/index.ts"
 import { hashlineEditInputShape } from "./tools/hashline/types.ts"
-import { resolveFileToolProfile, type FileToolProfile } from "./settings.ts"
+import { resolveFileToolProfile, loadSettings, type FileToolProfile } from "./settings.ts"
 import { readRepoMemory } from "./memory.ts"
 import { remember, rememberInputShape } from "./tools/remember.ts"
 import { review, reviewInputShape } from "./tools/review.ts"
 import { browserTools, open_app_browser } from "./tools/browser.ts"
 import { zooTools } from "./tools/zoo.ts"
+import { getFreshAccessToken, isMcpAuthorized } from "./mcp-auth.ts"
 
 const SERVER_NAME = "chunky"
 const ALLOWED_TOOLS = [`mcp__${SERVER_NAME}__*`]
@@ -400,6 +401,23 @@ export interface AnthropicRunRequest {
   usageContext?: { sessionId: string; role: "lead" | "sidekick" | "advisor" | "review" | "child"; delegationId?: string | null }
 }
 
+export async function externalMcpConfig(): Promise<{ servers: Record<string, unknown>; allowedTools: string[]; ids: string[] }> {
+  const configured = loadSettings().mcpServers ?? {}
+  const servers: Record<string, unknown> = {}
+  const ids: string[] = []
+  for (const [id, config] of Object.entries(configured)) {
+    if (config.enabled === false) continue
+    try {
+      const access = await getFreshAccessToken(id)
+      servers[id] = { type: "http", url: config.url, headers: { Authorization: `Bearer ${access}` } }
+      ids.push(id)
+    } catch {
+      // Unconfigured/unauthorized external MCP servers are absent by design.
+    }
+  }
+  return { servers, ids, allowedTools: ids.map((id) => `mcp__${id}__*`) }
+}
+
 export async function buildAnthropicOptions(
   request: Omit<AnthropicRunRequest, "prompt">,
   dependencies: AnthropicRunnerDependencies = defaultDependencies,
@@ -410,6 +428,7 @@ export async function buildAnthropicOptions(
   const shouldResume =
     !freshSession &&
     (knownSessions.has(threadId) || Boolean(await dependencies.getSessionInfo(sessionId, { dir: workspace }).catch(() => undefined)))
+  const external = await externalMcpConfig()
   return {
     cwd: workspace,
     env: anthropicOAuthEnvironment(),
@@ -431,15 +450,18 @@ export async function buildAnthropicOptions(
         repoMemory: readRepoMemory(workspace, threadId),
       }),
     ...ANTHROPIC_SDK_ISOLATION_OPTIONS,
-    mcpServers: { [SERVER_NAME]: createChunkySdkMcpServer(threadId, emit, eventThreadId, workspace) },
-    allowedTools: request.allowedTools ?? ALLOWED_TOOLS,
+    mcpServers: {
+      [SERVER_NAME]: createChunkySdkMcpServer(threadId, emit, eventThreadId, workspace),
+      ...external.servers,
+    },
+    allowedTools: request.allowedTools ?? [...ALLOWED_TOOLS, ...external.allowedTools],
     includePartialMessages: true,
     persistSession: true,
     ...(shouldResume ? { resume: sessionId } : { sessionId }),
   }
 }
 
-function assertOAuthOnlyInit(message: Extract<SDKMessage, { type: "system"; subtype: "init" }>): void {
+export function assertOAuthOnlyInit(message: Extract<SDKMessage, { type: "system"; subtype: "init" }>): void {
   // Current subscription-backed SDK builds report "none" here because the
   // credential is loaded from Claude's local OAuth session rather than an API
   // key source. Explicit API-key sources remain a hard failure.
@@ -447,7 +469,8 @@ function assertOAuthOnlyInit(message: Extract<SDKMessage, { type: "system"; subt
   if (credentialSource !== "oauth" && credentialSource !== "none") {
     throw new Error(`anthropic: expected Claude OAuth, SDK reported credential source "${credentialSource}"`)
   }
-  const unexpectedTools = message.tools.filter((name) => !SDK_TOOL_NAMES.has(name))
+  const configuredIds = Object.keys(loadSettings().mcpServers ?? {}).filter((id) => loadSettings().mcpServers?.[id]?.enabled !== false && isMcpAuthorized(id))
+  const unexpectedTools = message.tools.filter((name) => !SDK_TOOL_NAMES.has(name) && !configuredIds.some((id) => name.startsWith(`mcp__${id}__`)))
   if (unexpectedTools.length > 0) {
     throw new Error(`anthropic: SDK exposed tools outside Chunky's MCP server: ${unexpectedTools.join(", ")}`)
   }

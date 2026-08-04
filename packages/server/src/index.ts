@@ -25,6 +25,7 @@ import {
   type AppZooResponse,
   type AuthTestResult,
   type AuthLogoutResult,
+  type McpServersResponse,
   type RelayBeginPairingResponse,
   type RelayPollPairingResponse,
   type RelayStatusResponse,
@@ -66,6 +67,7 @@ import {
 } from "./providers/registry.ts"
 import { detectClaudeCredentials } from "./providers/anthropic-sdk.ts"
 import { AuthStore } from "./providers/auth-store.ts"
+import { isMcpAuthorized, mcpConfig, startMcpAuthorization } from "./mcp-auth.ts"
 import { checkForUpdate, currentVersion, persistCheck, readPersistedCheck } from "./update/updater.ts"
 import { applyOnboardingMode, suggestedModes, ensureDefaultModes, saveCustomProvider } from "./onboarding.ts"
 import {
@@ -700,6 +702,21 @@ const server = Bun.serve(withCors({
         })
       }
       return json(result satisfies RelayPollPairingResponse)
+    }
+
+    // ---- Remote MCP / OAuth routes ----
+    if (req.method === "GET" && pathname === ROUTES.mcpServers) {
+      const configured = loadSettings().mcpServers ?? {}
+      const servers = Object.entries(configured).map(([id, cfg]) => ({ id, url: cfg.url, enabled: cfg.enabled !== false, status: cfg.enabled === false ? "unconfigured" as const : isMcpAuthorized(id) ? "connected" as const : "needs-auth" as const }))
+      return json({ servers } satisfies McpServersResponse)
+    }
+    const mcpMatch = pathname.match(/^\/api\/mcp\/([^/]+)\/(authorize|status|logout)$/)
+    if (mcpMatch) {
+      const id = decodeURIComponent(mcpMatch[1]!), action = mcpMatch[2], cfg = mcpConfig(id)
+      if (!cfg) return json({ error: `MCP server "${id}" is not configured` }, 404)
+      if (action === "authorize" && req.method === "POST") return json(await startMcpAuthorization(id))
+      if (action === "status" && req.method === "GET") return json({ status: isMcpAuthorized(id) ? "connected" : "needs-auth" })
+      if (action === "logout" && req.method === "POST") { AuthStore.remove(`mcp-${id}`); return json({ ok: true }) }
     }
 
     // ---- Provider / OAuth routes (additive; independent of sessions) ----

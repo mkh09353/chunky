@@ -9,6 +9,7 @@ import type { MessageEndReason, UsageDelta } from "@chunky/protocol"
 import { getAgent, RECURSION_LIMIT } from "./agent.ts"
 import { taggedEmitter, type Emit } from "./event-emitter.ts"
 import { activeSelection, getProvider, providerRuntime } from "./providers/registry.ts"
+import { composePortablePrompt } from "./portable-handoff.ts"
 import { ThreadManager } from "./threads.ts"
 import { usageFromLangChainMessage, promptTokensOf } from "./usage.ts"
 import { checkCacheCold, cacheWarningEvent, noteRequest } from "./cache-watch.ts"
@@ -421,17 +422,27 @@ export async function runAgent(
   // One turn = one full agent run (a model call + any tool loop). Both runtimes
   // reduce to this; goal mode just calls it repeatedly with continuation nudges.
   const runTurn = async (prompt: string, turnImages?: InputImage[]): Promise<void> => {
-    if (providerRuntime(selection.provider) === "anthropic-sdk") {
+    const currentRuntime = providerRuntime(selection.provider)
+    const previous = Store.latestLeadUsage(sessionId)
+    const composedPrompt = composePortablePrompt(
+      prompt,
+      previous?.provider ? providerRuntime(previous.provider) : undefined,
+      currentRuntime,
+      // Keep the handoff input bounded even though the legacy Store method
+      // currently materializes the complete durable transcript.
+      Store.historyWithSeq(sessionId).slice(-200),
+    )
+    if (currentRuntime === "anthropic-sdk") {
       const { runAnthropicAgent } = await import("./anthropic-runner.ts")
       await runAnthropicAgent({
-        selection, threadId: sessionId, prompt, images: turnImages, emit, cache, abort, workspace, agentsMd,
+        selection, threadId: sessionId, prompt: composedPrompt, images: turnImages, emit, cache, abort, workspace, agentsMd,
         usageContext: { sessionId, role: "lead" },
         onSubmitted: () => consumeTaskReminders(sessionId, pendingReminder.ids),
       })
     } else {
       const stream = await streamWithCheckpointRecovery(
         getAgent(selection, workspace, agentsMd, sessionId, repoMemory),
-        { messages: [{ role: "user", content: userMessageContent(prompt, turnImages) }] } as any,
+        { messages: [{ role: "user", content: userMessageContent(composedPrompt, turnImages) }] } as any,
         {
           configurable: {
             thread_id: sessionId,

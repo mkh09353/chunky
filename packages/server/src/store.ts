@@ -261,6 +261,10 @@ export const Store = {
     } catch { /* intentionally swallowed */ }
   },
   usageRows(sessionId: string) { return backend(sessionId).query("SELECT role,provider,model,effort,SUM(input_tokens) inputTokens,SUM(output_tokens) outputTokens,SUM(reasoning_tokens) reasoningTokens,SUM(cache_read_tokens) cacheReadTokens,SUM(cache_write_tokens) cacheWriteTokens,SUM(cost) cost,COUNT(*) requests FROM usage_log WHERE session_id = ? GROUP BY role,provider,model,effort").all(sessionId) as any[] },
+  /** The last completed lead request, used only to detect runtime handoffs. */
+  latestLeadUsage(sessionId: string): { provider: string; model: string } | null {
+    return backend(sessionId).query("SELECT provider,model FROM usage_log WHERE session_id=? AND role='lead' ORDER BY ts DESC,id DESC LIMIT 1").get(sessionId) as { provider: string; model: string } | null
+  },
   scoreboardRows(sessionId?: string) { return db.query(`SELECT d.provider,d.model,d.effort,d.kind,COUNT(*) samples,AVG(r.rating) avgRating,COUNT(r.rating) ratedCount,AVG(r.rework) reworkRate,SUM(u.cost) totalCost,SUM(COALESCE(u.input_tokens,0)+COALESCE(u.output_tokens,0)) totalTokens FROM delegations d LEFT JOIN ratings r ON r.delegation_id=d.id LEFT JOIN usage_log u ON u.delegation_id=d.id ${sessionId ? "WHERE d.session_id = ?" : ""} GROUP BY d.provider,d.model,d.effort,d.kind`).all(...(sessionId ? [sessionId] : [])) as any[] },
   getTodos(sessionId: string): TodoSnapshot[] {
     const row = backend(sessionId).query("SELECT json FROM todos WHERE session_id=?").get(sessionId) as { json: string } | null
@@ -536,6 +540,13 @@ export const Store = {
     try { return { provider: row.provider, model: row.model, replacementHistory: JSON.parse(row.replacement_history_json), boundary: row.boundary, createdAt: row.created_at, usage: row.usage_json ? JSON.parse(row.usage_json) : undefined } } catch { return null }
   },
   clearCompactionArtifact(sessionId: string): void { backend(sessionId).query("DELETE FROM session_compaction_artifacts WHERE session_id=?").run(sessionId) },
+  /** Clear native artifacts for sessions following a changed global selection.
+   * Pinned sessions retain their own compatible native history. */
+  invalidateGlobalCompactionArtifacts(provider: string, model: string): void {
+    db.query(`DELETE FROM session_compaction_artifacts
+      WHERE session_id IN (SELECT id FROM sessions WHERE selection IS NULL)
+        AND NOT (provider=? AND model=?)`).run(provider, model)
+  },
 
   /** Session-local sidekick patch, or null when this session follows global
    * sidekick settings exactly. Corrupt legacy values are ignored safely. */

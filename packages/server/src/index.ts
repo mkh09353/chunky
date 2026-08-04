@@ -1061,6 +1061,7 @@ const server = Bun.serve(withCors({
       }
       setActiveProviderId(provider)
       setSelection(provider, { model, effort, speed })
+      Store.invalidateGlobalCompactionArtifacts(provider, model)
       setActiveMode(undefined)
       invalidateAgent()
       const sel = selectionOf(provider)

@@ -12,7 +12,9 @@
 // only the agent-construction call differs.
 import { tool } from "@langchain/core/tools"
 import { z } from "zod"
-import { createAgent, summarizationMiddleware } from "langchain"
+import { createAgent } from "langchain"
+import { chunkyCompactionMiddleware } from "./compaction.ts"
+import { CODEX_DEFAULT_MODEL } from "./providers/codex.ts"
 import {
   activeSelection,
   advisorFor,
@@ -364,7 +366,7 @@ export function buildAgent(
   repoMemory?: string | null,
 ) {
   const providerId = selection.provider
-  const modelId = selection.model
+  const modelId = selection.model ?? (providerId === "codex" ? CODEX_DEFAULT_MODEL : "unknown")
   const model = resolveModel(selection, sessionId)
   const plan = agentPlanFor(selection, sessionId)
   // TODO: prompt-caching middleware. langchain exports anthropicPromptCachingMiddleware,
@@ -395,25 +397,16 @@ export function buildAgent(
       repoMemory,
     }),
     checkpointer: makeCheckpointer(),
-    // Auto-compaction — the context-management half of Pi's efficiency win (a
-    // "tighter working set" so long sessions don't grow unbounded, which is what we
-    // lost by dropping createDeepAgent's SummarizationMiddleware). Once history grows
-    // past ~150k tokens, older messages are summarized while the most recent 15 are
-    // kept verbatim; the active model writes the summary. A token trigger (not a
-    // context-window fraction) keeps this provider-agnostic — Zen/Codex ChatOpenAI
-    // instances don't reliably report a context size. Move to { fraction } once model
-    // profiles carry context windows.
+    // Chunky-owned compaction: a strict 175k token estimate, deliberately not a
+    // nominal context-window fraction because models degrade and cost more well
+    // below their advertised windows. The latest 15 messages remain verbatim,
+    // with tool-call/result pairs kept together; failed summaries leave state intact.
     middleware: [
       remoteCompactionMiddleware(providerId, modelId),
-      summarizationMiddleware({
-        model,
-        trigger: { tokens: 150_000 },
-        keep: { messages: 15 },
-      }),
-      // LangChain's summarizer exposes a reliable beforeModel state update: it
-      // returns RemoveAll + summary + preserved messages. A following hook
-      // observes that update and inserts the freshly collected reminder at the
-      // only stable point, immediately after the generated summary.
+      chunkyCompactionMiddleware({ model }),
+      // The compaction middleware returns RemoveAll + summary + preserved messages.
+      // This following hook observes that update and inserts the freshly collected
+      // reminder at the only stable point, immediately after the generated summary.
       {
         name: "postCompactionReminder",
         beforeModel: makePostCompactionReminder(),
@@ -477,11 +470,7 @@ export function buildAdvisorAgent(selection: AgentSelection, sessionId?: string)
     systemPrompt: ADVISOR_SYSTEM_PROMPT,
     checkpointer: makeCheckpointer(),
     middleware: [
-      summarizationMiddleware({
-        model,
-        trigger: { tokens: 150_000 },
-        keep: { messages: 15 },
-      }),
+      chunkyCompactionMiddleware({ model }),
     ],
   })
 }
@@ -531,11 +520,7 @@ export function buildSidekickAgent(selection: AgentSelection, agentsMd?: string 
     systemPrompt: sidekickSystemPrompt(agentsMd, resolveFileToolProfile(), repoMemory),
     checkpointer: makeCheckpointer(),
     middleware: [
-      summarizationMiddleware({
-        model,
-        trigger: { tokens: 150_000 },
-        keep: { messages: 15 },
-      }),
+      chunkyCompactionMiddleware({ model }),
     ],
   })
 }

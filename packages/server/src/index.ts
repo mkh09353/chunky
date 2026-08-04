@@ -107,7 +107,7 @@ import {
 } from "./settings.ts"
 import { availableWorkflowTargets } from "./workflow/router.ts"
 import { discoverSkills, loadSkill } from "./skills.ts"
-import { saveDisabledSkills } from "./settings.ts"
+import { saveDisabledSkills, getSkillBinding as importedSkillBinding } from "./settings.ts"
 import { drainQueue, installSessionBus } from "./session-bus.ts"
 import { InterjectionBuffer, PromptQueue, formatInterjection } from "./prompt-queue.ts"
 import { cacheColdPayload, checkCacheCold, exceedsGuard } from "./cache-watch.ts"
@@ -226,7 +226,7 @@ function hasLiveSubscribers(): boolean {
 
 /** Persist an event, then push it to every connected subscriber of the session. */
 function emitTo(sessionId: string, ev: AgentEvent): void {
-  if (ev.type !== "tool.progress" && ev.type !== "session.rewound" && ev.type !== "background.changed") Store.appendEvent(sessionId, ev)
+  if (ev.type !== "tool.progress" && ev.type !== "session.rewound" && ev.type !== "background.changed" && ev.type !== "context.compaction_failed") Store.appendEvent(sessionId, ev)
   const frame = encoder.encode(sse(ev))
   for (const controller of subscribers(sessionId)) {
     try {

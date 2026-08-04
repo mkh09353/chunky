@@ -33,7 +33,7 @@ const OAUTH_PORT = 1455
 const OAUTH_REDIRECT_PATH = "/auth/callback"
 const REDIRECT_URI = `http://localhost:${OAUTH_PORT}${OAUTH_REDIRECT_PATH}`
 const OAUTH_POLLING_SAFETY_MARGIN_MS = 3_000
-const DEFAULT_MODEL = process.env.CODEX_MODEL || "gpt-5.5"
+export const CODEX_DEFAULT_MODEL = process.env.CODEX_MODEL || "gpt-5.5"
 
 // Models a ChatGPT account can actually use via the Codex backend. This is
 // opencode's ALLOWED_MODELS set (codex.ts) — the plain `-codex` variants
@@ -566,7 +566,7 @@ export const codexProvider: ProviderDef = {
     await validAuth()
   },
   buildModel: (selection: ModelSelection, sessionId?: string): BaseChatModel => {
-    const model = selection.model || DEFAULT_MODEL
+    const model = selection.model || CODEX_DEFAULT_MODEL
     // Luna's Responses Lite endpoint defaults to Codex Fast unless the user
     // explicitly selected a speed. Other Codex models keep their normal default.
     const speed = selection.speed ?? (model === RESPONSES_LITE_MODEL ? "fast" : undefined)

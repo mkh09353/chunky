@@ -8,6 +8,7 @@
 import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { randomBytes } from "node:crypto"
 import { join } from "node:path"
+import type { SkillModelBinding } from "@chunky/protocol"
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max"
 export type Speed = "standard" | "fast"
@@ -82,7 +83,15 @@ export interface ModeSpec {
   incognito?: { allow: string[] }
 }
 
+export interface McpServerConfig {
+  url: string
+  oauth: { clientId: string; clientSecret: string; callbackPort?: number; scopes?: string[] }
+  enabled?: boolean
+}
+
 export interface Settings {
+  /** Explicit remote MCP servers; tokens live only in AuthStore. */
+  mcpServers?: Record<string, McpServerConfig>
   /** GitHub PR review integration; token is never returned by HTTP settings routes. */
   github?: { org?: string; token?: string; readyLabel?: string }
   /** Terminal TUI appearance; auto detects the terminal background. */
@@ -127,6 +136,8 @@ export interface Settings {
   removedDefaultSkillRepos?: string[]
   /** Default skill repos whose initial skill enablement has been applied. */
   seededDefaultSkillRepos?: string[]
+  /** Global skill-name model affinities. */
+  skillBindings?: Record<string, SkillModelBinding>
   /** Optional user exceptions to Chunky's zero-config workflow routing. Keys are provider/model. */
   workflowTargets?: Record<string, WorkflowTargetOverride>
 }
@@ -630,6 +641,22 @@ export function listSkillRepos(): SkillRepoRecord[] {
 
 export function skillRepoById(id: string): SkillRepoRecord | undefined {
   return (loadSettings().skillRepos ?? []).find((r) => r.id === id)
+}
+
+export function getSkillBinding(name: string): SkillModelBinding | undefined {
+  return loadSettings().skillBindings?.[name]
+}
+
+export function setSkillBinding(name: string, binding: SkillModelBinding): void {
+  const s = loadSettings()
+  save({ ...s, skillBindings: { ...(s.skillBindings ?? {}), [name]: { ...binding } } })
+}
+
+export function removeSkillBinding(name: string): void {
+  const s = loadSettings()
+  const bindings = { ...(s.skillBindings ?? {}) }
+  delete bindings[name]
+  save({ ...s, skillBindings: bindings })
 }
 
 export function saveDisabledSkills(names: string[]): void {

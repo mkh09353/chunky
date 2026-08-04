@@ -939,9 +939,9 @@ const server = Bun.serve(withCors({
     if (pathname === "/api/skill-repos" && (req.method === "GET" || req.method === "POST")) {
       try {
         if (req.method === "GET") return json(await manageSkillRepos("list"))
-        const body = (await req.json()) as { action?: SkillRepoMutationAction; url?: string; id?: string; branch?: string; subdir?: string; skill?: string }
-        if (!body.action || !["add", "remove", "update", "list", "enable", "disable"].includes(body.action)) {
-          return json({ error: "action must be add, remove, update, list, enable, or disable" }, 400)
+        const body = (await req.json()) as { action?: SkillRepoMutationAction; url?: string; id?: string; branch?: string; subdir?: string; skill?: string; binding?: import("@chunky/protocol").SkillModelBinding }
+        if (!body.action || !["add", "remove", "update", "list", "enable", "disable", "bind", "unbind"].includes(body.action)) {
+          return json({ error: "action must be add, remove, update, list, enable, disable, bind, or unbind" }, 400)
         }
         return json(await manageSkillRepos(body.action, body))
       } catch (err) {
@@ -978,7 +978,7 @@ const server = Bun.serve(withCors({
       const session = url.searchParams.get("session")
       const workspace = session && Store.exists(session) ? Store.workspaceOf(session) : url.searchParams.get("workspace")
       const skills = workspace ? discoverSkills(workspace, { includeDisabled: true }) : discoverSkills(process.cwd(), { includeDisabled: true }).filter((s) => s.source !== "project")
-      return json({ skills: skills.map((s) => ({ name: s.name, description: s.description, source: s.source, sourceLabel: s.sourceLabel, path: s.path, enabled: s.enabled !== false })) })
+      return json({ skills: skills.map((s) => ({ name: s.name, description: s.description, source: s.source, sourceLabel: s.sourceLabel, path: s.path, enabled: s.enabled !== false, ...(importedSkillBinding(s.name) ? { binding: importedSkillBinding(s.name) } : {}) })) })
     }
     if (pathname === "/api/skills" && req.method === "POST") {
       const body = await req.json().catch(() => ({})) as { action?: "enable" | "disable"; name?: string; repoId?: string }

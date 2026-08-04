@@ -14,17 +14,21 @@ import {
   skillRepoById,
   skillReposRoot,
   updateSkillRepo,
+  getSkillBinding,
+  setSkillBinding,
+  removeSkillBinding,
   registerDefaultSkillRepoIds,
   type SkillRepoRecord,
 } from "./settings.ts"
 
 export type SkillRepoAction = "add" | "remove" | "update" | "list"
-export type SkillRepoMutationAction = SkillRepoAction | "enable" | "disable"
+export type SkillRepoMutationAction = SkillRepoAction | "enable" | "disable" | "bind" | "unbind"
 
 export interface ManagedSkillStatus {
   name: string
   description: string
   enabled: boolean
+  binding?: import("@chunky/protocol").SkillModelBinding
 }
 
 export interface SkillRepoStatus extends SkillRepoRecord {
@@ -169,7 +173,7 @@ function skillsForRepo(repo: SkillRepoRecord, path: string): ManagedSkillStatus[
         const body = readFileSync(join(dir, "SKILL.md"), "utf8")
         const name = (body.match(/^name:\s*["']?([^\n"']+)/m)?.[1]?.trim() || dir.split(/[\\/]/).pop() || "skill")
         const description = body.match(/^description:\s*["']?([^\n"']+)/m)?.[1]?.trim() || ""
-        if (description) results.push({ name, description, enabled: !disabled.has(name) })
+        if (description) results.push({ name, description, enabled: !disabled.has(name), binding: getSkillBinding(name) })
       } catch { /* unreadable skill is simply omitted */ }
       return
     }
@@ -428,7 +432,7 @@ export async function updateManagedSkillRepo(id?: string): Promise<SkillRepoStat
 /** Shared mutation path for HTTP, TUI, and the agent tool. */
 export async function manageSkillRepos(
   action: SkillRepoMutationAction,
-  opts: { url?: string; id?: string; branch?: string; subdir?: string; skill?: string } = {},
+  opts: { url?: string; id?: string; branch?: string; subdir?: string; skill?: string; binding?: import("@chunky/protocol").SkillModelBinding } = {},
 ): Promise<unknown> {
   if (action === "list") {
     return { action, repos: listSkillRepoStatus() }
@@ -458,6 +462,16 @@ export async function manageSkillRepos(
       failed: failed.length,
       repos,
     }
+  }
+  if (action === "bind" || action === "unbind") {
+    const skill = opts.skill?.trim()
+    if (!skill) throw new Error("skill is required to bind or unbind")
+    if (action === "unbind") { removeSkillBinding(skill); return { action, skill } }
+    const binding = opts.binding
+    if (!binding || typeof binding.provider !== "string" || !binding.provider.trim() || typeof binding.model !== "string" || !binding.model.trim()) throw new Error("binding provider and model are required")
+    if (binding.lock !== "prefer" && binding.lock !== "require") throw new Error("binding lock must be prefer or require")
+    setSkillBinding(skill, { ...binding, provider: binding.provider.trim(), model: binding.model.trim() })
+    return { action, skill, binding: getSkillBinding(skill) }
   }
   if (action === "enable" || action === "disable") {
     const id = opts.id?.trim()

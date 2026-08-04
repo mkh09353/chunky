@@ -1,10 +1,11 @@
 import { tool } from "@langchain/core/tools"
 import { z } from "zod"
+import type { SkillModelBinding } from "@chunky/protocol"
 import { manageSkillRepos } from "../skill-repos.ts"
 
 export const manageSkillReposInputShape = {
   action: z
-    .enum(["add", "remove", "update", "list", "enable", "disable"])
+    .enum(["add", "remove", "update", "list", "enable", "disable", "bind", "unbind"])
     .describe(
       "add = clone+register a git remote; remove = unregister and delete the local clone; " +
         "update = git pull (all repos, or one by id); list = show repos and skills; enable/disable changes one skill's persisted state.",
@@ -24,12 +25,13 @@ export const manageSkillReposInputShape = {
     .optional()
     .describe("Optional branch to pin when adding (default: remote HEAD)."),
   subdir: z.string().optional().describe("Optional relative path inside the clone holding skills. GitHub /tree URLs derive this automatically."),
-  skill: z.string().optional().describe("Skill name for enable or disable."),
+  skill: z.string().optional().describe("Skill name for enable, disable, bind, or unbind."),
+  binding: z.object({ provider: z.string(), model: z.string(), effort: z.string().optional(), lock: z.enum(["prefer", "require"]) }).optional(),
 }
 
 export const manageSkillReposTool = tool(
-  async ({ action, url, id, branch, subdir, skill }) =>
-    JSON.stringify(await manageSkillRepos(action, { url, id, branch, subdir, skill }), null, 2),
+  async ({ action, url, id, branch, subdir, skill, binding }) =>
+    JSON.stringify(await manageSkillRepos(action, { url, id, branch, subdir, skill, binding }), null, 2),
   {
     name: "manage_skill_repos",
     description:

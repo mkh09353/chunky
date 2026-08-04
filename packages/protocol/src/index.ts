@@ -323,10 +323,20 @@ export interface AddRepoRequest {
 }
 
 // ---- Managed skill repositories -------------------------------------------
+/** Model affinity for a skill: delegates loading this skill should run on
+ * this model. "prefer" = advisory (semi lock); "require" = load_skill on a
+ * mismatched model warns loudly and directs re-delegation. */
+export interface SkillModelBinding {
+  provider: string
+  model: string
+  effort?: string
+  lock: "prefer" | "require"
+}
 export interface ManagedSkill {
   name: string
   description: string
   enabled: boolean
+  binding?: SkillModelBinding
 }
 export interface SkillRepoStatus {
   id: string
@@ -341,7 +351,7 @@ export interface SkillRepoStatus {
   present: boolean
   skills: ManagedSkill[]
 }
-export type SkillRepoAction = "add" | "remove" | "update" | "list" | "enable" | "disable"
+export type SkillRepoAction = "add" | "remove" | "update" | "list" | "enable" | "disable" | "bind" | "unbind"
 export interface ManageSkillReposRequest {
   action: SkillRepoAction
   url?: string
@@ -349,6 +359,8 @@ export interface ManageSkillReposRequest {
   branch?: string
   subdir?: string
   skill?: string
+  /** For action "bind": the model binding to persist for `skill`. */
+  binding?: SkillModelBinding
 }
 export interface SkillReposResponse { action: SkillRepoAction; repos?: SkillRepoStatus[]; repo?: SkillRepoStatus; id?: string; updated?: number; failed?: number }
 export interface SkillCatalogEntry {
@@ -358,6 +370,7 @@ export interface SkillCatalogEntry {
   sourceLabel: string
   path: string
   enabled: boolean
+  binding?: SkillModelBinding
 }
 export interface SkillsCatalogResponse { skills: SkillCatalogEntry[] }
 
@@ -423,6 +436,10 @@ export interface AuthLogoutResult {
   ok: boolean
 }
 
+export type McpServerStatus = "unconfigured" | "needs-auth" | "connected"
+export interface McpServerSummary { id: string; url?: string; enabled: boolean; status: McpServerStatus }
+export interface McpServersResponse { servers: McpServerSummary[] }
+
 // ---- Desktop relay pairing (local server API) ----
 // Responses deliberately omit relay/account tokens, device private keys, pairing
 // claims, and pairing secrets. `qrPayload` is the one ephemeral exception: the
@@ -467,6 +484,10 @@ export const ROUTES = {
   authTest: (provider: string) => `/api/auth/${encodeURIComponent(provider)}/test`,
   // POST -> AuthLogoutResult. Remove the provider’s persisted credentials.
   authLogout: (provider: string) => `/api/auth/${encodeURIComponent(provider)}/logout`,
+  mcpServers: `/api/mcp/servers`,
+  mcpAuthorize: (id: string) => `/api/mcp/${encodeURIComponent(id)}/authorize`,
+  mcpStatus: (id: string) => `/api/mcp/${encodeURIComponent(id)}/status`,
+  mcpLogout: (id: string) => `/api/mcp/${encodeURIComponent(id)}/logout`,
   // POST CreateSessionRequest -> CreateSessionResponse (pinned to repoId's
   // workspace; the default repo when omitted).
   createSession: `/api/sessions`,

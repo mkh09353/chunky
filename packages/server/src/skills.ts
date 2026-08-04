@@ -19,7 +19,7 @@ import {
 import { homedir } from "node:os"
 import { basename, dirname, join, resolve, sep } from "node:path"
 import { managedSkillRoots } from "./skill-repos.ts"
-import { loadSettings, saveDisabledSkills } from "./settings.ts"
+import { getSkillBinding, loadSettings, saveDisabledSkills } from "./settings.ts"
 import { MAX_BYTES, MAX_LINES, truncateOutput } from "./tools/fs-util.ts"
 
 const MAX_NAME_LENGTH = 64
@@ -54,6 +54,7 @@ export interface SkillMeta {
   /** Human label for the root, e.g. "~/.claude/skills", ".agents/skills", or "repo:id". */
   sourceLabel: string
   enabled?: boolean
+  binding?: import("@chunky/protocol").SkillModelBinding
 }
 
 export interface LoadedSkill {
@@ -420,10 +421,18 @@ export function loadSkill(
     baseDir: resolved.baseDir,
     source: resolved.source,
     sourceLabel: resolved.sourceLabel,
-    body: content,
+    body: getSkillBinding(resolved.name) ? bindingNotice(getSkillBinding(resolved.name)!, undefined) + content : content,
     alreadyLoaded: false,
     truncated,
   }
+}
+
+export function bindingNotice(binding: import("@chunky/protocol").SkillModelBinding, current?: { provider?: string; model?: string }): string {
+  const matches = current?.provider === binding.provider && current?.model === binding.model
+  if (matches) return ""
+  const target = `${binding.provider}/${binding.model}`
+  if (binding.lock === "require") return `WARNING: this skill is LOCKED to ${target}. You appear to be running on a different model. Do not apply this skill here — re-delegate to a sub-agent pinned to ${target} (spawn_thread provider/model or the appropriate seat).\n\n`
+  return `Note: this skill runs best on ${target}${binding.effort ? ` (effort ${binding.effort})` : ""}; consider delegating to that model.\n\n`
 }
 
 /** Format search results for the model (metadata only — no bodies). */
@@ -436,7 +445,9 @@ export function formatSearchResults(skills: SkillMeta[], query?: string): string
   }
   const lines = skills.map((s) => {
     const desc = s.description.replace(/\s+/g, " ").trim()
-    return `- ${s.name} (${s.source}:${s.sourceLabel})\n  ${desc}`
+    const binding = getSkillBinding(s.name)
+    const suffix = binding ? ` [model: ${binding.provider}/${binding.model}, ${binding.lock === "require" ? "LOCKED — delegate to this model" : "semi-locked — prefer delegating to this model"}]` : ""
+    return `- ${s.name}${suffix} (${s.source}:${s.sourceLabel})\n  ${desc}`
   })
   const header = (query ?? "").trim()
     ? `Skills matching "${query!.trim()}" (${skills.length}):`

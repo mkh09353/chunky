@@ -26,7 +26,11 @@ export function isSqliteBusy(error: unknown): boolean {
 }
 
 /** Retry a complete synchronous DB operation, never a statement in isolation. */
-export function retrySqliteBusy<T>(operation: () => T, attempts = SQLITE_BUSY_ATTEMPTS): T {
+export function retrySqliteBusy<T>(
+  operation: () => T,
+  attempts = SQLITE_BUSY_ATTEMPTS,
+  wait: (delayMs: number) => void = Bun.sleepSync,
+): T {
   for (let attempt = 0; ; attempt++) {
     try {
       return operation()
@@ -35,8 +39,7 @@ export function retrySqliteBusy<T>(operation: () => T, attempts = SQLITE_BUSY_AT
       // The operation is synchronous; this deliberately remains a bounded,
       // small backoff rather than holding a transaction open while awaiting.
       const delay = 10 * (attempt + 1)
-      const until = Date.now() + delay
-      while (Date.now() < until) {}
+      wait(delay)
     }
   }
 }

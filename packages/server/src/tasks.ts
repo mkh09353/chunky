@@ -58,11 +58,11 @@ export function createTask(sessionId: string, input: { command: string; descript
 }
 
 export function liveTaskCounts(sessionId: string): { tasks: number; monitors: number } {
-  let tasks = 0, monitors = 0
-  for (const record of sessionTasks(sessionId).values()) if (!record.isTerminal) {
-    if (record.kind === "monitor") monitors++; else tasks++
+  let taskCount = 0, monitorCount = 0
+  for (const record of tasks.get(sessionId)?.values() ?? []) if (!record.isTerminal) {
+    if (record.kind === "monitor") monitorCount++; else taskCount++
   }
-  return { tasks, monitors }
+  return { tasks: taskCount, monitors: monitorCount }
 }
 
 export function appendTaskOutput(record: TaskRecord, chunk: string): void {

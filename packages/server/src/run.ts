@@ -428,9 +428,7 @@ export async function runAgent(
       prompt,
       previous?.provider ? providerRuntime(previous.provider) : undefined,
       currentRuntime,
-      // Keep the handoff input bounded even though the legacy Store method
-      // currently materializes the complete durable transcript.
-      Store.historyWithSeq(sessionId).slice(-200),
+      Store.recentHistoryWithSeq(sessionId, 200),
     )
     if (currentRuntime === "anthropic-sdk") {
       const { runAnthropicAgent } = await import("./anthropic-runner.ts")

@@ -221,6 +221,13 @@ function subscribers(sessionId: string): Set<Subscriber> {
   return set
 }
 
+function removeSubscriber(sessionId: string, controller: Subscriber): void {
+  const set = live.get(sessionId)
+  if (!set) return
+  set.delete(controller)
+  if (set.size === 0) live.delete(sessionId)
+}
+
 function hasLiveSubscribers(): boolean {
   for (const set of live.values()) if (set.size > 0) return true
   return false
@@ -229,12 +236,14 @@ function hasLiveSubscribers(): boolean {
 /** Persist an event, then push it to every connected subscriber of the session. */
 function emitTo(sessionId: string, ev: AgentEvent): void {
   if (ev.type !== "tool.progress" && ev.type !== "session.rewound" && ev.type !== "background.changed" && ev.type !== "context.compaction_failed") Store.appendEvent(sessionId, ev)
+  const set = live.get(sessionId)
+  if (!set) return
   const frame = encoder.encode(sse(ev))
-  for (const controller of subscribers(sessionId)) {
+  for (const controller of set) {
     try {
       controller.enqueue(frame)
     } catch {
-      // subscriber gone; cleaned up on cancel
+      removeSubscriber(sessionId, controller)
     }
   }
 }
@@ -272,12 +281,14 @@ subscribeSessionChanges((sessionId) => notifyShellSessionChanged(sessionId))
 /** Push an event only to currently attached clients of one session. It is
  * deliberately never persisted, so reconnect/replay cannot repeat UI actions. */
 function emitLiveTo(sessionId: string, ev: AgentEvent): void {
+  const set = live.get(sessionId)
+  if (!set) return
   const frame = encoder.encode(sse(ev))
-  for (const controller of subscribers(sessionId)) {
+  for (const controller of set) {
     try {
       controller.enqueue(frame)
     } catch {
-      // subscriber gone; cleaned up by its stream's cancel handler.
+      removeSubscriber(sessionId, controller)
     }
   }
 }
@@ -286,12 +297,12 @@ function emitLiveTo(sessionId: string, ev: AgentEvent): void {
  * It intentionally is not persisted into individual session histories. */
 function broadcastLive(ev: AgentEvent): void {
   const frame = encoder.encode(sse(ev))
-  for (const set of live.values()) {
+  for (const [sessionId, set] of live) {
     for (const controller of set) {
       try {
         controller.enqueue(frame)
       } catch {
-        // Subscriber gone; cleaned up by its stream's cancel handler.
+        removeSubscriber(sessionId, controller)
       }
     }
   }
@@ -364,7 +375,7 @@ function startRun(
   const done = runAgent(sessionId, text, (ev) => emitTo(sessionId, ev), images, ac, {
     ...options,
     onToolBoundary: (): InterjectionBoundary | undefined => {
-      const notes = interjections.get(sessionId)?.drainAll() ?? []
+      const notes = drainInterjections(sessionId)
       return notes.length ? {
         prompts: notes.map((note) => formatInterjection(note.text)),
         texts: notes.map((note) => note.text),
@@ -387,7 +398,7 @@ function startRun(
       scheduleDream(sessionId)
       drainQueue(sessionId)
       queueBusy.delete(sessionId)
-      const leftovers = interjections.get(sessionId)?.drainAll() ?? []
+      const leftovers = drainInterjections(sessionId)
       if (leftovers.length) {
         const queue = promptQueues.get(sessionId) ?? new PromptQueue()
         for (const note of leftovers) {
@@ -411,6 +422,14 @@ function startRun(
     })
   runDone.set(sessionId, done)
   return done
+}
+
+function drainInterjections(sessionId: string) {
+  const buffer = interjections.get(sessionId)
+  if (!buffer) return []
+  const notes = buffer.drainAll()
+  interjections.delete(sessionId)
+  return notes
 }
 
 /** Abort the session's in-flight turn as a STEER (reason "steer", so the run
@@ -530,7 +549,9 @@ installSessionBus({
     // async-local store so its LLM tokens stream only through its own
     // iterator — not into the sender's `messages` stream via the ambient
     // callback context (same isolation as ThreadManager.spawn).
-    const turn = busTurns.get(sessionId)?.shift()
+    const turns = busTurns.get(sessionId)
+    const turn = turns?.shift()
+    if (turns?.length === 0) busTurns.delete(sessionId)
     return AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () => startRun(sessionId, text, undefined, undefined, turn))
   },
   isRunning(sessionId) {
@@ -1539,7 +1560,6 @@ const server = Bun.serve(withCors({
       // keeps the index incrementally current. Its public API has no manual
       // update/rescan hook, so do not add a redundant JS watcher.
       void getFinder(repo?.path).catch(() => {})
-      subscribers(sessionId) // pre-create the fan-out set
       return json({ sessionId, incognito: isIncognitoSession(sessionId) })
     }
 
@@ -1644,7 +1664,6 @@ const server = Bun.serve(withCors({
           if (worktree) removeForkWorktree(workspace, childWorkspace, worktree.branch)
           return json({ error: "could not persist fork" }, 409)
         }
-        subscribers(childId)
         if (body.directive?.trim()) {
           const turn = beginUserTurn(childId, body.directive)
           emitTo(childId, { type: "message.user", text: body.directive })
@@ -1716,7 +1735,7 @@ const server = Bun.serve(withCors({
           },
           cancel() {
             if (heartbeat) clearInterval(heartbeat)
-            subscribers(sessionId).delete(selfController)
+            removeSubscriber(sessionId, selfController)
             notifyShellSessionChanged(sessionId)
           },
         })
@@ -1782,7 +1801,7 @@ const server = Bun.serve(withCors({
         const ac = running.get(sessionId)
         if (ac) ac.abort()
         else reconcileStaleRun(sessionId)
-        interjections.get(sessionId)?.clear()
+        interjections.delete(sessionId)
         return new Response(null, { status: 202, headers: corsHeaders(req) })
       }
 

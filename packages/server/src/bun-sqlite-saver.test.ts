@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { CHECKPOINT_HISTORY_LIMIT, cloneThreadAtCheckpoint, pruneCheckpointHistory } from "./bun-sqlite-saver.ts"
+import { BunSqliteSaver, CHECKPOINT_HISTORY_LIMIT, cloneThreadAtCheckpoint, pruneCheckpointHistory } from "./bun-sqlite-saver.ts"
 
 const dirs: string[] = []
 afterEach(() => {
@@ -11,6 +11,60 @@ afterEach(() => {
 })
 
 describe("checkpoint retention", () => {
+  test("serializes separate checkpoint puts inside the write queue", async () => {
+    let activeSerializers = 0
+    let maxActiveSerializers = 0
+    const serde = {
+      async dumpsTyped(value: unknown) {
+        activeSerializers++
+        maxActiveSerializers = Math.max(maxActiveSerializers, activeSerializers)
+        await Bun.sleep(10)
+        activeSerializers--
+        return ["json", JSON.stringify(value)] as [string, string]
+      },
+      async loadsTyped(_type: string, value: string) { return JSON.parse(value) },
+    }
+    const saver = new BunSqliteSaver(new Database(":memory:"), serde as any)
+
+    await Promise.all(Array.from({ length: 4 }, (_, i) => saver.put(
+      { configurable: { thread_id: `thread-${i}` } },
+      { v: 4, id: `checkpoint-${i}`, ts: "", channel_values: {}, channel_versions: {}, versions_seen: {} } as any,
+      {} as any,
+    )))
+
+    // One put serializes its checkpoint and metadata together; separate puts wait.
+    expect(maxActiveSerializers).toBe(2)
+  })
+
+  test("serializes pending-write batches and recovers after a queued failure", async () => {
+    let activeSerializers = 0
+    let maxActiveSerializers = 0
+    let rejectNext = true
+    const serde = {
+      async dumpsTyped(value: unknown) {
+        if (rejectNext) { rejectNext = false; throw new Error("serialization failed") }
+        activeSerializers++
+        maxActiveSerializers = Math.max(maxActiveSerializers, activeSerializers)
+        await Bun.sleep(10)
+        activeSerializers--
+        return ["json", JSON.stringify(value)] as [string, string]
+      },
+      async loadsTyped(_type: string, value: string) { return JSON.parse(value) },
+    }
+    const db = new Database(":memory:")
+    const saver = new BunSqliteSaver(db, serde as any)
+    const config = { configurable: { thread_id: "thread", checkpoint_id: "checkpoint" } }
+
+    await expect(saver.putWrites(config, [["messages", { failed: true }]] as any, "failed-task")).rejects.toThrow("serialization failed")
+    await Promise.all([
+      saver.putWrites(config, [["messages", { batch: 1 }]] as any, "task-1"),
+      saver.putWrites(config, [["messages", { batch: 2 }]] as any, "task-2"),
+    ])
+
+    expect(maxActiveSerializers).toBe(1)
+    expect((db.query("SELECT count(*) AS n FROM writes").get() as { n: number }).n).toBe(2)
+  })
+
   test("keeps a bounded resumable tail and removes writes for pruned checkpoints", () => {
     const dir = mkdtempSync(join(tmpdir(), "chunky-checkpoints-"))
     dirs.push(dir)

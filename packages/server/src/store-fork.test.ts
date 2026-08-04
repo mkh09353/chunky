@@ -90,3 +90,21 @@ test("listShell aggregates workspaces as compact summaries sorted by activity", 
     "createdAt", "incognito", "lastActivity", "sessionId", "title", "workspace",
   ])
 })
+
+test("recent history returns only the newest rows in chronological order", () => {
+  const id = `recent-history-${crypto.randomUUID()}`
+  Store.createSession(id)
+  for (let i = 0; i < 5; i++) Store.appendEvent(id, { type: "message.delta", text: String(i) })
+
+  expect(Store.recentHistoryWithSeq(id, 3)).toEqual([
+    { seq: 2, event: { type: "message.delta", text: "2" } },
+    { seq: 3, event: { type: "message.delta", text: "3" } },
+    { seq: 4, event: { type: "message.delta", text: "4" } },
+  ])
+  expect(Store.recentHistoryWithSeq(id, 0)).toEqual([])
+  expect(Store.recentHistoryWithSeq(id, -2)).toEqual([])
+  expect(Store.recentHistoryWithSeq(id, 2.9)).toEqual([
+    { seq: 3, event: { type: "message.delta", text: "3" } },
+    { seq: 4, event: { type: "message.delta", text: "4" } },
+  ])
+})

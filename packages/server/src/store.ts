@@ -174,6 +174,7 @@ const stmtNextSeq = db.query("SELECT COALESCE(MAX(seq), -1) + 1 AS n FROM events
 const stmtInsertEvent = db.query("INSERT INTO events (session_id, seq, json) VALUES (?, ?, ?)")
 const stmtHistory = db.query("SELECT json FROM events WHERE session_id = ? ORDER BY seq ASC")
 const stmtHistoryWithSeq = db.query("SELECT seq, json FROM events WHERE session_id = ? ORDER BY seq ASC")
+const recentHistorySql = "SELECT seq, json FROM events WHERE session_id = ? ORDER BY seq DESC LIMIT ?"
 const stmtLastSeq = db.query("SELECT MAX(seq) AS n FROM events WHERE session_id = ?")
 const stmtNextTurn = db.query("SELECT COALESCE(MAX(turn_index), 0) + 1 AS n FROM session_turns WHERE session_id = ?")
 const stmtInsertTurn = db.query("INSERT INTO session_turns (session_id, turn_index, start_event_seq, snapshot_commit, user_text, status, created_at) VALUES (?, ?, ?, ?, ?, 'running', ?)")
@@ -379,6 +380,14 @@ export const Store = {
       ? conn.query("SELECT seq, json FROM events WHERE session_id=? ORDER BY seq ASC").all(sessionId)
       : stmtHistoryWithSeq.all(sessionId)) as Array<{ seq: number; json: string }>
     return rows.map((row) => ({ seq: row.seq, event: JSON.parse(row.json) as AgentEvent }))
+  },
+
+  /** Read a bounded transcript tail without materializing older event rows. */
+  recentHistoryWithSeq(sessionId: string, limit: number): Array<{ seq: number; event: AgentEvent }> {
+    const boundedLimit = Math.max(0, Math.floor(limit))
+    if (boundedLimit === 0) return []
+    const rows = backend(sessionId).query(recentHistorySql).all(sessionId, boundedLimit) as Array<{ seq: number; json: string }>
+    return rows.reverse().map((row) => ({ seq: row.seq, event: JSON.parse(row.json) as AgentEvent }))
   },
 
   titleOf(sessionId: string): string | null {

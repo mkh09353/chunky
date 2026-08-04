@@ -27,8 +27,89 @@ async function checkout(repo:string, org:string, number:number, head:string, tok
  if(!base){ const dir=join(stateDir(),"github",org,repo.split("/").pop()!); mkdirSync(join(stateDir(),"github",org),{recursive:true}); const url=token?`https://x-access-token:${encodeURIComponent(token)}@github.com/${repo}.git`:`https://github.com/${repo}.git`; await git(stateDir(),["clone",url,dir]); addRepo(dir); base=dir }
  await git(base,["fetch","origin",head]); const path=join(stateDir(),"github","worktrees",`${repo.split("/").pop()}-pr${number}`); mkdirSync(join(stateDir(),"github","worktrees"),{recursive:true}); if(existsSync(path)) await git(base,["worktree","remove","--force",path]).catch(()=>{}); await git(base,["worktree","add","--force",path,`origin/${head}`]); return {path,managed:true}
 }
-function objective(action:"resolve"|"review", pr:PrSummary, workdir:string):string { if(action==="resolve") return `Resolve every unresolved review thread on ${pr.repo}#${pr.number}. PR: ${pr.url}. Branch: ${pr.headRef}. Work in ${workdir}. Fetch the unresolved review threads with gh api graphql, address each comment with tested code changes, commit and push to the PR branch, reply to each thread explaining the fix and resolve it with the resolveReviewThread GraphQL mutation, then re-request review from the reviewers who left comments using gh api. Verify the changes and report the commit and review actions.`; return `Review ${pr.repo}#${pr.number}. PR: ${pr.url}. Branch: ${pr.headRef}. Work in ${workdir}. Study the diff against the base with gh pr diff, review correctness, bugs, regressions, and style, then leave review comments and a verdict with gh pr review (comment or approve; never request changes without concrete findings). Verify the review was submitted.` }
-export async function startPrAction(action:"resolve"|"review",pr:PrSummary):Promise<PrActionResponse>{ const cfg=getGithubConfig(); const c=await checkout(pr.repo.split("/")[1]!,pr.repo.split("/")[0]!,pr.number,pr.headRef,cfg?.token); const id=randomUUID(); Store.createSession(id, action==="resolve"?`Resolve PR comments: ${pr.repo.split("/")[1]}#${pr.number}`:`Review PR: ${pr.repo.split("/")[1]}#${pr.number}`,c.path); const now=Date.now(); const goal:Goal={sessionId:id,objective:objective(action,pr,c.path),status:"active",mode:"direct",createdAt:now,updatedAt:now,turns:0,maxTurns:12}; Store.putGoal(goal); emitToSession(id,{type:"goal.update",sessionId:id,goal:toSnapshot(goal),message:`◎ PR ${action} started — ${pr.repo}#${pr.number}`}); deliverToSession(id,{prompt:goalKickoffPrompt(goal),shown:goal.objective,from:"PR Reviews"}); linkPr(pr.repo,pr.number,{sessionId:id,clonePath:c.path,chunkyManaged:c.managed}); return {sessionId:id,repoId:repoId(c.path)} }
+function objective(action:"resolve"|"review", pr:PrSummary, workdir:string):string {
+  return `Resolve every unresolved review thread on ${pr.repo}#${pr.number}. PR: ${pr.url}. Branch: ${pr.headRef}. Work in ${workdir}. Fetch the unresolved review threads with gh api graphql, address each comment with tested code changes, commit and push to the PR branch, reply to each thread explaining the fix and resolve it with the resolveReviewThread GraphQL mutation, then re-request review from the reviewers who left the comments using gh api. Verify the changes and report the commit and review actions.`
+}
+
+export type ReviewPr = PrSummary & { baseRefName?: string }
+
+/** Build the review-only quad-panel orchestrator brief. */
+export function buildReviewObjective(pr: ReviewPr, workdir: string): string {
+  const base = pr.baseRefName || "main"
+  return `You are the ORCHESTRATOR ONLY for a four-reviewer PR panel. This is strictly REVIEW-ONLY: do not review the code yourself, do not fix anything, do not edit files, do not commit, and do not push. Your job is to scope the PR, launch all four independent reviewers in parallel using Chunky's delegation tools, collect every report, synthesize without inventing findings, and post the final review.
+
+PR scope (already resolved by the server): ${pr.repo}#${pr.number}
+URL: ${pr.url}
+Head branch: ${pr.headRef}
+Base branch: ${base}
+Workdir: ${workdir}
+Diff base: origin/${base}
+
+## Step 1 — scope
+
+Do not inspect or review the implementation yourself. First run \`git fetch origin ${base} --quiet\` best-effort (ignore failure), then \`git diff --stat origin/${base}...HEAD\` as a sanity check. If the diff is empty, record that the panel had no diff and stop without posting findings. Run \`ocr --version\` only to determine whether OCR is available; never install or reconfigure it. Use search_tools/search_skills to check whether the \`thermo-nuclear-code-quality-review\` skill is available. The PR identity above is authoritative; do not guess another PR or base.
+
+## Step 2 — launch all four reviewers IN PARALLEL
+
+In ONE turn, launch all four independent reviewers concurrently using Chunky's own delegation tools (\`spawn_thread\` with \`detach=true\` for each, or the workflow tool). Do not run one reviewer and wait before launching the others. Each reviewer is isolated and review-only. If a reviewer cannot launch, fails, or its tool/provider is unavailable, record that section as SKIPPED/FAILED with the error and continue; one failure never aborts the panel.
+
+### A. Runtime bug hunter (premium/highest capability, effort high)
+
+Launch with the premium/highest-capability configured model and \`effort: high\`. Prompt it:
+
+“Find reproducible bugs caused by this PR's changes, diffing \`origin/${base}...HEAD\` (and any visible uncommitted changes). You MUST attempt to reproduce every suspected bug at runtime before reporting it. Read project instructions for how to run the app and tests, inspect the full diff and risky paths (edge cases, permissions, state transitions, async flows), and exercise each suspected path with the most economical runtime probe available. Discard anything you could not reproduce. A high-severity suspicion that could not be reproduced may appear separately as ‘Suspected (not reproduced)’ with evidence and why reproduction was impossible. Review-only: do not edit, fix, commit, or push.
+
+Be economical with probes: prefer one well-chosen probe over many narrow checks, combine independent checks, and never re-fetch unchanged state. Investigate as deeply as warranted, but keep each probe cheap and capture exact commands and output as evidence.
+
+Report every reproduced bug in this format: **Title** — severity (blocker/major/minor) — file:line — exact reproduction steps — observed vs expected — evidence. If none are reproduced, say so and list what you exercised.”
+
+### B. Thermo-nuclear quality
+
+Launch a reviewer that first uses \`search_skills\` for \`thermo-nuclear-code-quality-review\`, then loads \`thermo-nuclear-code-quality-review\` with \`load_skill\`. Apply that skill exactly as written to the diff against \`origin/${base}\`. Preserve its verdict, prioritized findings, approval bar, and presumptive blockers. This reviewer is read-only and must not modify files. If the skill is unavailable, skip this section with a clear note; do not substitute an invented quality review.
+
+### C. Codex review (real model diversity)
+
+Launch with \`spawn_thread\` using \`provider: "codex"\` and \`effort: high\`. Ask for an independent full review of \`origin/${base}...HEAD\` for correctness, contracts, error handling, concurrency, security, and regressions. Require findings with file:line and severity, plus evidence and a verdict. If the codex provider is unavailable or spawn errors, mark this section skipped with the exact safe error and continue.
+
+### D. OCR
+
+Only if \`ocr --version\` succeeded in Step 1, launch the fourth reviewer. It must run exactly:
+\`ocr review --audience agent --from origin/${base} --to HEAD\`
+It must classify findings as High/Medium/Low, discard low-confidence noise, and return file:line evidence. It must never install or reconfigure anything and must not modify files. If OCR was unavailable, skip it with this install hint: \`npm i -g @alibaba-group/open-code-review\`.
+
+## Step 3 — collect
+
+Wait for all four reviewer results. A failed or skipped reviewer is a failed/skipped section, not a reason to abort. Keep each report intact enough to preserve its evidence, verdict, and coverage limitations.
+
+## Step 4 — synthesize and post
+
+Write the final PR review body with the individual reviewer sections FIRST:
+1. Runtime bug hunt
+2. Thermo-nuclear quality
+3. Codex review
+4. OCR
+
+Then add this highlighted callout as the final synthesis:
+
+---
+## 🎯 CROSS-CUTTING SUMMARY
+
+> ### ⚡ Verdict: SHIP / FIX-FIRST / NEEDS-REWORK
+>
+> **🔴 Flagged by 2+ reviewers (highest confidence)** — list shared root causes first with reviewer attribution.
+>
+> **Top finding per reviewer** — one top finding for bug hunter, thermo-nuclear, Codex, and OCR (or SKIPPED/FAILED).
+>
+> **⚠️ Coverage caveats** — explicitly list skipped/failed reviewers and any uncommitted or otherwise uncovered changes.
+
+Immediately below it, add \`### 📋 Detailed findings\`: dedupe by root cause, not wording; severity-order findings as 🔴 Blocker, 🟠 Major, 🟡 Minor, 🔵 Nit; order ties by number of reviewers. Use stable numbering. Include an index table with number, severity, finding, location, and flagged-by attribution. Add detail blocks only for blockers and majors, with location, what breaks, evidence pointer, and a suggested fix described only (never applied). Do not invent findings: every item must trace to a reviewer section. Minors and nits remain one-line table entries. If there are no actionable findings, say so instead of padding the report.
+
+Finally post the review with:
+\`gh pr review ${pr.number} --repo ${pr.repo}\`
+Use \`--approve\` only for verdict SHIP. Use \`--comment\` for FIX-FIRST or NEEDS-REWORK. NEVER use \`--request-changes\` unless there is a concrete high-confidence blocker finding that was either reproduced by the bug hunter or flagged by at least two reviewers. The full report, including all reviewer sections and the final synthesis, must also remain in this session as the final message. Do not apply fixes afterward. This session is review-only.`
+}
+
+export async function startPrAction(action:"resolve"|"review",pr:PrSummary):Promise<PrActionResponse>{ const cfg=getGithubConfig(); const c=await checkout(pr.repo.split("/")[1]!,pr.repo.split("/")[0]!,pr.number,pr.headRef,cfg?.token); const id=randomUUID(); Store.createSession(id, action==="resolve"?`Resolve PR comments: ${pr.repo.split("/")[1]}#${pr.number}`:`Review PR: ${pr.repo.split("/")[1]}#${pr.number}`,c.path); const now=Date.now(); const goal:Goal={sessionId:id,objective:action === "review" ? buildReviewObjective(pr as ReviewPr, c.path) : objective(action,pr,c.path),status:"active",mode:"direct",createdAt:now,updatedAt:now,turns:0,maxTurns:12}; Store.putGoal(goal); emitToSession(id,{type:"goal.update",sessionId:id,goal:toSnapshot(goal),message:`◎ PR ${action} started — ${pr.repo}#${pr.number}`}); deliverToSession(id,{prompt:goalKickoffPrompt(goal),shown:goal.objective,from:"PR Reviews"}); linkPr(pr.repo,pr.number,{sessionId:id,clonePath:c.path,chunkyManaged:c.managed}); return {sessionId:id,repoId:repoId(c.path)} }
 export interface ReapCandidate { key: string; link: PrLink }
 export function reapDecisions(entries: ReapCandidate[], open: Set<string>): ReapCandidate[] {
   return entries.filter(({key, link}) => !open.has(key) && link.chunkyManaged)

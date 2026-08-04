@@ -55,13 +55,7 @@ In ONE turn, launch all four independent reviewers concurrently using Chunky's o
 
 ### A. Runtime bug hunter (premium/highest capability, effort high)
 
-Launch with the premium/highest-capability configured model and \`effort: high\`. Prompt it:
-
-“Find reproducible bugs caused by this PR's changes, diffing \`origin/${base}...HEAD\` (and any visible uncommitted changes). You MUST attempt to reproduce every suspected bug at runtime before reporting it. Read project instructions for how to run the app and tests, inspect the full diff and risky paths (edge cases, permissions, state transitions, async flows), and exercise each suspected path with the most economical runtime probe available. Discard anything you could not reproduce. A high-severity suspicion that could not be reproduced may appear separately as ‘Suspected (not reproduced)’ with evidence and why reproduction was impossible. Review-only: do not edit, fix, commit, or push.
-
-Be economical with probes: prefer one well-chosen probe over many narrow checks, combine independent checks, and never re-fetch unchanged state. Investigate as deeply as warranted, but keep each probe cheap and capture exact commands and output as evidence.
-
-Report every reproduced bug in this format: **Title** — severity (blocker/major/minor) — file:line — exact reproduction steps — observed vs expected — evidence. If none are reproduced, say so and list what you exercised.”
+Launch with the premium/highest-capability configured model and \`effort: high\`. First use \`search_skills\` and \`load_skill\` for \`runtime-bug-hunter\`, then apply it to the diff against \`origin/${base}...HEAD\`. If the skill is unavailable, use this fallback: find bugs caused by the diff, reproduce each at runtime before reporting, discard unreproduced findings, and report exact steps, observed-vs-expected behavior, evidence, severity, and file:line. Review-only; do not edit, fix, commit, or push.
 
 ### B. Thermo-nuclear quality
 
@@ -69,7 +63,7 @@ Launch a reviewer that first uses \`search_skills\` for \`thermo-nuclear-code-qu
 
 ### C. Codex review (real model diversity)
 
-Launch with \`spawn_thread\` using \`provider: "codex"\` and \`effort: high\`. Ask for an independent full review of \`origin/${base}...HEAD\` for correctness, contracts, error handling, concurrency, security, and regressions. Require findings with file:line and severity, plus evidence and a verdict. If the codex provider is unavailable or spawn errors, mark this section skipped with the exact safe error and continue.
+Launch with \`spawn_thread\` using \`provider: "codex"\` and \`effort: high\`. First use \`search_skills\` and \`load_skill\` for \`chunky-code-review\`, then apply it to \`origin/${base}...HEAD\`. If the skill is unavailable, independently review correctness, API contracts, error handling, concurrency, security, regressions, and test coverage; require severity, file:line, concrete evidence, and an explicit verdict. If the codex provider is unavailable or spawn errors, mark this section skipped with the exact safe error and continue.
 
 ### D. OCR
 

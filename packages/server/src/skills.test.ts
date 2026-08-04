@@ -14,6 +14,7 @@ import {
   projectAncestors,
   searchSkills,
 } from "./skills.ts"
+import { saveDisabledSkills } from "./settings.ts"
 import { loadSkillTool, searchSkillsTool } from "./tools/skills.ts"
 
 const ROOT = join(tmpdir(), `chunky-skills-test-${process.pid}`)
@@ -233,5 +234,33 @@ describe("tools", () => {
     expect(msg).toContain("No skills matching")
     const empty = formatSearchResults([])
     expect(empty).toMatch(/No skills discovered/)
+  })
+})
+
+describe("bundled skills", () => {
+  test("discover and load bundled skills", () => {
+    const found = discoverSkills(process.cwd()).filter((s) => s.sourceLabel === "built-in")
+    expect(found.map((s) => s.name)).toEqual(["chunky-code-review", "runtime-bug-hunter"])
+    for (const skill of found) {
+      const loaded = loadSkill(process.cwd(), skill.name, "bundled")
+      expect("error" in loaded).toBe(false)
+      if (!("error" in loaded)) expect(loaded.body.length).toBeGreaterThan(20)
+    }
+  })
+
+  test("bundled skills obey disabledSkills", () => {
+    const old = process.env.CHUNKY_SETTINGS
+    const file = join(tmpdir(), `chunky-bundled-${Date.now()}.json`)
+    process.env.CHUNKY_SETTINGS = file
+    try {
+      saveDisabledSkills(["runtime-bug-hunter"])
+      expect(discoverSkills(process.cwd()).some((s) => s.name === "runtime-bug-hunter")).toBe(false)
+      expect(discoverSkills(process.cwd(), { includeDisabled: true }).find((s) => s.name === "runtime-bug-hunter")?.enabled).toBe(false)
+      saveDisabledSkills([])
+      expect(discoverSkills(process.cwd()).some((s) => s.name === "runtime-bug-hunter")).toBe(true)
+    } finally {
+      if (old === undefined) delete process.env.CHUNKY_SETTINGS; else process.env.CHUNKY_SETTINGS = old
+      rmSync(file, { force: true })
+    }
   })
 })

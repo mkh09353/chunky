@@ -4,7 +4,7 @@
 // `search_skills` / `load_skill` tools; skill bodies arrive as tool output when
 // explicitly loaded. Default behavior never auto-loads.
 //
-// Locations (user → managed repos → project; project wins on name collision):
+// Locations (built-in → user → managed repos → project; later scopes override):
 //   User:     ~/.chunky/skills, ~/.agents/skills, ~/.claude/skills, ~/.codex/skills
 //   Managed:  skill-repos/<id>/ clones registered via /skills or manage_skill_repos
 //   Project:  .chunky/skills, .agents/skills, .claude/skills, .codex/skills
@@ -40,6 +40,9 @@ const PROJECT_SKILL_ROOTS = [
   ".claude/skills",
   ".codex/skills",
 ] as const
+
+// Resolve bundled skills relative to the server package, never process.cwd().
+const BUNDLED_SKILLS_ROOT = join(import.meta.dir, "..", "skills")
 
 export type SkillSource = "user" | "project" | "repo"
 
@@ -304,6 +307,15 @@ export function discoverSkills(workspace: string, options: { includeDisabled?: b
     }
     byName.set(meta.name, { ...meta, enabled })
     seenReal.add(real)
+  }
+
+  // The protocol has no builtin source value, so expose bundled skills as repo
+  // entries with a distinguishing label. They are the lowest-precedence scope.
+  for (const file of findSkillFiles(BUNDLED_SKILLS_ROOT)) {
+    const meta = loadMetaFromFile(file, "repo", "built-in")
+    const disabled = (loadSettings().disabledSkills ?? []).includes(meta?.name ?? "")
+    if (disabled && !options.includeDisabled) continue
+    add(meta, false, !disabled)
   }
 
   const home = homedir()

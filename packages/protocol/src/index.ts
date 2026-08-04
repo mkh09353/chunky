@@ -151,6 +151,9 @@ export interface CreateSessionResponse {
   sessionId: string
 }
 export interface ServerInfoResponse { workspace: string }
+/** POST CompactRequest -> { ok: boolean } */
+export interface CompactRequest { hint?: string }
+
 export interface SendMessageRequest {
   text: string
   /** Send even if the cache guard would block (the user confirmed the re-send). */
@@ -520,6 +523,8 @@ export const ROUTES = {
   // POST SendMessageRequest -> 202, or 409 SendBlockedResponse when the cache
   // guard blocks (resend with force: true after the user confirms).
   sendMessage: (id: string) => `/api/sessions/${id}/messages`,
+  // POST CompactRequest -> { ok: boolean }
+  compactSession: (id: string) => `/api/sessions/${id}/compact`,
   queueEntry: (sessionId: string, entryId: string) => `/api/sessions/${sessionId}/queue/${entryId}`,
   promoteQueueEntry: (sessionId: string, entryId: string) => `/api/sessions/${sessionId}/queue/${entryId}/promote`,
   // GET -> CacheStatusResponse. Would a send right now re-send a cold cache?

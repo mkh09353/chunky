@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test"
 import { HumanMessage, AIMessage, ToolMessage, RemoveMessage } from "@langchain/core/messages"
-import { cleanSummary, CHUNKY_COMPACTION_PROMPT, MIN_SUMMARY_CHARS, COMPACTION_TRIGGER_TOKENS, COMPACTION_KEEP_MESSAGES, chunkyCompactionMiddleware } from "./compaction.ts"
+import { cleanSummary, CHUNKY_COMPACTION_PROMPT, MIN_SUMMARY_CHARS, COMPACTION_TRIGGER_TOKENS, COMPACTION_KEEP_MESSAGES, chunkyCompactionMiddleware, requestCompaction, pendingCompaction } from "./compaction.ts"
 
 const good = `<summary>${"A useful compacted conversation record. ".repeat(12)}</summary>`
 const big = (count: number, prefix = "message", chars = 44_000) => Array.from({ length: count }, (_, i) => new HumanMessage(`${prefix} ${i} ${"x".repeat(chars)}`))
@@ -15,6 +15,20 @@ describe("Chunky compaction", () => {
     expect(CHUNKY_COMPACTION_PROMPT).toContain("prior compaction summary")
     expect(CHUNKY_COMPACTION_PROMPT).toContain("recall query")
     expect(CHUNKY_COMPACTION_PROMPT).toContain("Do NOT call tools")
+  })
+
+  test("forced compaction injects hint and clears pending state", async () => {
+    requestCompaction("force-session", "focus on deployment")
+    let prompt = ""
+    await run({ invoke: async (value: string) => { prompt = value; return { content: good } } }, big(16), { configurable: { thread_id: "force-session" } })
+    expect(prompt).toContain("**User-provided context for this compaction:** focus on deployment")
+    expect(pendingCompaction("force-session")).toBe(false)
+  })
+
+  test("forced compaction skips trivial history and clears pending state", async () => {
+    requestCompaction("tiny-session")
+    await run({ invoke: async () => ({ content: good }) }, [new HumanMessage("tiny")], { configurable: { thread_id: "tiny-session" } })
+    expect(pendingCompaction("tiny-session")).toBe(false)
   })
 
   test("triggers at/above the fixed token estimate and not below", async () => {

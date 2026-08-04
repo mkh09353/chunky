@@ -776,6 +776,15 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
         void doRewind()
         return
       }
+      if (command === "/compact" || command.startsWith("/compact ")) {
+        const sid = sessionIdRef.current
+        if (mode !== "live" || !sid) { printLine("Compaction needs the live server."); return }
+        const hint = command.slice("/compact".length).trim()
+        void fetch(baseUrl + ROUTES.compactSession(sid), { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(hint ? { hint } : {}) })
+          .then(() => printLine("Compaction requested — runs before the next model call"))
+          .catch(() => printLine("Could not request compaction."))
+        return
+      }
       const images = attachmentsRef.current
       setAttachments([]) // consume the pasted images with this message
       const shownText = display ?? text

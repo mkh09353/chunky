@@ -1,11 +1,15 @@
 import { HumanMessage, RemoveMessage, ToolMessage, AIMessage } from "@langchain/core/messages"
 import { REMOVE_ALL_MESSAGES } from "@langchain/langgraph"
 import { createMiddleware, countTokensApproximately } from "langchain"
+import { sessionForThread } from "./thread-context.ts"
 
 export const COMPACTION_TRIGGER_TOKENS = 175_000
 export const COMPACTION_KEEP_MESSAGES = 15
 export const MIN_SUMMARY_CHARS = 200
 const RETRY_DELAY_MS = 25
+const pendingCompactions = new Map<string, string | undefined>()
+export function requestCompaction(sessionId: string, hint?: string): void { pendingCompactions.set(sessionId, hint?.trim() || undefined) }
+export function pendingCompaction(sessionId: string): boolean { return pendingCompactions.has(sessionId) }
 
 export const CHUNKY_COMPACTION_PROMPT = `You are compacting a Chunky agent conversation for a successor assistant. Produce a faithful, tight summary that preserves the information needed to continue the work.
 
@@ -72,12 +76,17 @@ export function chunkyCompactionMiddleware({ model }: { model: any }) {
     name: "ChunkyCompactionMiddleware",
     beforeModel: async (state: { messages: any[] }, runtime: any) => {
       const messages = state.messages
+      const threadId = typeof runtime?.configurable?.thread_id === "string" ? runtime.configurable.thread_id : undefined
+      const sessionId = sessionForThread(threadId) ?? threadId
+      const force = sessionId ? pendingCompactions.has(sessionId) : false
+      const hint = sessionId ? pendingCompactions.get(sessionId) : undefined
       const total = await countTokensApproximately(messages)
-      if (total < COMPACTION_TRIGGER_TOKENS) return
+      if (total < COMPACTION_TRIGGER_TOKENS && !force) return
       const boundary = tailBoundary(messages)
-      if (boundary <= 0) return
+      if (boundary <= 0) { if (sessionId) pendingCompactions.delete(sessionId); return }
       const oldMessages = messages.slice(0, boundary)
-      const prompt = `${CHUNKY_COMPACTION_PROMPT}\n\n<messages>\n${oldMessages.map((m) => `${m._getType?.() ?? "message"}: ${contentOf(m)}`).join("\n")}\n</messages>`
+      const hintText = hint ? `\n\n**User-provided context for this compaction:** ${hint} — ensure it is prominently addressed in the relevant sections.` : ""
+      const prompt = `${CHUNKY_COMPACTION_PROMPT}${hintText}\n\n<messages>\n${oldMessages.map((m) => `${m._getType?.() ?? "message"}: ${contentOf(m)}`).join("\n")}\n</messages>`
       let cleaned: { text: string; degenerate: boolean } | undefined
       let lastReason = "summary was empty or malformed"
       for (let attempt = 0; attempt < 2; attempt++) {
@@ -91,12 +100,13 @@ export function chunkyCompactionMiddleware({ model }: { model: any }) {
         if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, RETRY_DELAY_MS))
       }
       if (!cleaned || cleaned.degenerate) {
-        const sessionId = runtime?.configurable?.thread_id
         const emit = runtime?.configurable?.emitSessionEvent
         if (typeof emit === "function" && typeof sessionId === "string") emit({ type: "context.compaction_failed", sessionId, reason: lastReason })
         console.warn(`[chunky] compaction failed: ${lastReason}`)
+        if (sessionId) pendingCompactions.delete(sessionId)
         return
       }
+      if (sessionId) pendingCompactions.delete(sessionId)
       const summary = new HumanMessage({ id: crypto.randomUUID(), content: cleaned.text, additional_kwargs: { lc_source: "summarization" } })
       return { messages: [new RemoveMessage({ id: REMOVE_ALL_MESSAGES }), summary, ...messages.slice(boundary)] }
     },

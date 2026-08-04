@@ -52,6 +52,18 @@ describe("recall transcript helpers", () => {
     expect(filterRecallEvents(rows, { seqStart: 12, seqEnd: 12 })).toMatchObject([{ seq: 12 }])
   })
 
+  test("composes tool and query filters", () => {
+    const rows = [row(1, { type: "tool.start", id: "a", name: "edit", input: { path: "a.ts" } }), row(2, { type: "tool.end", id: "a", ok: true, output: "ok" }), row(3, { type: "tool.start", id: "b", name: "write", input: { file_path: "b.ts" } })]
+    expect(filterRecallEvents(rows, { tool: "edit", query: "a.ts" })).toHaveLength(1)
+    expect(filterRecallEvents(rows, { speaker: "tool" })).toHaveLength(3)
+  })
+
+  test("filters by turn boundaries and before-compaction sequence", () => {
+    const rows = [row(1, { type: "message.user", text: "old" }), row(2, { type: "message.delta", text: "answer" }), row(3, { type: "context.compacted", sessionId: "s" }), row(4, { type: "message.user", text: "new" })]
+    expect(filterRecallEvents(rows, { seqStart: 1, seqEnd: 2 })).toHaveLength(2)
+    expect(filterRecallEvents(rows, { beforeSeq: 3 })).toHaveLength(2)
+  })
+
   test("truncates individual events and caps total output", () => {
     const long = "x".repeat(RANGE_EVENT_MAX + 20)
     expect(renderRecallEvents([row(1, { type: "message.user", text: long })], false)).toContain("…")

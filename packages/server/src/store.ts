@@ -344,6 +344,11 @@ export const Store = {
     conn.query("UPDATE session_turns SET end_event_seq=?,anchor_checkpoint_id=?,status='complete',completed_at=? WHERE session_id=? AND turn_index=?").run(last.n, anchorCheckpointId, Date.now(), sessionId, turn)
   },
 
+  /** Read-only turn boundaries used by transcript recall filters. */
+  turns(sessionId: string): Array<{ turnIndex: number; startEventSeq: number; endEventSeq: number | null }> {
+    return backend(sessionId).query("SELECT turn_index AS turnIndex, start_event_seq AS startEventSeq, end_event_seq AS endEventSeq FROM session_turns WHERE session_id=? ORDER BY turn_index ASC").all(sessionId) as Array<{ turnIndex: number; startEventSeq: number; endEventSeq: number | null }>
+  },
+
   rewindPoints(sessionId: string): RewindPoint[] {
     return (backend(sessionId).query("SELECT turn_index,created_at,user_text,snapshot_commit,anchor_checkpoint_id FROM session_turns WHERE session_id=? ORDER BY turn_index DESC").all(sessionId) as Array<{ turn_index: number; created_at: number; user_text: string; snapshot_commit: string | null; anchor_checkpoint_id: string | null }>).map((r) => ({
       turn: r.turn_index, createdAt: r.created_at, userText: r.user_text,

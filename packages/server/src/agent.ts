@@ -75,6 +75,27 @@ import { remember } from "./tools/remember.ts"
 import { review } from "./tools/review.ts"
 import { CODEX_API_ENDPOINT, codexRequestHeaders } from "./providers/codex.ts"
 
+const EDIT_TOOLS = new Set(["edit", "write", "apply_patch", "hashline_edit", "hashline_write"])
+export function editedFilesForSession(sessionId: string): string[] {
+  const found: string[] = []
+  const seen = new Set<string>()
+  const starts = new Map<string, unknown>()
+  const history = Store.historyWithSeq(sessionId)
+  for (const { event } of history) {
+    if (event.type === "tool.start" && EDIT_TOOLS.has(event.name)) starts.set(event.id, event.input)
+    if (event.type !== "tool.end" || !event.ok || !starts.has(event.id)) continue
+    const paths: string[] = []
+    const walk = (value: unknown, key = "") => {
+      if (typeof value === "string" && /^(path|file|file_path|filename)$/i.test(key)) paths.push(value)
+      else if (Array.isArray(value)) value.forEach((v) => walk(v, key))
+      else if (value && typeof value === "object") Object.entries(value).forEach(([k, v]) => walk(v, k))
+    }
+    walk(starts.get(event.id))
+    for (const path of paths) if (!seen.has(path)) { seen.add(path); found.push(path) }
+  }
+  return found.slice(-30)
+}
+
 export function makePostCompactionReminder() {
   let handledSummaryId: string | undefined
   return async function postCompactionReminder(
@@ -89,6 +110,7 @@ export function makePostCompactionReminder() {
         detachedSpawns: runningDetachedSpawnSummaries(sessionId),
         tasks: snapshotSessionTasks(sessionId).map((task) => ({ taskId: task.taskId, status: task.status, command: task.command.split(/\r?\n/, 1)[0] })),
         todos: Store.getTodos(sessionId).map((todo) => ({ id: todo.id, content: todo.content, status: todo.status, assignee: todo.assignee })),
+        editedFiles: editedFilesForSession(sessionId).map((path) => ({ path })),
       }
     },
   ) {
@@ -99,6 +121,8 @@ export function makePostCompactionReminder() {
     if (typeof sessionId !== "string") return
     handledSummaryId = summaryId
     const emitSessionEvent = runtime.configurable?.emitSessionEvent
+    // run.ts supplies emitSessionEvent: emit; the server emitter persists context.compacted
+    // through Store.appendEvent (only progress/rewind/background/failure are live-only).
     if (typeof emitSessionEvent === "function") emitSessionEvent({ type: "context.compacted", sessionId })
     const removals = state.messages
       .filter((message) => message?.additional_kwargs?.lc_source === "chunky-system-reminder" && message.id)

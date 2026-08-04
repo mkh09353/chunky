@@ -10,6 +10,7 @@ export interface ReminderSidekick { seat: string; brief: string }
 export interface ReminderChild { threadId: string; title: string }
 export interface ReminderDetachedSpawn { id: string; title: string; status: string }
 export interface ReminderTodo { id: string; content: string; status: string; assignee?: string }
+export interface ReminderEditedFile { path: string }
 export interface LiveSessionState {
   goal?: ReminderGoal
   sidekicks?: ReminderSidekick[]
@@ -17,6 +18,7 @@ export interface LiveSessionState {
   detachedSpawns?: ReminderDetachedSpawn[]
   tasks?: ReminderTask[]
   todos?: ReminderTodo[]
+  editedFiles?: ReminderEditedFile[]
 }
 
 const oneLine = (value: string, max = 140) => {
@@ -37,6 +39,7 @@ export function formatSystemReminder(state: LiveSessionState): string | null {
   if (state.children?.length) lines.push("## Running Child Threads", ...state.children.map((c) => `- ${safe(c.threadId, 80)} — ${safe(c.title)}`))
   if (state.detachedSpawns?.length) lines.push("## Detached Child Threads", ...state.detachedSpawns.map((c) => `- ${safe(c.id, 80)} (${safe(c.status)}) — ${safe(c.title)}`))
   if (state.tasks?.length) lines.push("## Background Tasks", ...state.tasks.map((t) => `- ${safe(t.taskId, 80)} (${safe(t.status)}) — ${safe(t.command)}`))
+  if (state.editedFiles?.length) lines.push("## Files edited this session:", ...state.editedFiles.map((f) => `- ${safe(f.path, 500)}`))
   if (!lines.length) return null
   return `<system-reminder>\n${lines.slice(0, 38).join("\n")}\n</system-reminder>`
 }

@@ -119,9 +119,16 @@ export function recallMatcher(query: string): (text: string) => boolean {
  * because its first fragment precedes the requested starting sequence. */
 export function filterRecallEvents(
   source: TranscriptRow[],
-  { query, seqStart, seqEnd }: { query?: string; seqStart?: number; seqEnd?: number },
+  { query, seqStart, seqEnd, tool, speaker, turnStart, turnEnd, beforeSeq }: { query?: string; seqStart?: number; seqEnd?: number; tool?: string; speaker?: string; turnStart?: number; turnEnd?: number; beforeSeq?: number },
 ): TranscriptRow[] {
   let rows = coalesceRecallDeltas(source)
+  if (beforeSeq != null) rows = rows.filter((row) => row.seq < beforeSeq)
+  if (tool) {
+    const starts = source.flatMap((x) => x.event.type === "tool.start" ? [{ id: x.event.id, name: x.event.name }] : [])
+    const names = new Map(starts.map((x) => [x.id, x.name]))
+    rows = rows.filter((row) => row.event.type === "tool.start" ? row.event.name === tool : row.event.type === "tool.end" && names.get(row.event.id) === tool)
+  }
+  if (speaker) rows = rows.filter((row) => { const r = recallEventText(row.event); return r?.speaker === speaker || (speaker === "tool" && r?.speaker.startsWith("tool ")) })
   if (seqStart != null) rows = rows.filter((row) => (row.endSeq ?? row.seq) >= seqStart && (seqEnd == null || row.seq <= seqEnd))
   if (query?.trim()) {
     const matches = recallMatcher(query.trim())
@@ -135,8 +142,8 @@ export function filterRecallEvents(
 
 export const recall = tool(
   async (
-    { query, seq_start, seq_end, session_id, limit }: {
-      query?: string; seq_start?: number; seq_end?: number; session_id?: string; limit?: number
+    { query, seq_start, seq_end, session_id, limit, tool, speaker, turn_start, turn_end, before_compaction }: {
+      query?: string; seq_start?: number; seq_end?: number; session_id?: string; limit?: number; tool?: string; speaker?: string; turn_start?: number; turn_end?: number; before_compaction?: boolean
     },
     config?: unknown,
   ) => {
@@ -152,7 +159,12 @@ export const recall = tool(
     if (!Store.exists(targetSession)) return `error: unknown session "${targetSession}" — call list_sessions to find a valid id.`
 
     const pageSize = Math.max(1, Math.min(Math.floor(limit ?? DEFAULT_LIMIT), MAX_LIMIT))
-    let rows = filterRecallEvents(Store.historyWithSeq(targetSession), { query, seqStart: seq_start, seqEnd: seq_end })
+    const history = Store.historyWithSeq(targetSession)
+    const compactSeq = history.findLast((row) => row.event.type === "context.compacted")?.seq
+    const turns = Store.turns(targetSession)
+    const turnStartSeq = turn_start != null ? turns.find((t: any) => t.turnIndex === turn_start)?.startEventSeq : undefined
+    const turnEndSeq = turn_end != null ? turns.find((t: any) => t.turnIndex === turn_end)?.endEventSeq : undefined
+    let rows = filterRecallEvents(history, { query, seqStart: turnStartSeq ?? seq_start, seqEnd: turnEndSeq ?? seq_end, tool, speaker, beforeSeq: before_compaction ? compactSeq : undefined })
     const total = rows.length
     rows = rows.slice(0, pageSize)
     const mode = query?.trim() ? "Search results" : "Transcript"
@@ -164,13 +176,18 @@ export const recall = tool(
     description:
       "Search or page the durable session transcript, especially to retrieve context from before compaction. " +
       "Use query for case-insensitive substring/regex-lite search; results include seq numbers, then use seq_start and seq_end to read a range. " +
-      "Optionally pass session_id to inspect another session or sidekick transcript. Output is capped; narrow queries/ranges for more detail.",
+      "Optionally filter by tool, speaker, turn_start/turn_end, or before_compaction; filters compose with query and seq ranges. Output is capped; narrow queries/ranges for more detail.",
     schema: z.object({
       query: z.string().optional().describe("Case-insensitive text or regex-lite search query."),
       seq_start: z.number().int().nonnegative().optional().describe("First event sequence number to read (inclusive)."),
       seq_end: z.number().int().nonnegative().optional().describe("Last event sequence number to read (inclusive)."),
       session_id: z.string().optional().describe("Session id; defaults to the current session."),
       limit: z.number().int().positive().optional().describe(`Maximum events returned (default ${DEFAULT_LIMIT}, max ${MAX_LIMIT}).`),
+      tool: z.string().optional().describe("Match tool.start/tool.end by tool name."),
+      speaker: z.enum(["user", "assistant", "reasoning", "tool"]).optional(),
+      turn_start: z.number().int().positive().optional(),
+      turn_end: z.number().int().positive().optional(),
+      before_compaction: z.boolean().optional().describe("Only events before the latest persisted context.compacted marker."),
     }).refine((value) => !!value.query?.trim() || value.seq_start != null, { message: "Provide query or seq_start." }),
   },
 )

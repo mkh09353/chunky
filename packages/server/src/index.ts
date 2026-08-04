@@ -32,6 +32,7 @@ import {
   type SessionSummary,
   type ShellSessionsResponse,
   type SessionDelta,
+  type CompactRequest,
   type PromoteQueueRequest,
   type PromoteQueueResult,
   type PrActionRequest,
@@ -67,6 +68,7 @@ import {
 } from "./providers/registry.ts"
 import { detectClaudeCredentials } from "./providers/anthropic-sdk.ts"
 import { AuthStore } from "./providers/auth-store.ts"
+import { requestCompaction } from "./compaction.ts"
 import { isMcpAuthorized, mcpConfig, startMcpAuthorization } from "./mcp-auth.ts"
 import { checkForUpdate, currentVersion, persistCheck, readPersistedCheck } from "./update/updater.ts"
 import { applyOnboardingMode, suggestedModes, ensureDefaultModes, saveCustomProvider } from "./onboarding.ts"
@@ -1017,6 +1019,7 @@ const server = Bun.serve(withCors({
       const sessionId = url.searchParams.get("sessionId") || undefined
       if (sessionId) {
         if (!Store.exists(sessionId)) return json({ error: "unknown session" }, 404)
+
         const sel = effectiveSessionSelection(sessionId)
         return json({ provider: sel.provider, model: sel.model ?? null, effort: sel.effort ?? null, speed: sel.speed ?? null })
       }
@@ -1591,12 +1594,19 @@ const server = Bun.serve(withCors({
     }
 
     // Match /api/sessions/:id/(events|messages|interrupt|goal|ship|cache)
-    const m = pathname.match(/^\/api\/sessions\/([^/]+)\/(events|messages|interrupt|goal|todos|ship|cache|rewind-points|rewind|fork)$/)
+    const m = pathname.match(/^\/api\/sessions\/([^/]+)\/(events|messages|interrupt|compact|goal|todos|ship|cache|rewind-points|rewind|fork)$/)
     if (m) {
       const [, sessionId, kind] = m
       // Accept any session that exists on disk (enables resume across restart),
       // not just ones created in this process.
       if (!Store.exists(sessionId)) return json({ error: "unknown session" }, 404)
+      if (kind === "compact" && req.method === "POST") {
+        const body = await req.json().catch(() => ({})) as CompactRequest
+        if (body.hint != null && typeof body.hint !== "string") return json({ error: "invalid hint" }, 400)
+        requestCompaction(sessionId, body.hint)
+        return json({ ok: true })
+      }
+
 
       if (kind === "rewind-points" && req.method === "GET") {
         return json({ points: Store.rewindPoints(sessionId) })

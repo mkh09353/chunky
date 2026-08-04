@@ -7,8 +7,9 @@ import type {
 import type { LoginInitiation, ProviderDef } from "./registry.ts"
 import type { ModelInfo } from "./models-catalog.ts"
 import { CHUNKY_USER_AGENT } from "./app-info.ts"
-import { existsSync, readFileSync, writeFileSync } from "node:fs"
+import { existsSync, readFileSync, statSync, writeFileSync } from "node:fs"
 import { homedir } from "node:os"
+import { delimiter, join } from "node:path"
 
 interface ClaudeAuthStatus {
   loggedIn?: boolean
@@ -19,6 +20,40 @@ interface ClaudeAuthStatus {
 export type ClaudeCredentialState = "ready" | "maybe" | "missing"
 export interface ClaudeCredentialDetection { state: ClaudeCredentialState; detail: string }
 
+export interface ClaudeExecutableOptions {
+  env?: NodeJS.ProcessEnv
+  home?: string
+  platform?: NodeJS.Platform
+  which?: (command: string) => string | null
+  isExecutableFile?: (path: string) => boolean
+}
+
+function defaultExecutableCheck(path: string): boolean {
+  try { return statSync(path).isFile() && (statSync(path).mode & 0o111) !== 0 } catch { return false }
+}
+
+/** Resolve Claude without relying on a shell profile (GUI apps have a sparse PATH). */
+export function resolveClaudeExecutable(options: ClaudeExecutableOptions = {}): string | undefined {
+  const env = options.env ?? process.env
+  const home = options.home ?? homedir()
+  const check = options.isExecutableFile ?? defaultExecutableCheck
+  const candidates: string[] = []
+  if (env.CHUNKY_CLAUDE_PATH) candidates.push(env.CHUNKY_CLAUDE_PATH)
+  if (options.which) {
+    const fromPath = options.which("claude")
+    if (fromPath) candidates.push(fromPath)
+  }
+  for (const dir of (env.PATH ?? "").split(delimiter).filter(Boolean)) candidates.push(join(dir, "claude"))
+  candidates.push(join(home, ".local", "bin", "claude"), join(home, ".claude", "local", "claude"))
+  if ((options.platform ?? process.platform) === "darwin") candidates.push("/opt/homebrew/bin/claude", "/usr/local/bin/claude", "/usr/bin/claude")
+  const seen = new Set<string>()
+  return candidates.find((candidate) => {
+    if (seen.has(candidate)) return false
+    seen.add(candidate)
+    return check(candidate)
+  })
+}
+
 export const ANTHROPIC_SDK_ISOLATION_OPTIONS = {
   tools: [],
   settingSources: [],
@@ -27,29 +62,33 @@ export const ANTHROPIC_SDK_ISOLATION_OPTIONS = {
 } satisfies Pick<AnthropicOptions, "tools" | "settingSources" | "strictMcpConfig" | "permissionMode">
 
 /** Best effort only: never exposes credential contents or throws. */
-export function detectClaudeCredentials(options: { home?: string } = {}): ClaudeCredentialDetection {
+export function detectClaudeCredentials(options: { home?: string; env?: NodeJS.ProcessEnv; platform?: NodeJS.Platform; keychainLookup?: () => boolean } = {}): ClaudeCredentialDetection {
   try {
     // An injected home is an isolated test/embedding scope; never consult the
     // user's global CLI session in that mode.
     if (options.home) {
       const credentials = `${options.home}/.claude/.credentials.json`
-      if (existsSync(credentials)) return { state: "ready", detail: "Claude Code credentials file was found." }
+      if (validCredentialsFile(credentials)) return { state: "ready", detail: "Claude Code credentials file was found." }
       if (existsSync(`${options.home}/.claude.json`)) return { state: "maybe", detail: "Claude Code configuration was found; login could not be confirmed." }
       return { state: "missing", detail: "No Claude Code login credentials were detected." }
     }
-    if (!options.home && process.env.CLAUDE_CODE_OAUTH_TOKEN) return { state: "ready", detail: "Claude OAuth token is available." }
+    if (!options.home && (options.env ?? process.env).CLAUDE_CODE_OAUTH_TOKEN) return { state: "ready", detail: "Claude OAuth token is available." }
     const home = options.home ?? homedir()
     const credentials = `${home}/.claude/.credentials.json`
-    if (existsSync(credentials)) return { state: "ready", detail: "Claude Code credentials file was found." }
-    if (process.platform === "darwin") {
+    if (validCredentialsFile(credentials)) return { state: "ready", detail: "Claude Code credentials file was found." }
+    if ((options.platform ?? process.platform) === "darwin") {
       try {
-        const result = Bun.spawnSync(["security", "find-generic-password", "-s", "Claude Code-credentials"], { stdout: "ignore", stderr: "ignore" })
-        if (result.exitCode === 0) return { state: "ready", detail: "Claude Code credentials were found in the macOS keychain." }
+        const found = options.keychainLookup ? options.keychainLookup() : Bun.spawnSync(["security", "find-generic-password", "-s", "Claude Code-credentials"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0
+        if (found) return { state: "ready", detail: "Claude Code credentials were found in the macOS keychain." }
       } catch { /* security unavailable */ }
     }
     if (existsSync(`${home}/.claude.json`)) return { state: "maybe", detail: "Claude Code configuration was found; login could not be confirmed." }
     return { state: "missing", detail: "No Claude Code login credentials were detected." }
   } catch { return { state: "missing", detail: "Claude Code login status could not be determined." } }
+}
+
+function validCredentialsFile(path: string): boolean {
+  try { const value = JSON.parse(readFileSync(path, "utf8")) as unknown; return !!value && typeof value === "object" && !Array.isArray(value) } catch { return false }
 }
 
 const AUTH_STATUS_TTL_MS = 1_000
@@ -92,24 +131,27 @@ let loginProcess: ReturnType<typeof Bun.spawn> | undefined
 
 /** Environment inherited by the SDK/CLI with API-key and cloud-provider paths
  * explicitly removed so the `anthropic` provider always means Claude OAuth. */
-export function anthropicOAuthEnvironment(): Record<string, string | undefined> {
+export function anthropicOAuthEnvironment(baseEnvironment: NodeJS.ProcessEnv = process.env): Record<string, string | undefined> {
   const environment: Record<string, string | undefined> = {
-    ...process.env,
+    ...baseEnvironment,
     CLAUDE_AGENT_SDK_CLIENT_APP: CHUNKY_USER_AGENT,
   }
   for (const name of NON_OAUTH_ENVIRONMENT) environment[name] = undefined
   return environment
 }
 
-function claudeAuthStatus(): ClaudeAuthStatus | undefined {
-  if (process.env.CLAUDE_CODE_OAUTH_TOKEN) {
+export function claudeAuthStatus(options: { executable?: string; env?: NodeJS.ProcessEnv; useCache?: boolean } = {}): ClaudeAuthStatus | undefined {
+  const env = options.env ?? process.env
+  if (env.CLAUDE_CODE_OAUTH_TOKEN) {
     return { loggedIn: true, authMethod: "oauth-token", apiProvider: "firstParty" }
   }
-  if (cachedAuth && cachedAuth.expiresAt > Date.now()) return cachedAuth.value
+  if (options.useCache !== false && cachedAuth && cachedAuth.expiresAt > Date.now()) return cachedAuth.value
+  const executable = options.executable ?? resolveClaudeExecutable({ env })
+  if (!executable) return undefined
   let value: ClaudeAuthStatus | undefined
   try {
-    const proc = Bun.spawnSync(["claude", "auth", "status", "--json"], {
-      env: anthropicOAuthEnvironment(),
+    const proc = Bun.spawnSync([executable, "auth", "status", "--json"], {
+      env: anthropicOAuthEnvironment(env),
       stdout: "pipe",
       stderr: "ignore",
     })
@@ -117,12 +159,14 @@ function claudeAuthStatus(): ClaudeAuthStatus | undefined {
   } catch {
     value = undefined
   }
-  cachedAuth = { value, expiresAt: Date.now() + AUTH_STATUS_TTL_MS }
+  if (options.useCache !== false) cachedAuth = { value, expiresAt: Date.now() + AUTH_STATUS_TTL_MS }
   return value
 }
 
-export function anthropicOAuthReady(): boolean {
-  const status = claudeAuthStatus()
+export function anthropicOAuthReady(options: { env?: NodeJS.ProcessEnv; home?: string; platform?: NodeJS.Platform; executable?: string } = {}): boolean {
+  const env = options.env ?? process.env
+  const status = claudeAuthStatus({ env, executable: options.executable ?? resolveClaudeExecutable({ env, home: options.home, platform: options.platform, ...(options.home ? { which: () => null } : {}) }), useCache: false })
+  if (!status) return detectClaudeCredentials({ env, home: options.home, platform: options.platform }).state === "ready"
   return Boolean(
     status?.loggedIn &&
       (status.authMethod === "claude.ai" || status.authMethod === "oauth-token") &&
@@ -200,8 +244,9 @@ export async function listAnthropicModels(
   return promise
 }
 
-async function loginWithClaudeOAuth(): Promise<LoginInitiation> {
-  if (anthropicOAuthReady()) {
+export async function loginWithClaudeOAuth(dependencies: { spawn?: typeof Bun.spawn; env?: NodeJS.ProcessEnv; home?: string; platform?: NodeJS.Platform; resolveExecutable?: () => string | undefined; isReady?: () => boolean } = {}): Promise<LoginInitiation> {
+  const env = dependencies.env ?? process.env
+  if ((dependencies.isReady ?? (() => anthropicOAuthReady({ env, home: dependencies.home, platform: dependencies.platform })))()) {
     return {
       kind: "ready",
       instructions: "Claude subscription OAuth is already ready. Use /model to select Anthropic.",
@@ -215,9 +260,11 @@ async function loginWithClaudeOAuth(): Promise<LoginInitiation> {
     }
   }
 
+  const executable = dependencies.resolveExecutable?.() ?? resolveClaudeExecutable({ env, home: dependencies.home, platform: dependencies.platform })
+  if (!executable) throw new Error("Could not start Claude OAuth login: Claude executable was not found. Install Claude Code or set CHUNKY_CLAUDE_PATH to its executable.")
   try {
-    const proc = Bun.spawn(["claude", "auth", "login", "--claudeai"], {
-      env: anthropicOAuthEnvironment(),
+    const proc = (dependencies.spawn ?? Bun.spawn)([executable, "auth", "login", "--claudeai"], {
+      env: anthropicOAuthEnvironment(env),
       stdin: "ignore",
       stdout: "ignore",
       stderr: "ignore",
@@ -245,5 +292,5 @@ export const anthropicProvider: ProviderDef = {
   runtime: "anthropic-sdk",
   ready: anthropicOAuthReady,
   listModels: listAnthropicModels,
-  login: loginWithClaudeOAuth,
+  login: () => loginWithClaudeOAuth(),
 }

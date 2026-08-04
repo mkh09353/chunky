@@ -83,6 +83,8 @@ export interface ModeSpec {
 }
 
 export interface Settings {
+  /** GitHub PR review integration; token is never returned by HTTP settings routes. */
+  github?: { org?: string; token?: string; readyLabel?: string }
   /** Terminal TUI appearance; auto detects the terminal background. */
   theme?: "auto" | "dark" | "light"
   /** Repository-scoped instruction loading. Missing entries are enabled. */
@@ -123,6 +125,16 @@ export interface Settings {
   skillRepos?: SkillRepoRecord[]
   /** Optional user exceptions to Chunky's zero-config workflow routing. Keys are provider/model. */
   workflowTargets?: Record<string, WorkflowTargetOverride>
+}
+
+export function getGithubConfig(): Settings["github"] {
+  const github = loadSettings().github
+  return github ? { ...github } : undefined
+}
+
+export function setGithubConfig(patch: Settings["github"]): void {
+  const s = loadSettings()
+  save({ ...s, github: { ...(s.github ?? {}), ...(patch ?? {}) } })
 }
 
 export function agentsMdEnabled(repo: string): boolean {
@@ -675,4 +687,10 @@ export function updateSkillRepo(
   repos[idx] = next
   save({ ...s, skillRepos: repos })
   return next
+}
+
+/** Safe HTTP representation of GitHub settings; never includes the token. */
+export function githubConfigResponse(orgs: string[] = []): { org?: string; orgs?: string[]; hasToken: boolean; readyLabel?: string } {
+  const github = loadSettings().github ?? {}
+  return { ...(github.org ? { org: github.org } : {}), ...(orgs.length ? { orgs } : {}), hasToken: !!github.token, ...(github.readyLabel ? { readyLabel: github.readyLabel } : {}) }
 }

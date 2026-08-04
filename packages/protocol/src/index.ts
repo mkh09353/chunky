@@ -226,6 +226,66 @@ export interface SessionDelta {
   upsert: SessionSummary[]
   remove: string[]
 }
+/** One pull request row in the PR reviews board. */
+export interface PrSummary {
+  /** GraphQL node id. */
+  id: string
+  number: number
+  title: string
+  url: string
+  /** "org/name". */
+  repo: string
+  headRef: string
+  author: string
+  isDraft: boolean
+  ciStatus: "passing" | "failing" | "pending" | "none"
+  reviewDecision: "approved" | "changes_requested" | "review_required" | "none"
+  unresolvedThreads: number
+  labels: string[]
+  createdAt: string
+  updatedAt: string
+  /** Session the server spun up to resolve comments / review this PR, if any. */
+  linkedSessionId?: string
+}
+/** GET ROUTES.prReviews / POST ROUTES.prReviewsRefresh response. */
+export interface PrReviewsState {
+  org: string | null
+  /** True when a GitHub token is available (settings or `gh auth token`). */
+  configured: boolean
+  /** My open PRs in the org. */
+  mine: PrSummary[]
+  /** Others' open PRs labeled ready-to-review, oldest first. */
+  reviewQueue: PrSummary[]
+  fetchedAt: number | null
+  error?: string
+}
+/** GET ROUTES.prReviewsConfig response. Token is write-only; never echoed. */
+export interface PrReviewsConfig {
+  org?: string
+  /** Orgs the authenticated user belongs to (best effort). */
+  orgs?: string[]
+  hasToken: boolean
+  /** Label that marks a PR ready for review (default "ready-to-review"). */
+  readyLabel?: string
+}
+/** POST ROUTES.prReviewsConfig body. Omitted fields are left unchanged. */
+export interface UpdatePrReviewsConfigRequest {
+  org?: string
+  token?: string
+  readyLabel?: string
+}
+/** POST ROUTES.prResolveComments / ROUTES.prStartReview body. */
+export interface PrActionRequest {
+  /** "org/name". */
+  repo: string
+  number: number
+}
+/** Response: the goal session spun up for the action, bound to a local checkout. */
+export interface PrActionResponse {
+  sessionId: string
+  repoId: string
+}
+
 export interface RewindPoint { turn: number; createdAt: number; userText: string; complete: boolean }
 export interface RewindPointsResponse { points: RewindPoint[] }
 export interface RewindRequest { turn: number }
@@ -413,6 +473,12 @@ export const ROUTES = {
   listSessions: `/api/sessions`, // GET ?repo=<id>&cwd=<path> -> ListSessionsResponse
   shellSessions: `/api/sessions/shell`, // GET -> ShellSessionsResponse
   sessionStream: `/api/sessions/stream`, // GET SSE: snapshot + SessionDelta
+  prReviews: `/api/pr-reviews`, // GET -> PrReviewsState (cached)
+  prReviewsRefresh: `/api/pr-reviews/refresh`, // POST -> PrReviewsState (force poll)
+  // GET -> PrReviewsConfig. POST UpdatePrReviewsConfigRequest -> PrReviewsConfig.
+  prReviewsConfig: `/api/pr-reviews/config`,
+  prResolveComments: `/api/pr-reviews/resolve`, // POST PrActionRequest -> PrActionResponse
+  prStartReview: `/api/pr-reviews/review`, // POST PrActionRequest -> PrActionResponse
   renameSession: (id: string) => `/api/sessions/${id}`,
   // GET  -> ReposResponse. POST AddRepoRequest -> ReposResponse (add a folder;
   // it also becomes the default repo).

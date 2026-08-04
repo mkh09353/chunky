@@ -33,6 +33,9 @@ import {
   type SessionDelta,
   type PromoteQueueRequest,
   type PromoteQueueResult,
+  type PrActionRequest,
+  type UpdatePrReviewsConfigRequest,
+  type PrReviewsConfig,
 } from "@chunky/protocol"
 import { effectiveSessionSelection, runAgent, type InputImage, type InterjectionBoundary } from "./run.ts"
 import { shipHandoffPrompt } from "./tools/ship.ts"
@@ -142,6 +145,9 @@ import { DRAIN_POLL_MS, DRAIN_REFUSAL, DRAIN_TIMEOUT_MS, DrainCoordinator, drain
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { getAppBrowserEndpoint, setAppBrowserEndpoint } from "./app-browser.ts"
 import { hasAppZoo, setAppZooEndpoint } from "./app-zoo.ts"
+import { currentPrReviews, currentGithubOrgs, pollPrReviews, startPrReviewsPoller } from "./github-prs.ts"
+import { getGithubConfig, setGithubConfig, githubConfigResponse } from "./settings.ts"
+import { joinPrLinks, startPrAction, getPrLink } from "./pr-actions.ts"
 
 type Subscriber = ReadableStreamDefaultController<Uint8Array>
 
@@ -606,6 +612,8 @@ if (!previousUpdateCheck?.checkedAt || previousUpdateCheck.current !== currentVe
 // Incognito sessions and their registry are memory-only and intentionally vanish
 // on restart; no durable-session rehydration is performed.
 rmSync(join(tmpdir(), "chunky-incognito"), { recursive: true, force: true })
+
+if (getGithubConfig()?.org) void startPrReviewsPoller()
 
 const server = Bun.serve(withCors({
   port,
@@ -1323,6 +1331,36 @@ const server = Bun.serve(withCors({
     }
 
     // GET /api/repos -> ReposResponse (list of folders + which is active)
+    if (pathname === ROUTES.prReviewsConfig && req.method === "GET") {
+      return json(githubConfigResponse(currentGithubOrgs()))
+    }
+    if (pathname === ROUTES.prReviewsConfig && req.method === "POST") {
+      const body = await req.json().catch(() => null) as UpdatePrReviewsConfigRequest | null
+      if (!body || (body.org !== undefined && typeof body.org !== "string") || (body.token !== undefined && typeof body.token !== "string") || (body.readyLabel !== undefined && typeof body.readyLabel !== "string")) return json({ error: "invalid GitHub PR review config" }, 400)
+      setGithubConfig(body)
+      if (body.org) void startPrReviewsPoller()
+      return json(githubConfigResponse())
+    }
+    if (pathname === ROUTES.prReviews && req.method === "GET") {
+      let state = currentPrReviews()
+      if (!state && getGithubConfig()?.org) state = await pollPrReviews()
+      state ??= { org: getGithubConfig()?.org ?? null, configured: !!getGithubConfig()?.token, mine: [], reviewQueue: [], fetchedAt: null }
+      return json({ ...state, mine: joinPrLinks(state.mine), reviewQueue: joinPrLinks(state.reviewQueue) })
+    }
+    if (pathname === ROUTES.prReviewsRefresh && req.method === "POST") {
+      const state = await pollPrReviews(true)
+      return json({ ...state, mine: joinPrLinks(state.mine), reviewQueue: joinPrLinks(state.reviewQueue) })
+    }
+    if ((pathname === ROUTES.prResolveComments || pathname === ROUTES.prStartReview) && req.method === "POST") {
+      const body = await req.json().catch(() => null) as PrActionRequest | null
+      if (!body || typeof body.repo !== "string" || !Number.isInteger(body.number) || body.number < 1) return json({ error: "invalid PR action" }, 400)
+      const linked = getPrLink(body.repo, body.number)
+      if (linked && Store.exists(linked.sessionId) && (Store.summary(linked.sessionId)?.running || false)) return json({ error: "PR session is still running" }, 409)
+      const state = currentPrReviews(); const pr = [...(state?.mine ?? []), ...(state?.reviewQueue ?? [])].find(x => x.repo === body.repo && x.number === body.number)
+      if (!pr) return json({ error: "PR not found in review state" }, 404)
+      try { return json(await startPrAction(pathname === ROUTES.prResolveComments ? "resolve" : "review", pr)) } catch (e) { return json({ error: e instanceof Error ? e.message : "PR action failed" }, 409) }
+    }
+
     if (req.method === "GET" && pathname === ROUTES.repos) {
       return json(listRepos())
     }

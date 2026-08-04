@@ -123,6 +123,10 @@ export interface Settings {
   serverToken?: string
   /** Managed skill git repositories (cloned under stateDir/skill-repos/). */
   skillRepos?: SkillRepoRecord[]
+  /** Default skill repos explicitly removed by the user; never auto-seed again. */
+  removedDefaultSkillRepos?: string[]
+  /** Default skill repos whose initial skill enablement has been applied. */
+  seededDefaultSkillRepos?: string[]
   /** Optional user exceptions to Chunky's zero-config workflow routing. Keys are provider/model. */
   workflowTargets?: Record<string, WorkflowTargetOverride>
 }
@@ -646,11 +650,17 @@ export function addSkillRepo(record: SkillRepoRecord): SkillRepoRecord {
 }
 
 /** Remove a skill repo registration. Returns whether it existed. */
+let defaultSkillRepoIds = new Set<string>()
+export function registerDefaultSkillRepoIds(ids: readonly string[]): void { defaultSkillRepoIds = new Set(ids) }
+
 export function removeSkillRepo(id: string): boolean {
   const s = loadSettings()
   const repos = s.skillRepos ?? []
   if (!repos.some((r) => r.id === id)) return false
-  save({ ...s, skillRepos: repos.filter((r) => r.id !== id) })
+  const removedDefaultSkillRepos = defaultSkillRepoIds.has(id)
+    ? [...new Set([...(s.removedDefaultSkillRepos ?? []), id])]
+    : s.removedDefaultSkillRepos
+  save({ ...s, skillRepos: repos.filter((r) => r.id !== id), ...(removedDefaultSkillRepos ? { removedDefaultSkillRepos } : {}) })
   return true
 }
 
@@ -693,4 +703,9 @@ export function updateSkillRepo(
 export function githubConfigResponse(orgs: string[] = []): { org?: string; orgs?: string[]; hasToken: boolean; readyLabel?: string } {
   const github = loadSettings().github ?? {}
   return { ...(github.org ? { org: github.org } : {}), ...(orgs.length ? { orgs } : {}), hasToken: !!github.token, ...(github.readyLabel ? { readyLabel: github.readyLabel } : {}) }
+}
+
+export function saveDefaultSkillRepoSeed(ids: string[]): void {
+  const s = loadSettings()
+  save({ ...s, seededDefaultSkillRepos: [...new Set(ids)].sort() })
 }

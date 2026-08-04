@@ -14,6 +14,7 @@ import {
   skillRepoById,
   skillReposRoot,
   updateSkillRepo,
+  registerDefaultSkillRepoIds,
   type SkillRepoRecord,
 } from "./settings.ts"
 
@@ -33,6 +34,60 @@ export interface SkillRepoStatus extends SkillRepoRecord {
   present: boolean
   /** Metadata for skills in this repo, including the persisted enabled state. */
   skills: ManagedSkillStatus[]
+}
+
+
+
+export interface DefaultSkillRepo {
+  id: string
+  url: string
+  branch?: string
+  subdir?: string
+  enabledByDefault: string[]
+}
+
+export const DEFAULT_SKILL_REPOS: readonly DefaultSkillRepo[] = [
+  {
+    id: "cursor-team-kit-skills",
+    url: "https://github.com/cursor/plugins.git",
+    branch: "main",
+    subdir: "cursor-team-kit/skills",
+    enabledByDefault: ["thermo-nuclear-code-quality-review", "get-pr-comments", "fix-ci", "verify-this"],
+  },
+]
+registerDefaultSkillRepoIds(DEFAULT_SKILL_REPOS.map((repo) => repo.id))
+
+export interface DefaultSkillRepoDeps {
+  clone?: (url: string, dest: string, branch?: string) => Promise<void>
+}
+let defaultDeps: DefaultSkillRepoDeps = {}
+export function setDefaultSkillRepoDepsForTest(next: DefaultSkillRepoDeps): void { defaultDeps = next }
+
+/** Seed curated skill repos once. Every failure is isolated so boot can continue. */
+export async function seedDefaultSkillRepos(deps: DefaultSkillRepoDeps = defaultDeps): Promise<void> {
+  for (const def of DEFAULT_SKILL_REPOS) {
+    try {
+      const settings = (await import("./settings.ts")).loadSettings()
+      if ((settings.removedDefaultSkillRepos ?? []).includes(def.id)) continue
+      if (skillRepoById(def.id)) continue
+      if ((settings.seededDefaultSkillRepos ?? []).includes(def.id)) continue
+      const path = skillRepoPath(def.id)
+      if (existsSync(path)) rmSync(path, { recursive: true, force: true })
+      await (deps.clone ?? cloneRepo)(def.url, path, def.branch)
+      const record = addSkillRepo({ id: def.id, url: def.url, branch: def.branch, subdir: def.subdir, addedAt: Date.now(), lastSync: Date.now() })
+      const discovered = skillsForRepo(record, path).map((skill) => skill.name)
+      const disabled = discovered.filter((name) => !def.enabledByDefault.includes(name))
+      updateSkillRepo(def.id, { disabledSkills: disabled })
+      const next = (await import("./settings.ts")).loadSettings()
+      const seededDefaultSkillRepos = [...new Set([...(next.seededDefaultSkillRepos ?? []), def.id])]
+      // Mark only after clone, registration, and initial disabled-state write succeed.
+      const { saveDefaultSkillRepoSeed } = await import("./settings.ts")
+      saveDefaultSkillRepoSeed(seededDefaultSkillRepos)
+    } catch (error) {
+      // A failed seed is retried on the next boot; never block server startup.
+      console.warn(`[@chunky/server] default skill repo seed failed for ${def.id}: ${(error as Error).message}`)
+    }
+  }
 }
 
 function stateDir(): string {

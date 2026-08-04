@@ -125,7 +125,7 @@ import { RelayPairing, relayStatus } from "./relay/pairing.ts"
 import { startUplink } from "./relay/uplink.ts"
 import { getModelAvailability, manageModelCatalog, setModelAvailability, type ModelCatalogAction } from "./model-catalog.ts"
 import { assertSelectionAllowed, isIncognitoSession, incognitoAllowlistFor, providerScope } from "./incognito.ts"
-import { manageSkillRepos, type SkillRepoMutationAction } from "./skill-repos.ts"
+import { manageSkillRepos, seedDefaultSkillRepos, type SkillRepoMutationAction } from "./skill-repos.ts"
 import { resetTasks, liveTaskCounts } from "./tasks.ts"
 import { hasRunningDetachedSpawns, resetDetachedSpawns } from "./detached-spawns.ts"
 import { hasLiveThreadDelegates } from "./threads.ts"
@@ -607,6 +607,7 @@ const previousUpdateCheck = readPersistedCheck()
 // (i.e. we just updated), not only when it is older than 24h.
 if (!previousUpdateCheck?.checkedAt || previousUpdateCheck.current !== currentVersion() || Date.now() - previousUpdateCheck.checkedAt >= 24 * 60 * 60 * 1000) {
   void checkForUpdate().then(persistCheck).catch(() => {})
+void seedDefaultSkillRepos().catch(() => {})
 }
 
 // Incognito sessions and their registry are memory-only and intentionally vanish

@@ -1,7 +1,7 @@
 // Unit tests for managed skill repositories (settings + clone/discovery glue).
 // Run: bun test packages/server/src/skill-repos.test.ts
-import { afterAll, afterEach, describe, expect, test } from "bun:test"
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs"
+import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test"
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { spawnSync } from "node:child_process"
@@ -233,5 +233,43 @@ describe("manageSkillRepos lifecycle", () => {
     }
     expect(enabled.repo.skills.find((skill) => skill.name === "hello-skill")?.enabled).toBe(true)
     expect(discoverSkills(ws).find((s) => s.name === "hello-skill")?.source).toBe("repo")
+  })
+})
+
+// Default skill seeding is isolated from the network: fake clone writes a tiny
+// fixture tree at the requested destination.
+describe("default skill repo seeding", () => {
+  const oldSettings = process.env.CHUNKY_SETTINGS
+  const seedDir = mkdtempSync(join(tmpdir(), "chunky-default-skills-"))
+  beforeEach(() => {
+    process.env.CHUNKY_SETTINGS = join(seedDir, `${Math.random().toString(36).slice(2)}.json`)
+  })
+  afterEach(() => { if (oldSettings === undefined) delete process.env.CHUNKY_SETTINGS; else process.env.CHUNKY_SETTINGS = oldSettings })
+
+  test("registers and disables non-curated skills", async () => {
+    const { seedDefaultSkillRepos, DEFAULT_SKILL_REPOS, setDefaultSkillRepoDepsForTest } = await import("./skill-repos.ts")
+    const { listSkillRepos, skillRepoById } = await import("./settings.ts")
+    setDefaultSkillRepoDepsForTest({ clone: async (_url, dest) => {
+      mkdirSync(join(dest, "cursor-team-kit", "skills", "thermo-nuclear-code-quality-review"), { recursive: true })
+      mkdirSync(join(dest, "cursor-team-kit", "skills", "other-skill"), { recursive: true })
+      writeFileSync(join(dest, "cursor-team-kit", "skills", "thermo-nuclear-code-quality-review", "SKILL.md"), "name: thermo-nuclear-code-quality-review\ndescription: quality\n")
+      writeFileSync(join(dest, "cursor-team-kit", "skills", "other-skill", "SKILL.md"), "name: other-skill\ndescription: other\n")
+    } })
+    await seedDefaultSkillRepos()
+    const repo = skillRepoById(DEFAULT_SKILL_REPOS[0]!.id)!
+    expect(listSkillRepos()).toHaveLength(1)
+    expect(repo.disabledSkills).toEqual(["other-skill"])
+  })
+
+  test("clone failure is swallowed and tombstone prevents reseed", async () => {
+    const { seedDefaultSkillRepos, DEFAULT_SKILL_REPOS, setDefaultSkillRepoDepsForTest } = await import("./skill-repos.ts")
+    const settings = await import("./settings.ts")
+    let clones = 0
+    setDefaultSkillRepoDepsForTest({ clone: async () => { clones++; throw new Error("offline") } })
+    await expect(seedDefaultSkillRepos()).resolves.toBeUndefined()
+    settings.addSkillRepo({ id: DEFAULT_SKILL_REPOS[0]!.id, url: DEFAULT_SKILL_REPOS[0]!.url, addedAt: Date.now() })
+    settings.removeSkillRepo(DEFAULT_SKILL_REPOS[0]!.id)
+    await seedDefaultSkillRepos()
+    expect(clones).toBe(1)
   })
 })

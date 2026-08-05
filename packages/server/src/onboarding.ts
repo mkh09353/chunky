@@ -1,6 +1,8 @@
 import type { ModeSpec } from "./settings.ts"
 import { saveMode, markSeededModes, setAdvisor, setSidekick, resetSidekickSeat, setSidekickSeats, setOnboardedAt, loadSettings } from "./settings.ts"
-import { getProvider, listModelsFor, setActiveProviderId, setSelection } from "./providers/registry.ts"
+import { getProvider, listModelsFor, listProviders, setActiveProviderId, setSelection, type ProviderDef } from "./providers/registry.ts"
+import { detectClaudeCredentials, type ClaudeCredentialDetection } from "./providers/anthropic-sdk.ts"
+import { tryImportCodexCliAuth } from "./providers/codex.ts"
 import { invalidateAgent } from "./agent.ts"
 import { AuthStore } from "./providers/auth-store.ts"
 import { saveCustomProviders, type CustomProvider } from "./settings.ts"
@@ -13,6 +15,61 @@ export function saveCustomProvider(input: CustomProvider & { key: string }): { i
 }
 
 export interface OnboardingSuggestion { name: string; description: string; spec: ModeSpec }
+
+interface OnboardingDependencies {
+  providers: () => ProviderDef[]
+  detectClaude: () => ClaudeCredentialDetection
+  importCodexCliAuth: () => Promise<boolean>
+  suggestions: (ready: Set<string>) => Promise<OnboardingSuggestion[]>
+  onboardedAt: () => number | undefined
+}
+
+const onboardingDefaults: OnboardingDependencies = {
+  providers: () => listProviders(),
+  detectClaude: detectClaudeCredentials,
+  importCodexCliAuth: tryImportCodexCliAuth,
+  suggestions: suggestedModes,
+  onboardedAt: () => loadSettings().onboardedAt,
+}
+
+/** Build the onboarding HTTP response, opportunistically adopting an existing
+ * Codex CLI login before reporting provider readiness. */
+export async function onboardingResponse(
+  injected: Partial<OnboardingDependencies> = {},
+): Promise<Response> {
+  const deps = { ...onboardingDefaults, ...injected }
+  const providers = deps.providers()
+  const codex = providers.find((provider) => provider.id === "codex")
+  let codexImportFailed = false
+  if (codex && !codex.ready()) {
+    try {
+      codexImportFailed = !(await deps.importCodexCliAuth())
+    } catch {
+      // The importer normally converts failures to false. Keep this endpoint
+      // available even if a future importer exposes an unexpected exception.
+      codexImportFailed = true
+    }
+  }
+
+  const detected = deps.detectClaude()
+  const statuses = providers.map((provider) => {
+    if (provider.id === "anthropic") {
+      return { id: provider.id, label: provider.label,
+        status: detected.state === "ready" ? "inherited" : "missing", detail: detected.detail }
+    }
+    const ready = provider.ready()
+    return { id: provider.id, label: provider.label,
+      status: ready ? "ready" : "missing",
+      ...(ready ? {} : { detail: provider.id === "codex" && codexImportFailed
+        ? "Existing Codex CLI credentials could not be imported. Check your Codex CLI sign-in and network connection."
+        : "No credentials configured." }) }
+  })
+  const ready = new Set(statuses.filter((provider) => provider.status !== "missing").map((provider) => provider.id))
+  return new Response(JSON.stringify({ providers: statuses, onboardedAt: deps.onboardedAt(), suggestedModes: await deps.suggestions(ready) }), {
+    status: 200,
+    headers: { "Content-Type": "application/json" },
+  })
+}
 export async function suggestedModes(ready: Set<string>): Promise<OnboardingSuggestion[]> {
   let model = "claude-opus"
   let opus = "claude-opus"

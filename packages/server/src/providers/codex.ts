@@ -165,10 +165,11 @@ async function exchangeCodeForTokens(code: string, pkce: PkceCodes): Promise<Tok
   return response.json() as Promise<TokenResponse>
 }
 
-async function refreshAccessToken(refreshToken: string): Promise<TokenResponse> {
+async function refreshAccessToken(refreshToken: string, signal?: AbortSignal): Promise<TokenResponse> {
   const response = await fetch(`${ISSUER}/oauth/token`, {
     method: "POST",
     headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    signal,
     body: new URLSearchParams({
       grant_type: "refresh_token",
       refresh_token: refreshToken,
@@ -194,7 +195,9 @@ export async function tryImportCodexCliAuth(): Promise<boolean> {
     const parsed = JSON.parse(readFileSync(path, "utf8")) as CodexCliAuth
     const refresh = parsed.tokens?.refresh_token
     if (!refresh) throw new Error("missing refresh token")
-    const tokens = await refreshAccessToken(refresh)
+    // Onboarding also uses this import path. Bound its network probe so a
+    // stalled token endpoint cannot hold the first-run response indefinitely.
+    const tokens = await refreshAccessToken(refresh, AbortSignal.timeout(10_000))
     persist(tokens, refresh, parsed.tokens?.account_id)
     return true
   } catch {

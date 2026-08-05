@@ -1,15 +1,65 @@
 import { describe, expect, test, beforeEach, afterAll } from "bun:test"
-import { mkdtempSync, rmSync } from "node:fs"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 const dir = mkdtempSync(join(tmpdir(), "chunky-onboarding-test-"))
 process.env.CHUNKY_SETTINGS = join(dir, "settings.json")
 process.env.CHUNKY_AUTH = join(dir, "auth.json")
-const { suggestedModes, applyOnboardingMode, saveCustomProvider } = await import("./onboarding.ts")
+const { suggestedModes, applyOnboardingMode, onboardingResponse, saveCustomProvider } = await import("./onboarding.ts")
 const settings = await import("./settings.ts")
 const { AuthStore } = await import("./providers/auth-store.ts")
+const { codexProvider } = await import("./providers/codex.ts")
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 beforeEach(() => { rmSync(process.env.CHUNKY_SETTINGS!, { force: true }); AuthStore.remove("codex") })
+describe("onboarding endpoint", () => {
+  test("imports existing Codex CLI auth and reports ready", async () => {
+    const cli = mkdtempSync(join(tmpdir(), "chunky-onboarding-codex-cli-"))
+    const oldHome = process.env.CODEX_HOME, oldFetch = globalThis.fetch
+    process.env.CODEX_HOME = cli
+    writeFileSync(join(cli, "auth.json"), JSON.stringify({ tokens: { refresh_token: "cli-refresh", account_id: "acct-cli" } }))
+    globalThis.fetch = (async () => new Response(JSON.stringify({ access_token: "fresh-access", refresh_token: "fresh-refresh", expires_in: 3600 }), { status: 200 })) as unknown as typeof fetch
+    try {
+      const response = await onboardingResponse({
+        providers: () => [codexProvider],
+        detectClaude: () => ({ state: "missing", detail: "not used" }),
+        suggestions: async () => [],
+      })
+      const body = await response.json() as { providers: Array<{ id: string; status: string }> }
+      expect(response.status).toBe(200)
+      expect(body.providers.find((provider) => provider.id === "codex")?.status).toBe("ready")
+      expect(AuthStore.get("codex")).toMatchObject({ access: "fresh-access", refresh: "fresh-refresh", accountId: "acct-cli" })
+    } finally {
+      globalThis.fetch = oldFetch
+      if (oldHome == null) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = oldHome
+      rmSync(cli, { recursive: true, force: true })
+    }
+  })
+
+  test("import failure reports Codex missing and keeps the endpoint available", async () => {
+    const cli = mkdtempSync(join(tmpdir(), "chunky-onboarding-codex-cli-fail-"))
+    const oldHome = process.env.CODEX_HOME, oldFetch = globalThis.fetch
+    process.env.CODEX_HOME = cli
+    writeFileSync(join(cli, "auth.json"), JSON.stringify({ tokens: { refresh_token: "rejected-refresh" } }))
+    globalThis.fetch = (async () => { throw new Error("network unavailable") }) as unknown as typeof fetch
+    try {
+      const response = await onboardingResponse({
+        providers: () => [codexProvider],
+        detectClaude: () => ({ state: "missing", detail: "not used" }),
+        suggestions: async () => [],
+      })
+      const body = await response.json() as { providers: Array<{ id: string; status: string; detail?: string }> }
+      const codex = body.providers.find((provider) => provider.id === "codex")
+      expect(response.status).toBe(200)
+      expect(codex?.status).toBe("missing")
+      expect(codex?.detail).toContain("could not be imported")
+    } finally {
+      globalThis.fetch = oldFetch
+      if (oldHome == null) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = oldHome
+      rmSync(cli, { recursive: true, force: true })
+    }
+  })
+})
+
 describe("onboarding suggestions", () => {
   test("codex and anthropic suggest fire and tibo seats", async () => {
     const modes = await suggestedModes(new Set(["codex", "anthropic"]))

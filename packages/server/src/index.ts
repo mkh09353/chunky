@@ -69,12 +69,11 @@ import {
   type Effort,
   type Speed,
 } from "./providers/registry.ts"
-import { detectClaudeCredentials } from "./providers/anthropic-sdk.ts"
 import { AuthStore } from "./providers/auth-store.ts"
 import { requestCompaction } from "./compaction.ts"
 import { isMcpAuthorized, mcpConfig, startMcpAuthorization } from "./mcp-auth.ts"
 import { checkForUpdate, currentVersion, persistCheck, readPersistedCheck } from "./update/updater.ts"
-import { applyOnboardingMode, suggestedModes, ensureDefaultModes, saveCustomProvider } from "./onboarding.ts"
+import { applyOnboardingMode, onboardingResponse, suggestedModes, ensureDefaultModes, saveCustomProvider } from "./onboarding.ts"
 import {
   currentModeSpec,
   deleteMode,
@@ -766,18 +765,7 @@ const server = Bun.serve(withCors({
     // ---- Provider / OAuth routes (additive; independent of sessions) ----
 
     if (req.method === "GET" && pathname === ROUTES.onboarding) {
-      const detected = detectClaudeCredentials()
-      const statuses = listProviders().map((provider) => {
-        if (provider.id === "anthropic") {
-          return { id: provider.id, label: provider.label,
-            status: detected.state === "ready" ? "inherited" : "missing", detail: detected.detail }
-        }
-        return { id: provider.id, label: provider.label,
-          status: provider.ready() ? "ready" : "missing",
-          ...(provider.ready() ? {} : { detail: "No credentials configured." }) }
-      })
-      const ready = new Set(statuses.filter((p) => p.status !== "missing").map((p) => p.id))
-      return json({ providers: statuses, onboardedAt: getOnboardedAt(), suggestedModes: await suggestedModes(ready) })
+      return onboardingResponse()
     }
     if (req.method === "POST" && pathname === ROUTES.onboardingApply) {
       const body = await req.json().catch(() => null) as { mode?: ModeSpec; name?: string } | null

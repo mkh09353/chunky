@@ -148,7 +148,7 @@ function responseItemsForCompaction(messages: any[]): any[] {
   })
 }
 
-export function remoteCompactionMiddleware(provider: string, model: string, options: { fetch?: typeof fetch; sessionId?: string } = {}) {
+export function remoteCompactionMiddleware(provider: string, model: string, options: { fetch?: typeof fetch; sessionId?: string; requestHeaders?: () => Promise<Headers> } = {}) {
   let snapshot: any[] | undefined
   let handled: unknown
   let pending: Promise<void> | undefined
@@ -164,7 +164,7 @@ export function remoteCompactionMiddleware(provider: string, model: string, opti
       if (!sessionId) return
       pending = (async () => {
         try {
-          const headers = await codexRequestHeaders()
+          const headers = await (options.requestHeaders ?? codexRequestHeaders)()
           headers.set("accept", "text/event-stream"); headers.set("content-type", "application/json")
           const input = responseItemsForCompaction(snapshot!)
           input.push({ type: "compaction_trigger" })

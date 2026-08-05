@@ -15,7 +15,8 @@ test("remote compaction middleware captures, persists once, and skips non-Codex"
   const before = [new HumanMessage("old context"), new AIMessage("old answer")]
   let calls = 0
   const fetchStub = async () => { calls++; return sseResponse() }
-  const middleware = remoteCompactionMiddleware("codex", "gpt-5.6-sol", { sessionId, fetch: fetchStub as typeof fetch })
+  const stubHeaders = async () => new Headers()
+  const middleware = remoteCompactionMiddleware("codex", "gpt-5.6-sol", { sessionId, fetch: fetchStub as typeof fetch, requestHeaders: stubHeaders })
 
   await middleware.beforeModel({ messages: before })
   await middleware.afterModel({ messages: [summary] }, { configurable: { thread_id: sessionId } })
@@ -29,7 +30,7 @@ test("remote compaction middleware captures, persists once, and skips non-Codex"
 
   let nonCodexCalls = 0
   const otherFetch = (async () => { nonCodexCalls++; return sseResponse() }) as typeof fetch
-  const other = remoteCompactionMiddleware("openai", "gpt-5", { sessionId, fetch: otherFetch })
+  const other = remoteCompactionMiddleware("openai", "gpt-5", { sessionId, fetch: otherFetch, requestHeaders: stubHeaders })
   await other.beforeModel({ messages: before })
   await other.afterModel({ messages: [summary] }, { configurable: { thread_id: sessionId } })
   await other.drain()

@@ -382,6 +382,12 @@ export interface SkillsCatalogResponse { skills: SkillCatalogEntry[] }
 // ---- Modes (named executor + advisor pairings) ----
 
 /** The advisor half of a mode. */
+export interface SoloAdvisorConfig {
+  enabled: boolean
+  provider?: string
+  model?: string
+  effort?: string
+}
 export interface ModeAdvisor {
   provider: string
   model: string
@@ -413,7 +419,7 @@ export interface ModeInfo extends ModeSpec {
 /** GET ROUTES.modes: saved modes + the CURRENT (possibly unsaved) pairing. */
 export interface ModesResponse {
   modes: ModeInfo[]
-  current: ModeSpec
+  current: ModeSpec & { solo?: boolean }
 }
 /** POST ROUTES.modes — save a mode. Omitted `spec` snapshots the current
  *  executor+advisor pairing under `name`. */
@@ -520,6 +526,7 @@ export const ROUTES = {
   dream: `/api/dream`,
   /** GET/POST global asynchronous reviewer default. */
   review: `/api/review`,
+  soloAdvisor: `/api/solo-advisor`,
   // POST SendMessageRequest -> 202, or 409 SendBlockedResponse when the cache
   // guard blocks (resend with force: true after the user confirms).
   sendMessage: (id: string) => `/api/sessions/${id}/messages`,

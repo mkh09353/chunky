@@ -16,6 +16,8 @@ import { chatOptionsFor } from "./model-options.ts"
 import { assertSelectionAllowed, incognitoAllowlistFor, isIncognitoSession, providerScope } from "../incognito.ts"
 import {
   getAdvisor,
+  getSolo,
+  getSoloAdvisor,
   getEffectiveReview,
   getSidekick,
   getSidekickSeats,
@@ -38,6 +40,14 @@ import { Store } from "../store.ts"
 export type { LoginInitiation } from "@chunky/protocol"
 export type { ModelInfo } from "./models-catalog.ts"
 export type { Effort, ModelSelection, Speed } from "../settings.ts"
+
+export function isSolo(sessionId?: string): boolean {
+  if (sessionId) {
+    const pinned = Store.pinnedSelectionOf(sessionId)
+    if (pinned && getProvider(pinned.provider)) return pinned.solo === true
+  }
+  return getSolo()
+}
 
 /** A complete, immutable model choice for one agent run. Keeping the provider
  * alongside its model knobs lets a root run snapshot its choice once and lets a
@@ -339,8 +349,8 @@ export function providerRuntime(id: string): NonNullable<ProviderDef["runtime"]>
 
 /** Resolve the configured advisor selection, or null when it can't run: disabled,
  *  no provider/model chosen, or the provider isn't registered. */
-export function resolveAdvisorSelection(): AgentSelection | null {
-  const cfg = getAdvisor()
+export function resolveAdvisorSelection(sessionId?: string): AgentSelection | null {
+  const cfg = isSolo(sessionId) ? getSoloAdvisor() : getAdvisor()
   if (!cfg.enabled || !cfg.provider || !cfg.model || !providers[cfg.provider]) return null
   return Object.freeze({ provider: cfg.provider, model: cfg.model, effort: cfg.effort, speed: undefined })
 }
@@ -348,8 +358,8 @@ export function resolveAdvisorSelection(): AgentSelection | null {
 /** The advisor to bind for an `executor`, with the auto-suppress rule: no advisor
  *  when unconfigured, or when it's the SAME model as the executor (advising with
  *  the same model buys nothing). */
-export function advisorFor(executor: AgentSelection): AgentSelection | null {
-  const advisor = resolveAdvisorSelection()
+export function advisorFor(executor: AgentSelection, sessionId?: string): AgentSelection | null {
+  const advisor = resolveAdvisorSelection(sessionId)
   if (!advisor) return null
   if (advisor.provider === executor.provider && advisor.model === executor.model) return null
   return advisor
@@ -357,6 +367,7 @@ export function advisorFor(executor: AgentSelection): AgentSelection | null {
 
 /** Effective reviewer model after applying the active mode's tri-state override. */
 export function resolveReviewSelection(sessionId?: string): AgentSelection | null {
+  if (isSolo(sessionId)) return null
   const cfg = getEffectiveReview()
   if (!cfg.enabled || !cfg.provider || !cfg.model || !providers[cfg.provider]) return null
   const selection = Object.freeze({ provider: cfg.provider, model: cfg.model, effort: cfg.effort, speed: undefined })
@@ -374,6 +385,7 @@ export function resolveReviewSelection(sessionId?: string): AgentSelection | nul
  *  model at higher effort) to also buy the cost win. */
 /** Global sidekick defaults merged with this session's sparse override. */
 export function effectiveSidekickConfig(sessionId?: string): SidekickConfig {
+  if (isSolo(sessionId)) return { enabled: false }
   const global = getSidekick()
   const override = sessionId ? Store.sidekickOverrideOf(sessionId) : null
   return { ...global, ...override?.config }
@@ -381,6 +393,7 @@ export function effectiveSidekickConfig(sessionId?: string): SidekickConfig {
 
 /** Global named seats merged with this session's sparse patches. */
 export function effectiveSidekickSeats(sessionId?: string): Record<string, SidekickSeat> {
+  if (isSolo(sessionId)) return {}
   const seats = { ...getSidekickSeats() }
   const patches = sessionId ? Store.sidekickOverrideOf(sessionId)?.seats : undefined
   if (patches) {

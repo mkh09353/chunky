@@ -33,6 +33,12 @@ export interface AdvisorConfig {
   model?: string
   effort?: Effort
 }
+export interface SoloAdvisorConfig {
+  enabled: boolean
+  provider?: string
+  model?: string
+  effort?: Effort
+}
 /** Optional asynchronous, read-only final reviewer. Unlike sidekick it never
  * inherits the executor: no configured model means off. */
 export interface ReviewConfig extends AdvisorConfig {}
@@ -109,6 +115,10 @@ export interface Settings {
   selections?: Record<string, ModelSelection>
   /** The advisor's model + on/off state. */
   advisor?: AdvisorConfig
+  /** Advisor retained while raw model selection is in solo mode. */
+  soloAdvisor?: SoloAdvisorConfig
+  /** Raw model selection suppresses configured delegates without deleting them. */
+  solo?: boolean
   /** Global default; mode overrides are derived from activeMode, never written here. */
   review?: ReviewConfig
   /** The sidekick's model + on/off state (the DEFAULT seat + master switch). */
@@ -498,7 +508,7 @@ export function deleteMode(name: string): boolean {
 /** The CURRENT trio as a ModeSpec — what "/mode save <name>" would snapshot:
  *  the active provider's selection plus the advisor and sidekick (each null when
  *  off/unconfigured). */
-export function currentModeSpec(): ModeSpec {
+export function currentModeSpec(): ModeSpec & { solo?: boolean } {
   const s = loadSettings()
   const provider = s.provider ?? ""
   const sel = s.selections?.[provider] ?? {}
@@ -524,7 +534,24 @@ export function currentModeSpec(): ModeSpec {
         ? { provider: side.provider, model: side.model, ...(side.effort ? { effort: side.effort } : {}) }
         : null,
     sidekickSeats: Object.keys(getSidekickSeats()).length > 0 ? getSidekickSeats() : null,
+    solo: loadSettings().solo ?? false,
   }
+}
+
+export function getSolo(): boolean { return loadSettings().solo ?? false }
+export function setSolo(solo: boolean): void { save({ ...loadSettings(), solo }) }
+
+export function getSoloAdvisor(): SoloAdvisorConfig {
+  return loadSettings().soloAdvisor ?? { enabled: false }
+}
+export function setSoloAdvisor(patch: Partial<SoloAdvisorConfig>): SoloAdvisorConfig {
+  const s = loadSettings(); const prev = s.soloAdvisor ?? { enabled: false }
+  const next: SoloAdvisorConfig = { ...prev,
+    ...(patch.enabled !== undefined ? { enabled: patch.enabled } : {}),
+    ...(patch.provider !== undefined ? { provider: patch.provider } : {}),
+    ...(patch.model !== undefined ? { model: patch.model } : {}),
+    ...(patch.effort !== undefined ? { effort: patch.effort } : {}), }
+  save({ ...s, soloAdvisor: next }); return next
 }
 
 /** Global review default. Deliberately off until a model is selected. */
@@ -541,7 +568,8 @@ export function setReview(patch: Partial<ReviewConfig>): ReviewConfig {
 /** Mode tri-state is resolved dynamically so mode application cannot corrupt the
  * saved global default. */
 export function getEffectiveReview(): ReviewConfig {
-  const s = loadSettings(); const mode = s.activeMode ? getMode(s.activeMode) : undefined
+  const s = loadSettings()
+  if (s.solo) return { enabled: false }; const mode = s.activeMode ? getMode(s.activeMode) : undefined
   if (!mode || mode.review === undefined) return getReview()
   return mode.review === null ? { enabled: false } : { enabled: true, ...mode.review }
 }

@@ -29,6 +29,15 @@ export interface ModelSelectionResult {
   model: string
   effort?: Effort
   speed?: Speed
+  solo?: boolean
+}
+
+export function modelSelectionSummary(result: ModelSelectionResult, ready: boolean): string {
+  const bits = [`${result.provider} / ${result.model}`]
+  if (result.effort) bits.push(`effort ${result.effort}`)
+  if (result.speed) bits.push(`speed ${result.speed}`)
+  if (result.solo) bits.push("solo (mode delegates off)")
+  return `Model → ${bits.join(" · ")}${providerSetupNote(result.provider, ready)}`
 }
 
 interface Props {
@@ -170,16 +179,12 @@ export function ModelPicker({ baseUrl, sessionId, onDone, onCancel }: Props) {
         headers: { "content-type": "application/json" },
         body: JSON.stringify(sessionId ? { ...payload, sessionId } : payload),
       })
-      const body = (await res.json()) as { error?: string; provider?: string; model?: string }
+      const body = (await res.json()) as { error?: string; provider?: string; model?: string; solo?: boolean }
       if (body.error) {
         onDone(payload, `Could not select ${row.model.id}: ${body.error}`)
         return
       }
-      const bits = [`${row.provider} / ${row.model.id}`]
-      if (eff) bits.push(`effort ${eff}`)
-      if (spd) bits.push(`speed ${spd}`)
-      const note = providerSetupNote(row.provider, row.ready)
-      onDone(payload, `Model → ${bits.join(" · ")}${note}`)
+      onDone(payload, modelSelectionSummary({ ...payload, solo: body.solo }, row.ready))
     } catch (err) {
       onDone(payload, `Select request failed: ${String(err)}`)
     }

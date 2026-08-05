@@ -102,6 +102,7 @@ interface CurrentSelection {
   model: string | null
   effort?: string | null
   speed?: string | null
+  solo?: boolean
 }
 
 /** Short human phrase for WHY the cache is cold: "42m idle" / "model switch". */
@@ -248,6 +249,7 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
   const [onboardingOpen, setOnboardingOpen] = useState(false)
   // When true, the /advisor picker is open (owns the keyboard while shown).
   const [advisorPickerOpen, setAdvisorPickerOpen] = useState(false)
+  const [soloAdvisorPickerOpen, setSoloAdvisorPickerOpen] = useState(false)
   // When set, the /sidekick picker is open (owns the keyboard while shown).
   // `seat` targets a NAMED seat (e.g. "frontend"); undefined = the default seat.
   const [sidekickPicker, setSidekickPicker] = useState<{ seat?: string } | null>(null)
@@ -293,7 +295,8 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
       prev?.provider === sel?.provider &&
       prev?.model === sel?.model &&
       prev?.effort === sel?.effort &&
-      prev?.speed === sel?.speed
+      prev?.speed === sel?.speed &&
+      prev?.solo === sel?.solo
     currentSelRef.current = sel
     setCurrentSel(sel)
     if (!same) setResolvedRuntimeModel(null)
@@ -389,6 +392,7 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
     skillsPickerOpen ||
     providerPickerOpen ||
     advisorPickerOpen ||
+    soloAdvisorPickerOpen ||
     sidekickPicker != null ||
     sidekickSeatMenuOpen ||
     modeMenuOpen ||
@@ -1496,6 +1500,7 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
         model: result.model,
         effort: result.effort ?? null,
         speed: result.speed ?? null,
+        solo: result.solo ?? true,
       })
       printLine(summary)
     },
@@ -1975,7 +1980,7 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
           break
         case "/help":
           printLine(
-            "Commands: /clear, /resume, /rewind, /fork, /help, /login, /model, /skills, /provider, /workers, /scoreboard, /usage, /advisor, /sidekick, /mode, /incognito, /goal, /shipit, /cacheguard, /quit. `/incognito [name]` applies an incognito mode so NEW sessions run off the record. `/scoreboard` ranks models by rating (add `session` to scope it); `/usage` shows this session's tokens and cost by role. `/rewind` restores files and conversation to an earlier turn; `/fork [--worktree|--no-worktree] [directive]` branches this session, optionally into a Git worktree. `/workers` shows automatic workflow routes; `/workers tag|auto|reset` changes exceptions. Input: enter to send (queues during a running turn), option+enter to steer a running turn, ctrl+v to attach a clipboard image.",
+            "Commands: /clear, /resume, /rewind, /fork, /help, /login, /model, /skills, /provider, /workers, /scoreboard, /usage, /advisor, /soloadvisor, /sidekick, /mode, /incognito, /goal, /shipit, /cacheguard, /quit. `/incognito [name]` applies an incognito mode so NEW sessions run off the record. `/scoreboard` ranks models by rating (add `session` to scope it); `/usage` shows this session's tokens and cost by role. `/rewind` restores files and conversation to an earlier turn; `/fork [--worktree|--no-worktree] [directive]` branches this session, optionally into a Git worktree. `/workers` shows automatic workflow routes; `/workers tag|auto|reset` changes exceptions. Input: enter to send (queues during a running turn), option+enter to steer a running turn, ctrl+v to attach a clipboard image.",
           )
           break
         case "/login":
@@ -2004,6 +2009,10 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
           break
         case "/advisor":
           doAdvisor()
+          break
+        case "/soloadvisor":
+          if (mode !== "live") printLine("The solo advisor picker needs the live server.")
+          else setSoloAdvisorPickerOpen(true)
           break
         case "/sidekick":
           doSidekick()
@@ -2091,6 +2100,9 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
       text: executorLabel,
       color: ACCENT,
     })
+    if (currentSel?.solo) {
+      chips.push({ text: "solo", dim: true })
+    } else {
     // Sidekick chip — only when enabled. `⚒ sidekick <model>` (the lead's model
     // when the seat inherits), plus a seat
     // suffix: 1 named seat → `+name`, more than one → `+N`.
@@ -2116,6 +2128,7 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
         text: `✦ advisor ${prettyModel(advisor.model)}${advisor.active ? "" : " ✕"}`,
         dim: true,
       })
+    }
     }
     // Goal chip — only when a goal exists; WARNING while active (carries turns),
     // DIM otherwise.
@@ -2212,6 +2225,9 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
         )}
         {advisorPickerOpen && (
           <AdvisorPicker baseUrl={baseUrl} onDone={onAdvisorDone} onCancel={() => setAdvisorPickerOpen(false)} />
+        )}
+        {soloAdvisorPickerOpen && (
+          <AdvisorPicker baseUrl={baseUrl} endpoint="solo-advisor" onDone={onAdvisorDone} onCancel={() => setSoloAdvisorPickerOpen(false)} />
         )}
         {sidekickPicker && (
           <AdvisorPicker

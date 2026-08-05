@@ -59,6 +59,7 @@ import {
   listModelsFor,
   listProviders,
   resolveAdvisorSelection,
+  isSolo,
   resolveReviewSelection,
   effectiveSidekickConfig,
   effectiveSidekickSeats,
@@ -78,6 +79,8 @@ import {
   currentModeSpec,
   deleteMode,
   getAdvisor,
+  getSolo,
+  getSoloAdvisor,
   getEffectiveReview,
   getReview,
   getCacheGuardTokens,
@@ -95,6 +98,8 @@ import {
   setActiveMode,
   saveCustomProviders,
   setAdvisor,
+  setSolo,
+  setSoloAdvisor,
   setReview,
   setCacheGuardTokens,
   setSidekick,
@@ -105,6 +110,7 @@ import {
   agentsMdEnabled,
   setAgentsMdEnabled,
   type AdvisorConfig,
+  type SoloAdvisorConfig,
   type ReviewConfig,
   type ModeSpec,
   type SidekickConfig,
@@ -1057,11 +1063,11 @@ const server = Bun.serve(withCors({
         if (!Store.exists(sessionId)) return json({ error: "unknown session" }, 404)
 
         const sel = effectiveSessionSelection(sessionId)
-        return json({ provider: sel.provider, model: sel.model ?? null, effort: sel.effort ?? null, speed: sel.speed ?? null })
+        return json({ provider: sel.provider, model: sel.model ?? null, effort: sel.effort ?? null, speed: sel.speed ?? null, solo: isSolo(sessionId) })
       }
       const provider = activeProviderId()
       const sel = selectionOf(provider)
-      return json({ provider, model: sel.model ?? null, effort: sel.effort ?? null, speed: sel.speed ?? null })
+      return json({ provider, model: sel.model ?? null, effort: sel.effort ?? null, speed: sel.speed ?? null, solo: getSolo() })
     }
 
     // POST /api/model/select { provider, model, effort?, speed? }
@@ -1093,18 +1099,19 @@ const server = Bun.serve(withCors({
 
       if (sessionId) {
         if (!Store.exists(sessionId)) return json({ error: "unknown session" }, 404)
-        Store.pinSelection(sessionId, { provider, model, effort, speed })
+        Store.pinSelection(sessionId, { provider, model, effort, speed, solo: true })
         invalidateAgent()
         const sel = effectiveSessionSelection(sessionId)
-        return json({ provider: sel.provider, model: sel.model ?? null, effort: sel.effort ?? null, speed: sel.speed ?? null })
+        return json({ provider: sel.provider, model: sel.model ?? null, effort: sel.effort ?? null, speed: sel.speed ?? null, solo: isSolo(sessionId) })
       }
       setActiveProviderId(provider)
       setSelection(provider, { model, effort, speed })
       Store.invalidateGlobalCompactionArtifacts(provider, model)
       setActiveMode(undefined)
+      setSolo(true)
       invalidateAgent()
       const sel = selectionOf(provider)
-      return json({ provider, model: sel.model ?? null, effort: sel.effort ?? null, speed: sel.speed ?? null })
+      return json({ provider, model: sel.model ?? null, effort: sel.effort ?? null, speed: sel.speed ?? null, solo: true })
     }
 
     // GET /api/advisor -> { config, active } (the always-on advisor's config + readiness)
@@ -1142,8 +1149,25 @@ const server = Bun.serve(withCors({
       if (typeof body.model === "string") patch.model = body.model
       if (typeof body.effort === "string" && EFFORTS.includes(body.effort)) patch.effort = body.effort as Effort
       setAdvisor(patch)
+      setSolo(false)
       invalidateAgent()
       return json({ config: getAdvisor(), active: resolveAdvisorSelection() != null })
+    }
+
+    if (req.method === "GET" && pathname === "/api/solo-advisor") {
+      return json({ config: getSoloAdvisor(), active: resolveAdvisorSelection() != null })
+    }
+    if (req.method === "POST" && pathname === "/api/solo-advisor") {
+      let body: { enabled?: unknown; provider?: unknown; model?: unknown; effort?: unknown }
+      try { body = (await req.json()) as typeof body } catch { return json({ error: "invalid JSON body" }, 400) }
+      const patch: Partial<SoloAdvisorConfig> = {}
+      if (typeof body.enabled === "boolean") patch.enabled = body.enabled
+      if (typeof body.provider === "string") patch.provider = body.provider
+      if (typeof body.model === "string") patch.model = body.model
+      if (isEffort(body.effort)) patch.effort = body.effort
+      setSoloAdvisor(patch)
+      invalidateAgent()
+      return json({ config: getSoloAdvisor(), active: resolveAdvisorSelection() != null })
     }
 
     // Global reviewer default. Active mode overrides are intentionally read-only
@@ -1212,6 +1236,7 @@ const server = Bun.serve(withCors({
           Store.setSidekickOverride(sessionId, { ...current, seats })
         } else if (body.enabled === false) {
           setSidekickSeat(name, null)
+          setSolo(false)
         } else {
           if (typeof body.provider !== "string" || typeof body.model !== "string") {
             return json({ error: "a named seat needs provider and model" }, 400)
@@ -1222,6 +1247,7 @@ const server = Bun.serve(withCors({
             ...(typeof body.effort === "string" && EFFORTS.includes(body.effort) ? { effort: body.effort as Effort } : {}),
           })
         }
+        setSolo(false)
         invalidateAgent()
         return json({ config: effectiveSidekickConfig(sessionId), seats: effectiveSidekickSeats(sessionId) })
       }
@@ -1235,6 +1261,7 @@ const server = Bun.serve(withCors({
         Store.setSidekickOverride(sessionId, { ...current, config: { ...current.config, ...patch } })
       } else {
         setSidekick(patch)
+        setSolo(false)
       }
       invalidateAgent()
       return json({ config: effectiveSidekickConfig(sessionId), seats: effectiveSidekickSeats(sessionId) })
@@ -1286,6 +1313,7 @@ const server = Bun.serve(withCors({
         try { validateIncognitoMode(spec) } catch (err) { return json({ error: (err as Error).message }, 400) }
         // activeMode drives review's tri-state override for ordinary modes too.
         setActiveMode(name)
+        setSolo(false)
         setActiveProviderId(spec.provider)
         setSelection(spec.provider, { model: spec.model, effort: spec.effort, speed: spec.speed })
         if (spec.advisor) {

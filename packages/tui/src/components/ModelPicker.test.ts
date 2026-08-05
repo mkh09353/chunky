@@ -19,3 +19,9 @@ describe("model picker Codex speed defaults", () => {
     expect(initialSpeedOption("gpt-5.6-terra")).toBe(0)
   })
 })
+
+import { modelSelectionSummary } from "./ModelPicker.js"
+
+test("model summary calls out solo delegate suppression", () => {
+  expect(modelSelectionSummary({ provider: "zen", model: "grok-4.5", effort: "high", solo: true }, true)).toBe("Model → zen / grok-4.5 · effort high · solo (mode delegates off)")
+})

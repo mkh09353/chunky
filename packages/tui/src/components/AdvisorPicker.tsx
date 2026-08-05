@@ -40,6 +40,7 @@ interface Props {
   /** NAMED sidekick seat (e.g. "frontend") — POSTs with `seat` so the server
    *  sets that domain seat instead of the default; the OFF row removes it. */
   seatName?: string
+  endpoint?: "advisor" | "solo-advisor"
 }
 
 const EFFORTS: Effort[] = ["low", "medium", "high", "xhigh", "max"]
@@ -74,10 +75,10 @@ function fuzzyScore(query: string, target: string): number {
  * effort}. The server auto-suppresses an advisor that equals the executor model —
  * we surface that as an "(inactive)" note.
  */
-export function AdvisorPicker({ baseUrl, sessionId, onDone, onCancel, seat = "advisor", seatName }: Props) {
+export function AdvisorPicker({ baseUrl, sessionId, onDone, onCancel, seat = "advisor", seatName, endpoint }: Props) {
   const rawSupported = rawModeSupported
   // Seat-specific copy: same picker, different side thread + endpoint.
-  const seatCap = seatName ? `Sidekick seat "${seatName}"` : seat === "advisor" ? "Advisor" : "Sidekick"
+  const seatCap = endpoint === "solo-advisor" ? "Solo advisor" : seatName ? `Sidekick seat "${seatName}"` : seat === "advisor" ? "Advisor" : "Sidekick"
   const seatLabel = seatName ? `${seat} seat "${seatName}"` : seat
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
@@ -150,7 +151,7 @@ export function AdvisorPicker({ baseUrl, sessionId, onDone, onCancel, seat = "ad
   async function post(payload: AdvisorSelectionResult, describe: string) {
     setBusy(true)
     try {
-      const res = await fetch(baseUrl + `/api/${seat}`, {
+      const res = await fetch(baseUrl + `/api/${endpoint ?? seat}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({

@@ -154,6 +154,53 @@ describe("Store.lastAssistantText", () => {
     Store.createSession(sid)
     expect(Store.lastAssistantText(sid)).toBeNull()
   })
+
+  test("skips interleaved child events and reconstructs across transcript pages", () => {
+    const sid = `bus-paged-text-${RUN}`
+    Store.createSession(sid)
+    Store.appendEvent(sid, { type: "message.start", role: "assistant" })
+    Store.appendEvent(sid, { type: "message.delta", text: "complete before filler" })
+    Store.appendEvent(sid, { type: "message.end" })
+    for (let i = 0; i < 300; i++) {
+      Store.appendEvent(sid, { type: "message.delta", text: `filler-${i}`, threadId: "child-thread" })
+    }
+    Store.appendEvent(sid, { type: "message.start", role: "assistant", threadId: "child-thread" })
+    Store.appendEvent(sid, { type: "message.delta", text: "child should be ignored", threadId: "child-thread" })
+    Store.appendEvent(sid, { type: "message.end", threadId: "child-thread" })
+    Store.appendEvent(sid, { type: "message.start", role: "assistant" })
+    Store.appendEvent(sid, { type: "message.delta", text: "latest " })
+    Store.appendEvent(sid, { type: "message.delta", text: "complete" })
+    Store.appendEvent(sid, { type: "message.end" })
+    expect(Store.lastAssistantText(sid)).toBe("latest complete")
+  })
+
+  test("whitespace-only latest message falls back to the earlier complete message", () => {
+    const sid = `bus-whitespace-text-${RUN}`
+    Store.createSession(sid)
+    Store.appendEvent(sid, { type: "message.start", role: "assistant" })
+    Store.appendEvent(sid, { type: "message.delta", text: "usable answer" })
+    Store.appendEvent(sid, { type: "message.end" })
+    Store.appendEvent(sid, { type: "message.start", role: "assistant" })
+    Store.appendEvent(sid, { type: "message.delta", text: "  \n\t " })
+    Store.appendEvent(sid, { type: "message.end" })
+    expect(Store.lastAssistantText(sid)).toBe("usable answer")
+  })
+})
+
+describe("Store.statusEvents", () => {
+  test("returns only lifecycle events in persisted sequence order", () => {
+    const sid = `bus-status-events-${RUN}`
+    Store.createSession(sid)
+    Store.appendEvent(sid, { type: "message.start", role: "assistant" })
+    Store.appendEvent(sid, { type: "session.status", sessionId: sid, status: "running" })
+    Store.appendEvent(sid, { type: "tool.start", id: "tool", name: "bash", input: {} })
+    Store.appendEvent(sid, { type: "thread.spawn", threadId: "child", parentThreadId: null, title: "Child" })
+    Store.appendEvent(sid, { type: "message.delta", text: "ignored" })
+    Store.appendEvent(sid, { type: "thread.status", threadId: "child", status: "idle", title: "Child" })
+    expect(Store.statusEvents(sid).map((event) => event.type)).toEqual([
+      "session.status", "thread.spawn", "thread.status",
+    ])
+  })
 })
 
 describe("send_to_session tool", () => {

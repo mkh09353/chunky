@@ -3,7 +3,7 @@ import { ThreadManager, type AgentForSelection } from "./threads.ts"
 import { runSpawnThread } from "./tools/spawn-thread.ts"
 import { peekTaskReminders, resetTasks } from "./tasks.ts"
 import { installBackgroundDispatcher, resetBackgroundDispatcher } from "./background-dispatch.ts"
-import { resetDetachedSpawns } from "./detached-spawns.ts"
+import { createDetachedSpawn, detachedSpawnResultCap, finishDetachedSpawn, resetDetachedSpawns, sweepDetachedSpawnsForTests } from "./detached-spawns.ts"
 
 const selection = { provider: "zen", model: "test-model" }
 
@@ -28,6 +28,15 @@ afterEach(async () => {
 })
 
 describe("detached spawn_thread", () => {
+  test("caps finished reports and evicts them after the terminal TTL", () => {
+    const record = createDetachedSpawn("evict", "child", "Child")!
+    finishDetachedSpawn(record, "x".repeat(detachedSpawnResultCap + 100))
+    expect(record.result!.length).toBeLessThanOrEqual(detachedSpawnResultCap)
+    sweepDetachedSpawnsForTests(record.endedAt! + 30 * 60_000)
+    const replacement = createDetachedSpawn("evict", "child-2", "Child 2")!
+    expect(replacement).toBeDefined()
+    finishDetachedSpawn(replacement, "done")
+  })
   test("returns immediately and wakes an idle lead with its report", async () => {
     let release!: () => void
     const gate = new Promise<void>((resolve) => { release = resolve })

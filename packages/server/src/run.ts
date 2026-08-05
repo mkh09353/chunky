@@ -24,6 +24,7 @@ import { assertSelectionAllowed } from "./incognito.ts"
 import { asToolRunResult } from "./tools/result.ts"
 import { peekTaskReminders, consumeTaskReminders } from "./tasks.ts"
 import { streamWithCheckpointRecovery } from "./checkpoint-recovery.ts"
+import { loadAttachmentBase64, type AttachmentRef } from "./attachments.ts"
 
 export type { Emit } from "./event-emitter.ts"
 
@@ -290,10 +291,7 @@ export async function translateStream(
 }
 
 /** An image the user pasted (Ctrl+V), carried from the TUI as base64. */
-export interface InputImage {
-  base64: string
-  mediaType: string
-}
+export type InputImage = AttachmentRef
 
 /** Pause the session's goal and announce it — but ONLY if it's currently active,
  *  so a terminal complete/blocked (or a no-goal session) is never clobbered by an
@@ -341,11 +339,15 @@ function emitGoalStop(sessionId: string, reason: Extract<GoalStep, { kind: "stop
 /** Build the user message: a plain string when there are no images, or the
  *  OpenAI-style multimodal content array (text + image_url data-URIs) when there
  *  are — which LangChain ChatOpenAI forwards to vision models (Grok 4.5, GPT-5.5). */
-export function userMessageContent(text: string, images?: InputImage[]): unknown {
+export async function userMessageContent(text: string, images?: InputImage[]): Promise<unknown> {
   if (!images || images.length === 0) return text
+  const content = await Promise.all(images.map((image) => {
+    try { return { type: "image_url", image_url: { url: `data:${image.mediaType};base64,${loadAttachmentBase64(image)}` } } }
+    catch { return { type: "text", text: `[Image unavailable: ${image.id}]` } }
+  }))
   return [
     ...(text ? [{ type: "text", text }] : []),
-    ...images.map((i) => ({ type: "image_url", image_url: { url: `data:${i.mediaType};base64,${i.base64}` } })),
+    ...content,
   ]
 }
 
@@ -440,7 +442,7 @@ export async function runAgent(
     } else {
       const stream = await streamWithCheckpointRecovery(
         getAgent(selection, workspace, agentsMd, sessionId, repoMemory),
-        { messages: [{ role: "user", content: userMessageContent(composedPrompt, turnImages) }] } as any,
+        { messages: [{ role: "user", content: await userMessageContent(composedPrompt, turnImages) }] } as any,
         {
           configurable: {
             thread_id: sessionId,

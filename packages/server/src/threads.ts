@@ -31,6 +31,7 @@ import {
 import { registerThread, unregisterThread, type ThreadSpawner } from "./thread-context.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { assertSelectionAllowed, isIncognitoSession } from "./incognito.ts"
+import { notifySessionChanged } from "./session-changes.ts"
 import { registerIncognitoThread } from "./bun-sqlite-saver.ts"
 import { runWorkflowScript, workflowConcurrency, type WorkflowHost, type WorkflowTier } from "./workflow/engine.ts"
 import { workflowRouteResolver } from "./workflow/router.ts"
@@ -186,7 +187,7 @@ export class ThreadManager implements ThreadSpawner {
     selection?: AgentSelectionOverride
     kind?: "child" | "workflow_agent"
   }): Promise<string> {
-    const childThreadId = randomUUID()
+    const childThreadId = `child-${randomUUID()}`
     if (isIncognitoSession(this.rootId)) registerIncognitoThread(childThreadId)
     const parentThreadId = opts.callerThreadId === this.rootId ? null : opts.callerThreadId
     const parentSelection = this.selections.get(opts.callerThreadId)
@@ -220,6 +221,10 @@ export class ThreadManager implements ThreadSpawner {
     let sessionChildren = runningChildrenBySession.get(this.rootId)
     if (!sessionChildren) { sessionChildren = new Map(); runningChildrenBySession.set(this.rootId, sessionChildren) }
     sessionChildren.set(childThreadId, { threadId: childThreadId, title: opts.title })
+    // A delegate starting/stopping changes the session's `busy`, which the
+    // compact session stream publishes. Without this the stream would report a
+    // session idle while a child is still working.
+    notifySessionChanged(this.rootId)
 
     // Inactivity watchdog: if the child's stream goes silent (stalled provider
     // connection), abort it and hand the lead a real error instead of hanging
@@ -275,6 +280,7 @@ export class ThreadManager implements ThreadSpawner {
       const sessionChildren = runningChildrenBySession.get(this.rootId)
       sessionChildren?.delete(childThreadId)
       if (sessionChildren?.size === 0) runningChildrenBySession.delete(this.rootId)
+      notifySessionChanged(this.rootId)
     }
 
   }
@@ -297,7 +303,7 @@ export class ThreadManager implements ThreadSpawner {
     } catch (err) {
       return `error: ${(err as Error).message}`
     }
-    const childThreadId = randomUUID()
+    const childThreadId = `child-${randomUUID()}`
     const record = createDetachedSpawn(this.rootId, childThreadId, opts.title)
     if (!record) return `error: detached spawn limit reached (${detachedSpawnLimit()} running children in this session). Wait for one to finish or use workflow.`
 
@@ -427,7 +433,7 @@ export class ThreadManager implements ThreadSpawner {
    */
   private tierOverride(tier: WorkflowTier): AgentSelectionOverride | undefined {
     if (tier === "big") {
-      const advisor = resolveAdvisorSelection()
+      const advisor = resolveAdvisorSelection(this.rootId)
       if (advisor) return { provider: advisor.provider, model: advisor.model, effort: capEffortAtMedium(advisor.effort) }
       return { effort: "medium" }
     }
@@ -450,7 +456,7 @@ export class ThreadManager implements ThreadSpawner {
     question: string
     pointers?: string
   }): Promise<string> {
-    const advisorSel = resolveAdvisorSelection()
+    const advisorSel = resolveAdvisorSelection(this.rootId)
     if (!advisorSel) {
       return "error: no advisor is configured — ask the user to set one (/advisor)."
     }
@@ -654,6 +660,7 @@ export class ThreadManager implements ThreadSpawner {
     let sessionSidekicks = activeSidekicks.get(this.rootId)
     if (!sessionSidekicks) { sessionSidekicks = new Map(); activeSidekicks.set(this.rootId, sessionSidekicks) }
     sessionSidekicks.set(sidekickKey, { seat: sidekickKey, brief: opts.brief })
+    notifySessionChanged(this.rootId)
 
     this.emit({ type: "thread.spawn", threadId: sidekickThreadId, parentThreadId: null, title, model: sidekickSel.model })
     this.emit({ type: "thread.status", threadId: sidekickThreadId, status: "running", title })
@@ -715,6 +722,7 @@ export class ThreadManager implements ThreadSpawner {
       this.emit({ type: "thread.status", threadId: sidekickThreadId, status: "idle", title })
       sessionSidekicks.delete(sidekickKey)
       if (sessionSidekicks.size === 0) activeSidekicks.delete(this.rootId)
+      notifySessionChanged(this.rootId)
     }
 
     return `${ThreadManager.nonEmptyReport(finalText, "sidekick")}\n\n[delegation: ${delegationId}]`

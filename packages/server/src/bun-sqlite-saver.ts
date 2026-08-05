@@ -29,12 +29,19 @@ const checkpointMetadataKeys = ["source", "step", "parents"] as const
  * interrupted-step recovery and useful debugging without retaining a complete,
  * repeatedly-copied conversation snapshot for every graph transition. */
 export const CHECKPOINT_HISTORY_LIMIT = 5
+export const CHILD_CHECKPOINT_HISTORY_LIMIT = 2
+
+export function checkpointHistoryLimit(threadId: string): number {
+  return /^(?:child-|.*:(?:advisor|review(?::|$)|sidekick(?::|$)))/.test(threadId)
+    ? CHILD_CHECKPOINT_HISTORY_LIMIT
+    : CHECKPOINT_HISTORY_LIMIT
+}
 
 export function pruneCheckpointHistory(
   db: Database,
   threadId: string,
   checkpointNs: string,
-  limit = CHECKPOINT_HISTORY_LIMIT,
+  limit = checkpointHistoryLimit(threadId),
 ): void {
   const boundedLimit = Math.max(1, Math.floor(limit))
   const tx = () => {

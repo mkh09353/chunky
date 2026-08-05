@@ -3,7 +3,7 @@ import { Database } from "bun:sqlite"
 import { mkdtempSync, rmSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
-import { BunSqliteSaver, CHECKPOINT_HISTORY_LIMIT, cloneThreadAtCheckpoint, pruneCheckpointHistory } from "./bun-sqlite-saver.ts"
+import { BunSqliteSaver, CHECKPOINT_HISTORY_LIMIT, CHILD_CHECKPOINT_HISTORY_LIMIT, cloneThreadAtCheckpoint, pruneCheckpointHistory } from "./bun-sqlite-saver.ts"
 
 const dirs: string[] = []
 afterEach(() => {
@@ -11,6 +11,16 @@ afterEach(() => {
 })
 
 describe("checkpoint retention", () => {
+  test("keeps five root checkpoints but only two child-kind checkpoints", () => {
+    const db = new Database(":memory:")
+    db.exec("CREATE TABLE checkpoints (thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT, checkpoint BLOB, PRIMARY KEY(thread_id, checkpoint_ns, checkpoint_id)); CREATE TABLE writes (thread_id TEXT, checkpoint_ns TEXT, checkpoint_id TEXT)")
+    for (const thread of ["root", "child-test"]) {
+      for (let i = 0; i < 6; i++) db.prepare("INSERT INTO checkpoints VALUES (?, '', ?, '')").run(thread, `${i}`)
+      pruneCheckpointHistory(db, thread, "")
+    }
+    expect((db.prepare("SELECT count(*) n FROM checkpoints WHERE thread_id='root'").get() as any).n).toBe(CHECKPOINT_HISTORY_LIMIT)
+    expect((db.prepare("SELECT count(*) n FROM checkpoints WHERE thread_id='child-test'").get() as any).n).toBe(CHILD_CHECKPOINT_HISTORY_LIMIT)
+  })
   test("serializes separate checkpoint puts inside the write queue", async () => {
     let activeSerializers = 0
     let maxActiveSerializers = 0

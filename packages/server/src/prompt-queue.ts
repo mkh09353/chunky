@@ -1,9 +1,10 @@
 import { randomUUID } from "node:crypto"
 import type { QueueEntry } from "@chunky/protocol"
+import type { AttachmentRef } from "./attachments.ts"
 
 export interface PendingPrompt {
   id: string; version: number; prompt: string; shown: string
-  images?: { base64: string; mediaType: string }[]
+  images?: AttachmentRef[]
   kind: QueueEntry["kind"]; createdAt: number
 }
 
@@ -42,7 +43,7 @@ export class PromptQueue {
   snapshot(): QueueEntry[] { return this.entries.map((e, position) => ({ id: e.id, version: e.version, text: e.prompt, shown: e.shown, kind: e.kind, position, createdAt: e.createdAt })) }
 }
 
-export interface PendingInterjection { id: string; text: string; images?: { base64: string; mediaType: string }[] }
+export interface PendingInterjection { id: string; text: string; images?: AttachmentRef[] }
 export class InterjectionBuffer {
   private entries: PendingInterjection[] = []
   constructor(private readonly cap = 10) {}

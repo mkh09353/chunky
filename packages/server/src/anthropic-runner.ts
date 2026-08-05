@@ -24,6 +24,7 @@ import { ANTHROPIC_SDK_ISOLATION_OPTIONS, anthropicOAuthEnvironment } from "./pr
 import { promptTokensOf, usageForAnthropicCache, usageFromAnthropicAssistant, usageFromAnthropicResult } from "./usage.ts"
 import { cacheModelKey, noteRequest } from "./cache-watch.ts"
 import type { CacheContext, InputImage } from "./run.ts"
+import { loadAttachmentBase64 } from "./attachments.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { assertSelectionAllowed } from "./incognito.ts"
 import { bash, bashInputShape } from "./tools/bash.ts"
@@ -652,10 +653,10 @@ function anthropicPrompt(
         role: "user",
         content: [
           ...(prompt ? [{ type: "text" as const, text: prompt }] : []),
-          ...images.map((i) => ({
-            type: "image" as const,
-            source: { type: "base64" as const, media_type: clampImageMediaType(i.mediaType), data: i.base64 },
-          })),
+          ...(await Promise.all(images.map(async (i) => {
+            try { return { type: "image" as const, source: { type: "base64" as const, media_type: clampImageMediaType(i.mediaType), data: loadAttachmentBase64(i) } } }
+            catch { return { type: "text" as const, text: `[Image unavailable: ${i.id}]` } }
+          }))),
         ],
       },
     }

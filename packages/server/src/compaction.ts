@@ -2,6 +2,7 @@ import { HumanMessage, RemoveMessage, ToolMessage, AIMessage } from "@langchain/
 import { REMOVE_ALL_MESSAGES } from "@langchain/langgraph"
 import { createMiddleware, countTokensApproximately } from "langchain"
 import { sessionForThread } from "./thread-context.ts"
+import { MAX_INLINE_IMAGE_BYTES, stripInlineImages } from "./inline-images.ts"
 
 export const COMPACTION_TRIGGER_TOKENS = 175_000
 export const COMPACTION_KEEP_MESSAGES = 15
@@ -84,7 +85,7 @@ export function chunkyCompactionMiddleware({ model }: { model: any }) {
       if (total < COMPACTION_TRIGGER_TOKENS && !force) return
       const boundary = tailBoundary(messages)
       if (boundary <= 0) { if (sessionId) pendingCompactions.delete(sessionId); return }
-      const oldMessages = messages.slice(0, boundary)
+      const oldMessages = stripInlineImages(messages.slice(0, boundary), 0)
       const hintText = hint ? `\n\n**User-provided context for this compaction:** ${hint} — ensure it is prominently addressed in the relevant sections.` : ""
       const prompt = `${CHUNKY_COMPACTION_PROMPT}${hintText}\n\n<messages>\n${oldMessages.map((m) => `${m._getType?.() ?? "message"}: ${contentOf(m)}`).join("\n")}\n</messages>`
       let cleaned: { text: string; degenerate: boolean } | undefined
@@ -108,7 +109,7 @@ export function chunkyCompactionMiddleware({ model }: { model: any }) {
       }
       if (sessionId) pendingCompactions.delete(sessionId)
       const summary = new HumanMessage({ id: crypto.randomUUID(), content: cleaned.text, additional_kwargs: { lc_source: "summarization" } })
-      return { messages: [new RemoveMessage({ id: REMOVE_ALL_MESSAGES }), summary, ...messages.slice(boundary)] }
+      return { messages: [new RemoveMessage({ id: REMOVE_ALL_MESSAGES }), summary, ...stripInlineImages(messages.slice(boundary), MAX_INLINE_IMAGE_BYTES)] }
     },
   })
 }

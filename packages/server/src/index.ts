@@ -40,6 +40,8 @@ import {
   type PrReviewsConfig,
 } from "@chunky/protocol"
 import { effectiveSessionSelection, runAgent, type InputImage, type InterjectionBoundary } from "./run.ts"
+import { createMessageCoalescer } from "./message-coalescer.ts"
+import { saveAttachment } from "./attachments.ts"
 import { shipHandoffPrompt } from "./tools/ship.ts"
 import { Store } from "./store.ts"
 import { subscribeSessionChanges } from "./session-changes.ts"
@@ -233,9 +235,13 @@ function hasLiveSubscribers(): boolean {
   return false
 }
 
-/** Persist an event, then push it to every connected subscriber of the session. */
+const coalescePersistedMessage = createMessageCoalescer((sessionId, event) => Store.appendEvent(sessionId, event))
+
+/** Persist status/history events, then push every live event to subscribers. */
 function emitTo(sessionId: string, ev: AgentEvent): void {
-  if (ev.type !== "tool.progress" && ev.type !== "session.rewound" && ev.type !== "background.changed" && ev.type !== "context.compaction_failed") Store.appendEvent(sessionId, ev)
+  if (ev.type !== "tool.progress" && ev.type !== "session.rewound" && ev.type !== "background.changed" && ev.type !== "context.compaction_failed") {
+    coalescePersistedMessage(sessionId, ev)
+  }
   const set = live.get(sessionId)
   if (!set) return
   const frame = encoder.encode(sse(ev))
@@ -248,13 +254,23 @@ function emitTo(sessionId: string, ev: AgentEvent): void {
   }
 }
 
-/** The mobile shell intentionally contains only the public SessionSummary fields. */
+/** Root run OR any live delegate — the same rule the per-repo list route uses,
+ *  so shell rows and /api/sessions can never disagree about a session. */
+function sessionBusy(sessionId: string): boolean {
+  return running.has(sessionId) || hasLiveThreadDelegates(sessionId) || hasRunningDetachedSpawns(sessionId)
+}
+
+/** The mobile shell intentionally contains only the public SessionSummary fields.
+ *  `busy` is one of them: without it a client cannot tell a session whose root
+ *  run stopped but whose sidekick is still working from a settled one, and would
+ *  have to confirm every such row with an extra poll. */
 function shellSummary(sessionId: string): SessionSummary | null {
   const session = Store.summary(sessionId)
   return session && {
     ...session,
     attached: (live.get(sessionId)?.size ?? 0) > 0,
     running: running.has(sessionId),
+    busy: sessionBusy(sessionId),
     incognito: isIncognitoSession(sessionId),
   }
 }
@@ -264,6 +280,7 @@ function shellSessions(): SessionSummary[] {
     ...session,
     attached: (live.get(session.sessionId)?.size ?? 0) > 0,
     running: running.has(session.sessionId),
+    busy: sessionBusy(session.sessionId),
     incognito: isIncognitoSession(session.sessionId),
   }))
 }
@@ -312,13 +329,13 @@ function broadcastLive(ev: AgentEvent): void {
  * The run registry is deliberately in-memory, so a persisted `running` marker
  * is stale whenever this process has no live run for the session.  `history`,
  * when supplied, is also updated so an attach can replay the corrective events
- * without reading the (potentially large) transcript a second time. */
-function reconcileStaleRun(sessionId: string, history = Store.history(sessionId)): void {
+ * without reading the (potentially large) transcript. */
+function reconcileStaleRun(sessionId: string): void {
   if (running.has(sessionId)) return
 
   let rootStatus: "idle" | "running" | undefined
   const threadStatus = new Map<string, { status: "idle" | "running"; title?: string }>()
-  for (const ev of history) {
+  for (const ev of Store.statusEvents(sessionId)) {
     if (ev.type === "session.status") {
       rootStatus = ev.status
     } else if (ev.type === "thread.spawn") {
@@ -337,7 +354,6 @@ function reconcileStaleRun(sessionId: string, history = Store.history(sessionId)
   if (rootStatus === "running" && !running.has(sessionId)) {
     const correction: AgentEvent = { type: "session.status", sessionId, status: "idle" }
     emitTo(sessionId, correction)
-    history.push(correction)
   }
   for (const [threadId, state] of threadStatus) {
     if (state.status !== "running" || running.has(sessionId)) continue
@@ -348,7 +364,6 @@ function reconcileStaleRun(sessionId: string, history = Store.history(sessionId)
       ...(state.title ? { title: state.title } : {}),
     }
     emitTo(sessionId, correction)
-    history.push(correction)
   }
 }
 
@@ -379,7 +394,7 @@ function startRun(
       return notes.length ? {
         prompts: notes.map((note) => formatInterjection(note.text)),
         texts: notes.map((note) => note.text),
-        images: notes.map((note) => note.images?.map((image) => ({ base64: image.base64, mediaType: image.mediaType }))),
+        images: notes.map((note) => note.images),
       } : undefined
     },
   })
@@ -518,7 +533,7 @@ function beginUserTurn(sessionId: string, text: string): number {
 
 function sessionIsBusy(sessionId: string): boolean {
   const activeChildren = new Map<string, boolean>()
-  for (const ev of Store.history(sessionId)) {
+  for (const ev of Store.statusEvents(sessionId)) {
     if (ev.type === "thread.spawn") activeChildren.set(ev.threadId, true)
     if (ev.type === "thread.status") activeChildren.set(ev.threadId, ev.status === "running")
   }
@@ -1523,7 +1538,7 @@ const server = Bun.serve(withCors({
         ...session,
         attached: (live.get(session.sessionId)?.size ?? 0) > 0,
         running: running.has(session.sessionId),
-        busy: running.has(session.sessionId) || hasLiveThreadDelegates(session.sessionId) || hasRunningDetachedSpawns(session.sessionId),
+        busy: sessionBusy(session.sessionId),
         incognito: isIncognitoSession(session.sessionId),
       }))
       return json({ sessions })
@@ -1701,8 +1716,8 @@ const server = Bun.serve(withCors({
 
       // GET .../events -> SSE. Replays persisted history first (== resume), then live.
       if (kind === "events" && req.method === "GET") {
+        reconcileStaleRun(sessionId)
         const history = Store.history(sessionId)
-        reconcileStaleRun(sessionId, history)
         let selfController: Subscriber
         let heartbeat: ReturnType<typeof setInterval> | undefined
         const stream = new ReadableStream<Uint8Array>({
@@ -1767,7 +1782,7 @@ const server = Bun.serve(withCors({
         let steer = false
         let delivery: "auto" | "queue" | "interject" | "steer" = "auto"
         let skill: string | undefined
-        let images: { base64: string; mediaType: string }[] | undefined
+        let images: InputImage[] | undefined
         try {
           const body = (await req.json()) as { text?: unknown; images?: unknown; force?: unknown; steer?: unknown; skill?: unknown; delivery?: unknown }
           text = typeof body?.text === "string" ? body.text : ""
@@ -1777,10 +1792,11 @@ const server = Bun.serve(withCors({
           if (steer) delivery = "steer"
           skill = typeof body?.skill === "string" ? body.skill.trim() : undefined
           if (Array.isArray(body?.images)) {
-            images = body.images.filter(
+            const validImages = body.images.filter(
               (i): i is { base64: string; mediaType: string } =>
                 !!i && typeof i.base64 === "string" && typeof i.mediaType === "string",
             )
+            images = validImages.map((image) => saveAttachment(sessionId, image.base64, image.mediaType))
           }
         } catch {
           return json({ error: "invalid JSON body" }, 400)

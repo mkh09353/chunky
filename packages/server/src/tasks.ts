@@ -30,6 +30,19 @@ export type TaskRecord = TaskSnapshot & { process?: Subprocess; cancelRequested:
 const tasks = new Map<string, Map<string, TaskRecord>>()
 const nextIds = new Map<string, number>()
 const OUTPUT_CAP = 32 * 1024
+const TERMINAL_TTL_MS = 30 * 60_000
+
+function sweepTerminalTasks(now = Date.now()): void {
+  for (const [sessionId, map] of tasks) {
+    for (const [id, record] of map) {
+      if (record.isTerminal && record.endedAt !== undefined && now - record.endedAt >= TERMINAL_TTL_MS) {
+        try { unlinkSync(record.spillPath) } catch {}
+        map.delete(id)
+      }
+    }
+    if (!map.size) tasks.delete(sessionId)
+  }
+}
 
 function sessionTasks(sessionId: string) {
   let map = tasks.get(sessionId)
@@ -58,6 +71,7 @@ export function createTask(sessionId: string, input: { command: string; descript
 }
 
 export function liveTaskCounts(sessionId: string): { tasks: number; monitors: number } {
+  sweepTerminalTasks()
   let taskCount = 0, monitorCount = 0
   for (const record of tasks.get(sessionId)?.values() ?? []) if (!record.isTerminal) {
     if (record.kind === "monitor") monitorCount++; else taskCount++
@@ -134,8 +148,11 @@ export function snapshotTask(record: TaskRecord): TaskSnapshot {
 }
 
 export function getTaskRecord(sessionId: string, id: string): TaskRecord | undefined { return tasks.get(sessionId)?.get(id) }
+export function sweepTasksForTests(now: number): void { sweepTerminalTasks(now) }
+export const taskTerminalTtl = TERMINAL_TTL_MS
 /** Immutable metadata snapshots for live-state consumers. */
 export function snapshotSessionTasks(sessionId: string): TaskSnapshot[] {
+  sweepTerminalTasks()
   return [...(tasks.get(sessionId)?.values() ?? [])].map(snapshotTask)
 }
 export async function waitTasks(sessionId: string, ids: string[], timeoutMs: number): Promise<void> {

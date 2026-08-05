@@ -14,7 +14,7 @@ import { isIncognitoSession } from "./incognito.ts"
 
 /** A session's pinned model choice (type-only alias — the import is erased, so
  *  the store keeps zero runtime provider dependencies). */
-export type PinnedSelection = AgentSelection
+export type PinnedSelection = AgentSelection & { solo?: boolean }
 /** Per-session changes layered over the server-wide sidekick defaults. A null
  * seat clears this session's override and therefore reveals the global seat. */
 export type SessionSidekickOverride = {
@@ -175,6 +175,7 @@ const stmtInsertEvent = db.query("INSERT INTO events (session_id, seq, json) VAL
 const stmtHistory = db.query("SELECT json FROM events WHERE session_id = ? ORDER BY seq ASC")
 const stmtHistoryWithSeq = db.query("SELECT seq, json FROM events WHERE session_id = ? ORDER BY seq ASC")
 const recentHistorySql = "SELECT seq, json FROM events WHERE session_id = ? ORDER BY seq DESC LIMIT ?"
+const statusEventsSql = "SELECT json FROM events WHERE session_id = ? AND json_extract(json, '$.type') IN ('session.status', 'thread.spawn', 'thread.status') ORDER BY seq ASC"
 const stmtLastSeq = db.query("SELECT MAX(seq) AS n FROM events WHERE session_id = ?")
 const stmtNextTurn = db.query("SELECT COALESCE(MAX(turn_index), 0) + 1 AS n FROM session_turns WHERE session_id = ?")
 const stmtInsertTurn = db.query("INSERT INTO session_turns (session_id, turn_index, start_event_seq, snapshot_commit, user_text, status, created_at) VALUES (?, ?, ?, ?, ?, 'running', ?)")
@@ -390,6 +391,13 @@ export const Store = {
     return rows.reverse().map((row) => ({ seq: row.seq, event: JSON.parse(row.json) as AgentEvent }))
   },
 
+  /** Persisted run-status markers only; unlike history this does not materialize
+   * message deltas, tool output, or other transcript events. */
+  statusEvents(sessionId: string): AgentEvent[] {
+    const rows = backend(sessionId).query(statusEventsSql).all(sessionId) as Array<{ json: string }>
+    return rows.map((row) => JSON.parse(row.json) as AgentEvent)
+  },
+
   titleOf(sessionId: string): string | null {
     const row = stmtTitleOf.get(sessionId) as { title: string } | null
     return row?.title ?? null
@@ -399,21 +407,42 @@ export const Store = {
    *  from persisted delta events. Used by send_to_session's wait_for_reply to
    *  hand the target's answer back to the sender. */
   lastAssistantText(sessionId: string): string | null {
-    const history = this.history(sessionId)
-    let current: string | null = null
-    let last: string | null = null
-    for (const ev of history) {
-      if ("threadId" in ev && ev.threadId) continue // child threads don't count
-      if (ev.type === "message.start") current = ""
-      else if (ev.type === "message.delta") current = (current ?? "") + ev.text
-      else if (ev.type === "message.end") {
-        if (current && current.trim()) last = current
-        current = null
+    const conn = backend(sessionId)
+    const pageSize = 256
+    let before: number | undefined
+    let active: string[] | null = null
+
+    // Walk backwards so the first non-blank message found is the same one the
+    // forward implementation would have returned, without loading old rows.
+    for (;;) {
+      const rows = (before === undefined
+        ? conn.query("SELECT seq, json FROM events WHERE session_id=? ORDER BY seq DESC LIMIT ?").all(sessionId, pageSize)
+        : conn.query("SELECT seq, json FROM events WHERE session_id=? AND seq<? ORDER BY seq DESC LIMIT ?").all(sessionId, before, pageSize)) as Array<{ seq: number; json: string }>
+      if (!rows.length) break
+      before = rows[rows.length - 1].seq
+      for (const row of rows) {
+        const ev = JSON.parse(row.json) as AgentEvent
+        if ("threadId" in ev && ev.threadId) continue // child threads don't count
+        if (ev.type === "message.end") {
+          if (active === null) active = []
+        } else if (ev.type === "message.delta") {
+          if (active === null) active = []
+          active.unshift(ev.text)
+        } else if (ev.type === "message.start") {
+          if (active !== null) {
+            const text = active.join("")
+            if (text.trim()) return text
+            active = null
+          }
+        }
       }
     }
     // A stream cut off mid-message still counts (message.end may be missing).
-    if (current && current.trim()) last = current
-    return last
+    if (active !== null) {
+      const text = active.join("")
+      return text.trim() ? text : null
+    }
+    return null
   },
 
   /** Set a session title once (first user message makes a nice resume label). */

@@ -21,12 +21,12 @@ describe("translateStream", () => {
   })
 
   test("successive boundaries append undelivered interjections in FIFO order", () => {
-    const pending = { prompts: ["a1", "a2"], texts: ["A1", "A2"], images: [undefined, [{ mediaType: "image/png", base64: "a" }]] }
-    const next = { prompts: ["b1"], texts: ["B1"], images: [[{ mediaType: "image/png", base64: "b" }]] }
+    const pending = { prompts: ["a1", "a2"], texts: ["A1", "A2"], images: [undefined, [{ id: "a", mediaType: "image/png", byteLength: 1, path: "/tmp/a" }]] }
+    const next = { prompts: ["b1"], texts: ["B1"], images: [[{ id: "b", mediaType: "image/png", byteLength: 1, path: "/tmp/b" }]] }
     expect(mergeInterjectionBoundaries(pending, next)).toEqual({
       prompts: ["a1", "a2", "b1"],
       texts: ["A1", "A2", "B1"],
-      images: [undefined, [{ mediaType: "image/png", base64: "a" }], [{ mediaType: "image/png", base64: "b" }]],
+      images: [undefined, [{ id: "a", mediaType: "image/png", byteLength: 1, path: "/tmp/a" }], [{ id: "b", mediaType: "image/png", byteLength: 1, path: "/tmp/b" }]],
     })
   })
 

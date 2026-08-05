@@ -46,7 +46,8 @@ describe("prompt queue", () => {
 
   test("interjections are FIFO, standalone, preserve images, and can be cleared", () => {
     const b = new InterjectionBuffer()
-    const images = [{ base64: "abc", mediaType: "image/png" }]
+    const images = [{ id: "img", mediaType: "image/png", byteLength: 3, path: "/tmp/img.png" }]
+    expect(images[0]).not.toHaveProperty("base64")
     b.push({ id: "a", text: "one", images })
     b.push({ id: "b", text: "two" })
     expect(b.drainAll()).toEqual([

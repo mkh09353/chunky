@@ -14,6 +14,7 @@ import { tool } from "@langchain/core/tools"
 import { z } from "zod"
 import { createAgent } from "langchain"
 import { chunkyCompactionMiddleware } from "./compaction.ts"
+import { stripInlineImages } from "./inline-images.ts"
 import { CODEX_DEFAULT_MODEL } from "./providers/codex.ts"
 import {
   activeSelection,
@@ -138,6 +139,7 @@ export function makePostCompactionReminder() {
 export const postCompactionReminder = makePostCompactionReminder()
 
 function responseItemsForCompaction(messages: any[]): any[] {
+  messages = stripInlineImages(messages, 0)
   return messages.flatMap((message) => {
     const role = message?._getType?.() === "human" ? "user" : message?._getType?.() === "ai" ? "assistant" : message?._getType?.() === "tool" ? "user" : undefined
     if (!role) return []
@@ -304,7 +306,7 @@ export function editToolNameForModel(modelId: string | undefined, providerId: st
  * Factored out so a test can assert seat presence without building a model.
  */
 export function executorToolsFor(selection: AgentSelection, sessionId?: string) {
-  const advisorSel = advisorFor(selection)
+  const advisorSel = advisorFor(selection, sessionId)
   const sidekickSel = sidekickFor(selection, sessionId)
   const reviewSel = resolveReviewSelection(sessionId)
   const browserTier = appBrowserTier()

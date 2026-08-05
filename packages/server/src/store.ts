@@ -103,6 +103,11 @@ db.exec(`
     replacement_history_json TEXT NOT NULL, boundary TEXT NOT NULL,
     created_at INTEGER NOT NULL, usage_json TEXT
   );
+  CREATE TABLE IF NOT EXISTS archived_sessions (
+    id TEXT PRIMARY KEY, title TEXT NOT NULL, workspace TEXT NOT NULL,
+    created_at INTEGER NOT NULL, last_activity INTEGER NOT NULL, archived_at INTEGER NOT NULL,
+    byte_length INTEGER, sha256 TEXT
+  );
 `)
 
 // Migration: sessions gained a `workspace` column so each repo has its own
@@ -128,6 +133,12 @@ db.exec(`
   if (!cols.some((c) => c.name === "incognito")) db.exec("ALTER TABLE sessions ADD COLUMN incognito INTEGER NOT NULL DEFAULT 0")
   if (!cols.some((c) => c.name === "incognito_allow")) db.exec("ALTER TABLE sessions ADD COLUMN incognito_allow TEXT")
   if (!cols.some((c) => c.name === "title_custom")) db.exec("ALTER TABLE sessions ADD COLUMN title_custom INTEGER NOT NULL DEFAULT 0")
+}
+
+{
+  const cols = db.query("PRAGMA table_info(archived_sessions)").all() as { name: string }[]
+  if (!cols.some((c) => c.name === "byte_length")) db.exec("ALTER TABLE archived_sessions ADD COLUMN byte_length INTEGER")
+  if (!cols.some((c) => c.name === "sha256")) db.exec("ALTER TABLE archived_sessions ADD COLUMN sha256 TEXT")
 }
 
 // Migration: ratings gained an optional diagnosis for learning from failed or
@@ -301,6 +312,10 @@ export const Store = {
 
   exists(id: string): boolean {
     return backend(id).query("SELECT 1 FROM sessions WHERE id=?").get(id) != null
+  },
+
+  isArchived(id: string): boolean {
+    return db.query("SELECT 1 FROM archived_sessions WHERE id=?").get(id) != null
   },
 
   /** The workspace a session was created in — the authoritative scope for every
@@ -477,14 +492,16 @@ export const Store = {
   /** Compact shell lookup: row only, never hydrates transcript events. */
   summary(sessionId: string): SessionSummary | null {
     const row = backend(sessionId).query("SELECT id,title,created_at,last_activity,workspace,incognito FROM sessions WHERE id=?").get(sessionId) as { id: string; title: string; created_at: number; last_activity: number; workspace: string; incognito: number } | null
-    return row && { sessionId: row.id, title: row.title, createdAt: row.created_at, lastActivity: row.last_activity, workspace: row.workspace, incognito: !!row.incognito }
+    if (row) return { sessionId: row.id, title: row.title, createdAt: row.created_at, lastActivity: row.last_activity, workspace: row.workspace, incognito: !!row.incognito }
+    const archived = db.query("SELECT id,title,created_at,last_activity,workspace FROM archived_sessions WHERE id=?").get(sessionId) as { id: string; title: string; created_at: number; last_activity: number; workspace: string } | null
+    return archived && { sessionId: archived.id, title: archived.title, createdAt: archived.created_at, lastActivity: archived.last_activity, workspace: archived.workspace, archived: true } as SessionSummary
   },
 
   /** Unbounded compact row query for the mobile cross-repository shell. */
   listShell(): SessionSummary[] {
-    const rows = [...db.query("SELECT id,title,created_at,last_activity,workspace,incognito FROM sessions").all(), ...memoryDb.query("SELECT id,title,created_at,last_activity,workspace,incognito FROM sessions").all()] as Array<{ id: string; title: string; created_at: number; last_activity: number; workspace: string; incognito: number }>
+    const rows = [...db.query("SELECT id,title,created_at,last_activity,workspace,incognito,0 archived FROM sessions").all(), ...memoryDb.query("SELECT id,title,created_at,last_activity,workspace,incognito,0 archived FROM sessions").all(), ...db.query("SELECT id,title,created_at,last_activity,workspace,0 incognito,1 archived FROM archived_sessions").all()] as Array<{ id: string; title: string; created_at: number; last_activity: number; workspace: string; incognito: number; archived: number }>
     const deduped = new Map<string, SessionSummary>()
-    for (const row of rows) deduped.set(row.id, { sessionId: row.id, title: row.title, createdAt: row.created_at, lastActivity: row.last_activity, workspace: row.workspace, incognito: !!row.incognito })
+    for (const row of rows) deduped.set(row.id, { sessionId: row.id, title: row.title, createdAt: row.created_at, lastActivity: row.last_activity, workspace: row.workspace, incognito: !!row.incognito, ...(row.archived ? { archived: true } : {}) } as SessionSummary)
     return [...deduped.values()].sort((a, b) => b.lastActivity - a.lastActivity)
   },
 
@@ -499,14 +516,16 @@ export const Store = {
       workspace: string
     }[]
     const memoryRows = (workspace ? memoryDb.query("SELECT id,title,created_at,last_activity,workspace FROM sessions WHERE workspace=?").all(workspace) : memoryDb.query("SELECT id,title,created_at,last_activity,workspace FROM sessions").all()) as typeof rows
-    return [...rows, ...memoryRows].sort((a,b) => b.last_activity - a.last_activity).slice(0, 100).map((r) => ({
+    const archivedRows = (workspace ? db.query("SELECT id,title,created_at,last_activity,workspace FROM archived_sessions WHERE workspace=?").all(workspace) : db.query("SELECT id,title,created_at,last_activity,workspace FROM archived_sessions").all()) as typeof rows
+    return [...rows, ...memoryRows, ...archivedRows].sort((a,b) => b.last_activity - a.last_activity).slice(0, 100).map((r) => ({
       sessionId: r.id,
       title: r.title,
       createdAt: r.created_at,
       lastActivity: r.last_activity,
       workspace: r.workspace,
       incognito: isIncognitoSession(r.id),
-    }))
+      ...(archivedRows.some((a) => a.id === r.id) ? { archived: true } : {}),
+    } as SessionSummary))
   },
 
   // ---- Goal mode (one goal per session, persisted so it survives restart) ----

@@ -84,6 +84,7 @@ describe("server CORS responses", () => {
       model: "session-pinned-model",
       effort: "high",
       speed: "fast",
+      solo: true,
     })
   })
 

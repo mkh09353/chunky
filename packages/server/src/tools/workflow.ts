@@ -39,7 +39,8 @@ export const workflow = tool(
     if (!ctx || !callerThreadId) {
       return "error: workflow is only available inside an active session run."
     }
-    return ctx.runWorkflow({ callerThreadId, script: input.script, args: input.args })
+    const work = ctx.runWorkflow({ callerThreadId, script: input.script, args: input.args })
+    return ctx.runSteerDetachable?.("workflow", "Workflow", work) ?? work
   },
   {
     name: "workflow",

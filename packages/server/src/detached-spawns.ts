@@ -62,9 +62,9 @@ export function hasRunningDetachedSpawns(sessionId: string): boolean {
   return runningDetachedSpawnCount(sessionId) > 0
 }
 
-export function createDetachedSpawn(sessionId: string, childThreadId: string, title: string): DetachedSpawnRecord | undefined {
+export function createDetachedSpawn(sessionId: string, childThreadId: string, title: string, force = false): DetachedSpawnRecord | undefined {
   sweepFinished()
-  if (runningDetachedSpawnCount(sessionId) >= MAX_RUNNING_PER_SESSION) return undefined
+  if (!force && runningDetachedSpawnCount(sessionId) >= MAX_RUNNING_PER_SESSION) return undefined
   let resolveDone!: () => void
   const done = new Promise<void>((resolve) => { resolveDone = resolve })
   const record: DetachedSpawnRecord = {

@@ -12,7 +12,7 @@ describe("message delta persistence coalescing", () => {
   test("old and coalesced shapes reconstruct identically", () => {
     const old = [{ type: "message.start", role: "assistant" }, ..."abc".split("").map((text) => ({ type: "message.delta", text })), { type: "message.end" }]
     const newer = [{ type: "message.start", role: "assistant" }, { type: "message.delta", text: "abc" }, { type: "message.end" }]
-    expect(old.filter((e) => e.type === "message.delta").map((e: any) => e.text).join("")).toBe(newer[1].text)
+    expect(old.filter((e) => e.type === "message.delta").map((e: any) => e.text).join("")).toBe((newer[1] as any).text)
   })
   test("flushes periodically at 8KB", () => {
     const out = events([{ type: "message.start", role: "assistant" }, { type: "message.delta", text: "x".repeat(MESSAGE_FLUSH_BYTES) }])

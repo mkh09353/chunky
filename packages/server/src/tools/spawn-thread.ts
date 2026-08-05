@@ -57,12 +57,13 @@ export async function runSpawnThread(input: SpawnThreadInput, callerThreadId: st
       selection: hasSelectionOverride ? { provider, model, effort, speed } : undefined,
     })
   }
-  const text = await ctx.spawn({
+  const work = ctx.spawn({
     callerThreadId,
     title,
     instructions,
     selection: hasSelectionOverride ? { provider, model, effort, speed } : undefined,
   })
+  const text = await (ctx.runSteerDetachable?.("spawn_thread", title, work) ?? work)
   return `Child thread "${title}" finished.\n\n${text}`
 }
 

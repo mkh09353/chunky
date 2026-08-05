@@ -7,7 +7,7 @@ import { z } from "zod"
 import { basename } from "node:path"
 import { Store } from "../store.ts"
 import { sessionForThread } from "../thread-context.ts"
-import { busInstalled, deliverToSession, queuedCount, sessionIsRunning } from "../session-bus.ts"
+import { busInstalled, deliverToSession, prepareSession, queuedCount, sessionIsRunning } from "../session-bus.ts"
 import { firstLine } from "../goal.ts"
 import { isIncognitoSession } from "../incognito.ts"
 
@@ -93,13 +93,20 @@ export const sendToSessionTool = tool(
 
     // Resolve the target: exact id, or unambiguous prefix.
     let targetId = session_id.trim()
-    if (!Store.exists(targetId)) {
+    if (!Store.exists(targetId) && !Store.isArchived(targetId)) {
       const matches = Store.list()
         .map((s) => s.sessionId)
         .filter((id) => id.startsWith(targetId))
       if (matches.length === 1) targetId = matches[0]!
       else if (matches.length > 1) return `error: session id "${session_id}" is ambiguous (${matches.length} matches).`
       else return `error: unknown session "${session_id}" — call list_sessions for live ids.`
+    }
+    if (!Store.exists(targetId)) {
+      try {
+        if (!await prepareSession(targetId) || !Store.exists(targetId)) return `error: could not restore archived session "${targetId}".`
+      } catch (error) {
+        return `error: could not restore archived session "${targetId}": ${(error as Error).message}`
+      }
     }
     if (targetId === selfId) {
       return "error: that is this session. Messaging yourself would just queue a turn behind this one — do the work here instead."

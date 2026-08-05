@@ -2,6 +2,8 @@
 // sessions + event history persisted to sqlite so reconnecting resumes.
 try { process.title = "chunky-server" } catch {} // Helps ps/top on platforms that honor it; the app launcher symlink handles macOS Activity Monitor.
 import { randomUUID } from "node:crypto"
+import { detachThreadForSteer } from "./thread-context.ts"
+import { steerAtBoundary } from "./steer.ts"
 import { rmSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
@@ -41,6 +43,7 @@ import {
 } from "@chunky/protocol"
 import { effectiveSessionSelection, runAgent, type InputImage, type InterjectionBoundary } from "./run.ts"
 import { createMessageCoalescer } from "./message-coalescer.ts"
+import { rehydrateSession, sweepArchives, sweepOrphanCheckpoints } from "./session-archive.ts"
 import { saveAttachment } from "./attachments.ts"
 import { shipHandoffPrompt } from "./tools/ship.ts"
 import { Store } from "./store.ts"
@@ -180,6 +183,7 @@ const busTurns = new Map<string, number[]>()
 const encoder = new TextEncoder()
 const dreamTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const DREAM_IDLE_MS = 10 * 60_000
+const ARCHIVE_SWEEP_MS = 24 * 60 * 60_000
 
 let shuttingDown = false
 const relayPairing = new RelayPairing()
@@ -452,16 +456,6 @@ function drainInterjections(sessionId: string) {
   return notes
 }
 
-/** Abort the session's in-flight turn as a STEER (reason "steer", so the run
- *  reports no interrupt and doesn't pause its goal) and wait for it to fully tear
- *  down. No-op when nothing is running. */
-async function abortForSteer(sessionId: string): Promise<void> {
-  const ac = running.get(sessionId)
-  if (!ac) return
-  ac.abort("steer")
-  await runDone.get(sessionId)?.catch(() => {})
-}
-
 /** Abort any in-flight turn for a session, then start a fresh agent run.
  *  Shared by the message route and the goal set/resume routes (a goal kickoff
  *  is just a run whose prompt the server supplies). */
@@ -488,14 +482,15 @@ async function deliverMessage(
   delivery: "auto" | "queue" | "interject" | "steer",
   force: boolean,
 ): Promise<Response> {
-  if (delivery === "interject" && running.has(sessionId)) {
+  if ((delivery === "interject" || delivery === "steer") && running.has(sessionId)) {
     const buffer = interjections.get(sessionId) ?? new InterjectionBuffer()
-    buffer.push({ id: randomUUID(), text: visibleText, images })
+    const note = { id: randomUUID(), text: visibleText, images }
+    if (delivery === "steer") steerAtBoundary(buffer, note, () => detachThreadForSteer(sessionId))
+    else buffer.push(note)
     interjections.set(sessionId, buffer)
     emitTo(sessionId, { type: "message.interjection", sessionId, text: visibleText, injected: false })
     return new Response(null, { status: 202, headers: corsHeaders(req) })
   }
-  if (delivery === "steer") await abortForSteer(sessionId)
 
   if (!force && delivery !== "steer") {
     const model = effectiveSessionSelection(sessionId).model
@@ -550,6 +545,9 @@ function sessionIsBusy(sessionId: string): boolean {
 // module's run machinery. Bus deliveries never abort in-flight turns — they
 // queue behind them (see session-bus.ts).
 installSessionBus({
+  prepareSession(sessionId) {
+    return Store.isArchived(sessionId) ? rehydrateSession(sessionId) : Promise.resolve(Store.exists(sessionId))
+  },
   emitUserMessage(sessionId, text, from) {
     const turn = beginUserTurn(sessionId, text)
     const turns = busTurns.get(sessionId) ?? []
@@ -1653,6 +1651,9 @@ const server = Bun.serve(withCors({
     const m = pathname.match(/^\/api\/sessions\/([^/]+)\/(events|messages|interrupt|compact|goal|todos|ship|cache|rewind-points|rewind|fork)$/)
     if (m) {
       const [, sessionId, kind] = m
+      // An interrupted restore may already have recreated the session row while
+      // the compact index/archive still exists; always finish it idempotently.
+      if (Store.isArchived(sessionId)) await rehydrateSession(sessionId)
       // Accept any session that exists on disk (enables resume across restart),
       // not just ones created in this process.
       if (!Store.exists(sessionId)) return json({ error: "unknown session" }, 404)
@@ -1995,7 +1996,12 @@ const stopOwnershipPoller = discoveryRecord && ownershipId
       beginRetirement("this server's registration was taken over by a newer build")
     }, Number(process.env.CHUNKY_OWNERSHIP_POLL_MS) || undefined)
   : undefined
+const runArchiveSweep = () => void sweepArchives(Date.now(), new Set(running.keys())).then(() => sweepOrphanCheckpoints()).catch((error) => console.warn(`[archive] sweep failed: ${(error as Error).message}`))
+runArchiveSweep()
+const archiveSweepTimer = setInterval(runArchiveSweep, ARCHIVE_SWEEP_MS)
+archiveSweepTimer.unref()
 const shutdown = () => {
+  clearInterval(archiveSweepTimer)
   stopOwnershipPoller?.()
   cleanupDiscovery()
   for (const controller of running.values()) controller.abort()

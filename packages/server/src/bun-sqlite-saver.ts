@@ -305,6 +305,7 @@ export class BunSqliteSaver extends BaseCheckpointSaver {
   }
 
   async deleteThread(threadId: string): Promise<void> {
+    this.setup()
     const tx = () => {
       this.db.prepare(`DELETE FROM checkpoints WHERE thread_id = ?`).run(threadId)
       this.db.prepare(`DELETE FROM writes WHERE thread_id = ?`).run(threadId)

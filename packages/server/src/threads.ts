@@ -78,6 +78,7 @@ export function advisorConsultCount(sessionId: string): number {
 const sidekickHandoffsBySession = new Map<string, number>()
 const activeSidekicks = new Map<string, Map<string, { seat: string; brief: string }>>()
 const runningChildrenBySession = new Map<string, Map<string, { threadId: string; title: string }>>()
+const sidekickSeatTails = new Map<string, Promise<void>>()
 
 /** How many briefs the sidekick has been handed in this session so far. */
 export function sidekickHandoffCount(sessionId: string): number {
@@ -123,6 +124,7 @@ export class ThreadManager implements ThreadSpawner {
    *  never reaches the child's stream, so the awaited tool promise never settles). */
   private readonly abort?: AbortController
   private readonly runningChildren = new Map<string, { threadId: string; title: string }>()
+  private readonly steerDetach = new Set<() => void>()
 
   runningChildSummaries(): { threadId: string; title: string }[] { return [...this.runningChildren.values()] }
 
@@ -162,6 +164,44 @@ export class ThreadManager implements ThreadSpawner {
     // their captured selection so their full child toolset (including nested
     // spawn_thread) continues to work after the originating root turn ends.
     this.selections.delete(this.rootId)
+  }
+
+  detachForSteer(): boolean {
+    if (!this.steerDetach.size) return false
+    const pending = [...this.steerDetach]
+    this.steerDetach.clear()
+    for (const detach of pending) detach()
+    return true
+  }
+
+  async runSteerDetachable(
+    kind: "sidekick" | "spawn_thread" | "workflow",
+    title: string,
+    work: Promise<string>,
+  ): Promise<string> {
+    let detach!: () => void
+    const detached = new Promise<void>((resolve) => { detach = resolve })
+    this.steerDetach.add(detach)
+    const winner = await Promise.race([
+      work.then((report) => ({ detached: false as const, report })),
+      detached.then(() => ({ detached: true as const, report: "" })),
+    ])
+    this.steerDetach.delete(detach)
+    if (!winner.detached) return winner.report
+
+    const record = createDetachedSpawn(this.rootId, `${this.rootId}:${kind}:${randomUUID()}`, title, true)!
+    void work.then((report) => {
+      finishDetachedSpawn(record, report)
+      const reminder = `${title} detached by steer (${record.id}) finished. Report:\n${record.result}`
+      const wakePrompt = `${reminder}\n\nAssess this detached delegate report and act on any valid findings before finalizing.`
+      if (routeBackgroundNotice(this.rootId, wakePrompt, `${title} detached by steer finished.`, kind) === "reminder") appendReminder(this.rootId, reminder)
+    }, (err) => {
+      const report = `error: ${(err as Error)?.message ?? String(err)}`
+      finishDetachedSpawn(record, report)
+      const reminder = `${title} detached by steer (${record.id}) failed. Report:\n${record.result}`
+      if (routeBackgroundNotice(this.rootId, reminder, `${title} detached by steer failed.`, kind) === "reminder") appendReminder(this.rootId, reminder)
+    })
+    return `${title} detached by steer; the worker continues and its report will arrive as a wake/reminder. Run id: ${record.id}.`
   }
 
   /**
@@ -616,6 +656,22 @@ export class ThreadManager implements ThreadSpawner {
    * inside it resolves a manager), and persists for the session.
    */
   async delegateToSidekick(opts: { callerThreadId: string; brief: string; seat?: string }): Promise<string> {
+    const seat = opts.seat?.trim() || "default"
+    const key = `${this.rootId}\0${seat}`
+    const previous = sidekickSeatTails.get(key) ?? Promise.resolve()
+    let release!: () => void
+    const tail = new Promise<void>((resolve) => { release = resolve })
+    sidekickSeatTails.set(key, tail)
+    await previous
+    try {
+      return await this.runSidekick(opts)
+    } finally {
+      release()
+      if (sidekickSeatTails.get(key) === tail) sidekickSeatTails.delete(key)
+    }
+  }
+
+  private async runSidekick(opts: { callerThreadId: string; brief: string; seat?: string }): Promise<string> {
     const rootSelection = this.selections.get(this.rootId) ?? activeSelection()
     const seat = opts.seat?.trim() || undefined
     const sidekickSel = seat && seat !== "default" ? resolveSidekickSeat(seat, this.rootId) : sidekickFor(rootSelection, this.rootId)

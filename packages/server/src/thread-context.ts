@@ -20,6 +20,12 @@ export interface ThreadSpawner {
    */
   readonly sessionId: string
 
+  /** Resolve an awaited delegate tool call immediately while allowing its worker
+   * to continue in the background. Used only by STEER; hard aborts still flow
+   * through the run controller. */
+  runSteerDetachable?(kind: "sidekick" | "spawn_thread" | "workflow", title: string, work: Promise<string>): Promise<string>
+  detachForSteer?(): boolean
+
   /**
    * Launch a child thread from `callerThreadId` and return its final text.
    * The manager decides the child's threadId and parent linkage.
@@ -93,6 +99,10 @@ export function unregisterThread(threadId: string): void {
 /** Resolve the manager owning `threadId`, or undefined if there is no active run. */
 export function threadContextFor(threadId: string | undefined): ThreadSpawner | undefined {
   return threadId ? registry.get(threadId) : undefined
+}
+
+export function detachThreadForSteer(threadId: string): boolean {
+  return registry.get(threadId)?.detachForSteer?.() ?? false
 }
 
 /** The root session id owning `threadId`, or undefined if there's no active run.

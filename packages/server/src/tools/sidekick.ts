@@ -79,7 +79,9 @@ export const sidekick = tool(
     if (!ctx || !callerThreadId) {
       return "error: sidekick is only available inside an active session run."
     }
-    const text = await ctx.delegateToSidekick({ callerThreadId, brief: composeBrief(input), seat: input.seat })
+    const title = input.seat && input.seat !== "default" ? `Sidekick (${input.seat})` : "Sidekick"
+    const work = ctx.delegateToSidekick({ callerThreadId, brief: composeBrief(input), seat: input.seat })
+    const text = await (ctx.runSteerDetachable?.("sidekick", title, work) ?? work)
     return text // ThreadManager appends the durable delegation marker.
   },
   {

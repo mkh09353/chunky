@@ -13,6 +13,8 @@
 import type { AgentEvent } from "@chunky/protocol"
 
 export interface SessionBusImpl {
+  /** Lazily make an archived session dispatchable. */
+  prepareSession?(sessionId: string): Promise<boolean>
   /** Emit (persist + fan out) one already-shaped event to a session's stream. */
   emitUserMessage(sessionId: string, text: string, from: string): void
   /** Emit (persist + fan out) an arbitrary protocol event to a session's stream —
@@ -65,6 +67,11 @@ export function queuedCount(sessionId: string): number {
 /** Whether the session has an in-flight run (false when the bus isn't up). */
 export function sessionIsRunning(sessionId: string): boolean {
   return impl?.isRunning(sessionId) ?? false
+}
+
+export async function prepareSession(sessionId: string): Promise<boolean> {
+  if (!impl) throw new Error("session bus not installed (server not fully started)")
+  return impl.prepareSession ? impl.prepareSession(sessionId) : true
 }
 
 /** Emit an arbitrary protocol event onto a session's stream (persist + fan out).

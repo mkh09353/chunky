@@ -6,7 +6,7 @@
 //   - the server's stdout goes to a log file so it can't fight the TUI's rendering.
 // The app code is resolved relative to THIS file, so the same launcher works both
 // from the repo (dev) and from an installed ~/.chunky/app copy.
-process.title = "chunky" // name in ps/top/pkill (Activity Monitor still shows the bun executable)
+try { process.title = "chunky" } catch {} // Helps ps/top on platforms that honor it.
 import { spawn } from "node:child_process"
 import { createServer } from "node:net"
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs"

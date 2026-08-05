@@ -813,7 +813,7 @@ const server = Bun.serve(withCors({
       const session = new URL(req.url).searchParams.get("session") ?? undefined
       return json({ rows: Store.scoreboardRows(session).map((r) => {
         const cost = r.totalCost == null ? null : Number(r.totalCost), avg = r.avgRating == null ? null : Number(r.avgRating)
-        return { provider: r.provider, model: r.model, effort: r.effort ?? null, kind: r.kind, samples: r.samples, avgRating: avg,
+        return { provider: r.provider, model: r.model, effort: r.effort ?? null, kind: r.kind, seat: r.seat ?? null, samples: r.samples, avgRating: avg,
           ratedCount: r.ratedCount, reworkRate: r.reworkRate == null ? null : Number(r.reworkRate), totalCost: cost, totalTokens: r.totalTokens ?? 0,
           ratingPerDollar: avg != null && cost != null && cost > 0 ? avg / (cost / r.samples) : null }
       }) })

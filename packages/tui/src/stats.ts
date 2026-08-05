@@ -7,6 +7,7 @@ export interface ScoreboardRow {
   model: string
   effort: string | null
   kind: string
+  seat?: string | null
   samples: number
   avgRating: number | null
   ratedCount: number
@@ -99,7 +100,7 @@ export function renderScoreboard(rows: ScoreboardRow[]): string | null {
     ["MODEL", "KIND", "N", "AVG", "REWORK", "COST", "RATING/$"],
     sortScoreboard(rows).map((r) => [
       modelLabel(r),
-      r.kind,
+      r.seat ? `${r.kind}:${r.seat}` : r.kind,
       String(r.samples),
       rating(r.avgRating),
       percent(r.reworkRate),

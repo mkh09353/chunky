@@ -52,6 +52,17 @@ describe("scoreboard", () => {
     expect(new Set(lines.map((l) => l.replace(/\s+$/, "").length)).size).toBeGreaterThan(0)
   })
 
+  test("named seat qualifies the kind; null seat stays plain", () => {
+    const table = renderScoreboard([
+      row({ model: "seated", seat: "websearch" }),
+      row({ model: "plain", seat: null }),
+    ])!
+    expect(table).toContain("sidekick:websearch")
+    const plainLine = table.split("\n").find((l) => l.includes("plain"))!
+    expect(plainLine).toContain("sidekick")
+    expect(plainLine).not.toContain("sidekick:")
+  })
+
   test("empty data has no table to render", () => {
     expect(renderScoreboard([])).toBeNull()
   })

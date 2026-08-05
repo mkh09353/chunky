@@ -278,7 +278,7 @@ export const Store = {
   latestLeadUsage(sessionId: string): { provider: string; model: string } | null {
     return backend(sessionId).query("SELECT provider,model FROM usage_log WHERE session_id=? AND role='lead' ORDER BY ts DESC,id DESC LIMIT 1").get(sessionId) as { provider: string; model: string } | null
   },
-  scoreboardRows(sessionId?: string) { return db.query(`SELECT d.provider,d.model,d.effort,d.kind,COUNT(*) samples,AVG(r.rating) avgRating,COUNT(r.rating) ratedCount,AVG(r.rework) reworkRate,SUM(u.cost) totalCost,SUM(COALESCE(u.input_tokens,0)+COALESCE(u.output_tokens,0)) totalTokens FROM delegations d LEFT JOIN ratings r ON r.delegation_id=d.id LEFT JOIN usage_log u ON u.delegation_id=d.id ${sessionId ? "WHERE d.session_id = ?" : ""} GROUP BY d.provider,d.model,d.effort,d.kind`).all(...(sessionId ? [sessionId] : [])) as any[] },
+  scoreboardRows(sessionId?: string) { return db.query(`SELECT d.provider,d.model,d.effort,d.kind,d.seat,COUNT(*) samples,AVG(r.rating) avgRating,COUNT(r.rating) ratedCount,AVG(r.rework) reworkRate,SUM(u.cost) totalCost,SUM(COALESCE(u.input_tokens,0)+COALESCE(u.output_tokens,0)) totalTokens FROM delegations d LEFT JOIN ratings r ON r.delegation_id=d.id LEFT JOIN usage_log u ON u.delegation_id=d.id ${sessionId ? "WHERE d.session_id = ?" : ""} GROUP BY d.provider,d.model,d.effort,d.kind,d.seat`).all(...(sessionId ? [sessionId] : [])) as any[] },
   getTodos(sessionId: string): TodoSnapshot[] {
     const row = backend(sessionId).query("SELECT json FROM todos WHERE session_id=?").get(sessionId) as { json: string } | null
     return row ? JSON.parse(row.json) as TodoSnapshot[] : []

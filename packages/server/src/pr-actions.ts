@@ -7,7 +7,7 @@ import { Store } from "./store.ts"
 import { deliverToSession } from "./session-bus.ts"
 import { emitToSession } from "./session-bus.ts"
 import { goalKickoffPrompt, toSnapshot, type Goal } from "./goal.ts"
-import { getGithubConfig } from "./settings.ts"
+import { getGithubConfig, getSkillBinding } from "./settings.ts"
 
 export interface PrLink { sessionId: string; clonePath?: string; chunkyManaged: boolean }
 type Links = Record<string, PrLink>
@@ -36,6 +36,14 @@ export type ReviewPr = PrSummary & { baseRefName?: string }
 /** Build the review-only quad-panel orchestrator brief. */
 export function buildReviewObjective(pr: ReviewPr, workdir: string): string {
   const base = pr.baseRefName || "main"
+  // Skill bindings are the user's review-workflow configuration surface; in this panel they are authoritative routing.
+  const launch = (skill: string, fallback: string) => {
+    const binding = getSkillBinding(skill)
+    return binding ? `Launch with spawn_thread provider "${binding.provider}" model "${binding.model}"${binding.effort ? ` effort ${binding.effort}` : ""}.` : fallback
+  }
+  const bugHunterLaunch = launch("runtime-bug-hunter", "Launch with the premium/highest-capability configured model and `effort: high`.")
+  const thermoLaunch = launch("thermo-nuclear-code-quality-review", "Launch a reviewer that first uses `search_skills` for `thermo-nuclear-code-quality-review`, then loads `thermo-nuclear-code-quality-review` with `load_skill`.")
+  const chunkyLaunch = launch("chunky-code-review", 'Launch with `spawn_thread` using `provider: "codex"` and `effort: high`.')
   return `You are the ORCHESTRATOR ONLY for a four-reviewer PR panel. This is strictly REVIEW-ONLY: do not review the code yourself, do not fix anything, do not edit files, do not commit, and do not push. Your job is to scope the PR, launch all four independent reviewers in parallel using Chunky's delegation tools, collect every report, synthesize without inventing findings, and post the final review.
 
 PR scope (already resolved by the server): ${pr.repo}#${pr.number}
@@ -55,15 +63,15 @@ In ONE turn, launch all four independent reviewers concurrently using Chunky's o
 
 ### A. Runtime bug hunter (premium/highest capability, effort high)
 
-Launch with the premium/highest-capability configured model and \`effort: high\`. First use \`search_skills\` and \`load_skill\` for \`runtime-bug-hunter\`, then apply it to the diff against \`origin/${base}...HEAD\`. If the skill is unavailable, use this fallback: find bugs caused by the diff, reproduce each at runtime before reporting, discard unreproduced findings, and report exact steps, observed-vs-expected behavior, evidence, severity, and file:line. Review-only; do not edit, fix, commit, or push.
+${bugHunterLaunch} First use \`search_skills\` and \`load_skill\` for \`runtime-bug-hunter\`, then apply it to the diff against \`origin/${base}...HEAD\`. If the skill is unavailable, use this fallback: find bugs caused by the diff, reproduce each at runtime before reporting, discard unreproduced findings, and report exact steps, observed-vs-expected behavior, evidence, severity, and file:line. Review-only; do not edit, fix, commit, or push.
 
 ### B. Thermo-nuclear quality
 
-Launch a reviewer that first uses \`search_skills\` for \`thermo-nuclear-code-quality-review\`, then loads \`thermo-nuclear-code-quality-review\` with \`load_skill\`. Apply that skill exactly as written to the diff against \`origin/${base}\`. Preserve its verdict, prioritized findings, approval bar, and presumptive blockers. This reviewer is read-only and must not modify files. If the skill is unavailable, skip this section with a clear note; do not substitute an invented quality review.
+${thermoLaunch} Apply that skill exactly as written to the diff against \`origin/${base}\`. Preserve its verdict, prioritized findings, approval bar, and presumptive blockers. This reviewer is read-only and must not modify files. If the skill is unavailable, skip this section with a clear note; do not substitute an invented quality review.
 
 ### C. Codex review (real model diversity)
 
-Launch with \`spawn_thread\` using \`provider: "codex"\` and \`effort: high\`. First use \`search_skills\` and \`load_skill\` for \`chunky-code-review\`, then apply it to \`origin/${base}...HEAD\`. If the skill is unavailable, independently review correctness, API contracts, error handling, concurrency, security, regressions, and test coverage; require severity, file:line, concrete evidence, and an explicit verdict. If the codex provider is unavailable or spawn errors, mark this section skipped with the exact safe error and continue.
+${chunkyLaunch} First use \`search_skills\` and \`load_skill\` for \`chunky-code-review\`, then apply it to \`origin/${base}...HEAD\`. If the skill is unavailable, independently review correctness, API contracts, error handling, concurrency, security, regressions, and test coverage; require severity, file:line, concrete evidence, and an explicit verdict. If the codex provider is unavailable or spawn errors, mark this section skipped with the exact safe error and continue.
 
 ### D. OCR
 

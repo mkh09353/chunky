@@ -1311,6 +1311,10 @@ const server = Bun.serve(withCors({
         if (!spec) return json({ error: `unknown mode "${name}"` }, 404)
         if (!getProvider(spec.provider)) return json({ error: `mode "${name}" uses unknown provider "${spec.provider}"` }, 400)
         try { validateIncognitoMode(spec) } catch (err) { return json({ error: (err as Error).message }, 400) }
+        let body: { sessionId?: unknown } = {}
+        try { body = (await req.json()) as typeof body } catch { /* body is optional */ }
+        const sessionId = typeof body?.sessionId === "string" && body.sessionId ? body.sessionId : undefined
+        if (sessionId && !Store.exists(sessionId)) return json({ error: "unknown session" }, 404)
         // activeMode drives review's tri-state override for ordinary modes too.
         setActiveMode(name)
         setSolo(false)
@@ -1335,6 +1339,7 @@ const server = Bun.serve(withCors({
         } else if (spec.sidekickSeats === null) {
           setSidekickSeats({})
         }
+        if (sessionId) Store.pinSelection(sessionId, null)
         invalidateAgent()
         broadcastLive({ type: "mode.applied", name, spec })
         const sel = selectionOf(spec.provider)

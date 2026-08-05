@@ -1,92 +1,103 @@
-// The mode-apply route (POST /api/modes/:name/apply in index.ts) switches the
-// active provider + selection as one unit. This test pins down the contract the
-// route depends on and that runAgent (run.ts ~301) reads for the NEXT root turn:
-// after applying a mode, activeSelection() must reflect that mode's
-// provider/model/knobs. An in-flight turn keeps its frozen selection; the newly
-// applied mode only affects the next root turn — so verifying activeSelection()
-// (what a fresh, non-pinned run freezes) is the meaningful seam.
-//
-// The apply handler is inline in Bun.serve (not separately exported), and
-// importing index.ts would start a real server, so this test drives the exact
-// registry/settings primitives the handler composes rather than the HTTP route.
-import { afterAll, afterEach, beforeEach, describe, expect, test } from "bun:test"
-import { rmSync } from "node:fs"
+import { afterAll, describe, expect, test } from "bun:test"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { join } from "node:path"
+import { tmpdir } from "node:os"
 
-// bun test shares one process across files. `||=` used to let ANOTHER suite's
-// CHUNKY_SETTINGS win, which pointed these mode writes at that suite's temp
-// directory — a directory it deletes when it finishes. Own the variable for the
-// duration of each test here, then hand back whatever was inherited so this
-// file cannot push the same problem onto the next one.
-const SETTINGS_PATH = "/tmp/chunky-mode-apply-test.json"
-const inheritedSettings = process.env.CHUNKY_SETTINGS
-rmSync(SETTINGS_PATH, { force: true })
-
-beforeEach(() => {
-  process.env.CHUNKY_SETTINGS = SETTINGS_PATH
+const root = mkdtempSync(join(tmpdir(), "chunky-mode-apply-"))
+const token = "mode-apply-token"
+const probe = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} } })
+const port = probe.port
+probe.stop()
+writeFileSync(join(root, "settings.json"), JSON.stringify({ serverToken: token }))
+const proc = Bun.spawn([process.execPath, "run", "packages/server/src/index.ts"], {
+  cwd: join(import.meta.dir, "../../.."),
+  env: {
+    ...process.env,
+    CHUNKY_PORT: String(port),
+    CHUNKY_SETTINGS: join(root, "settings.json"),
+    CHUNKY_DB: join(root, "chunky.db"),
+    CHUNKY_RELAY: "0",
+  },
+  stdout: "ignore",
+  stderr: "ignore",
 })
+const base = `http://127.0.0.1:${port}`
+const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }
 
-afterEach(() => {
-  if (inheritedSettings === undefined) delete process.env.CHUNKY_SETTINGS
-  else process.env.CHUNKY_SETTINGS = inheritedSettings
-})
-
-afterAll(() => rmSync(SETTINGS_PATH, { force: true }))
-
-const { saveMode, getMode, deleteMode } = await import("./settings.ts")
-const { setActiveProviderId, setSelection, activeSelection, getProvider } = await import("./providers/registry.ts")
-
-// Mirror the apply route's selection effect for a saved mode's spec.
-function applyMode(name: string): void {
-  const spec = getMode(name)
-  if (!spec) throw new Error(`unknown mode "${name}"`)
-  setActiveProviderId(spec.provider)
-  setSelection(spec.provider, { model: spec.model, effort: spec.effort, speed: spec.speed })
+async function request(path: string, init: RequestInit = {}): Promise<Response> {
+  for (let i = 0; i < 80; i++) {
+    try {
+      return await fetch(base + path, { ...init, headers: { ...headers, ...(init.headers ?? {}) } })
+    } catch {
+      await Bun.sleep(25)
+    }
+  }
+  throw new Error("server did not start")
 }
 
-// Mirror run.ts: a non-pinned root run freezes activeSelection() at turn start.
-function nextRootTurnSelection() {
-  return activeSelection()
+async function json(path: string, init: RequestInit = {}) {
+  return await (await request(path, init)).json() as any
 }
 
-describe("mode apply → next root turn selection", () => {
-  test("applying a mode persists its provider + model for the next root turn", () => {
-    saveMode("nrt-grok", { provider: "grok", model: "grok-4.5", effort: "high" })
-    expect(getProvider("grok")).toBeTruthy()
+afterAll(async () => {
+  proc.kill("SIGTERM")
+  await proc.exited
+  rmSync(root, { recursive: true, force: true })
+})
 
-    applyMode("nrt-grok")
+describe("mode apply selection", () => {
+  test("session-scoped apply clears a pin, no-body apply still works, and unknown sessions fail", async () => {
+    await json("/api/modes", {
+      method: "POST",
+      body: JSON.stringify({
+        name: "mode-apply-zen",
+        spec: { provider: "zen", model: "glm-5.2", effort: "low" },
+      }),
+    })
 
-    const sel = nextRootTurnSelection()
-    expect(sel.provider).toBe("grok")
-    expect(sel.model).toBe("grok-4.5")
-    expect(sel.effort).toBe("high")
+    const created = await json("/api/sessions", {
+      method: "POST",
+      body: JSON.stringify({ cwd: root }),
+    })
+    const sessionId = created.sessionId as string
+    await json("/api/model/select", {
+      method: "POST",
+      body: JSON.stringify({ sessionId, provider: "grok", model: "grok-4.5", effort: "high" }),
+    })
+    expect(await json(`/api/model?sessionId=${encodeURIComponent(sessionId)}`)).toMatchObject({
+      provider: "grok",
+      model: "grok-4.5",
+      effort: "high",
+      solo: true,
+    })
 
-    deleteMode("nrt-grok")
-  })
+    await json("/api/modes/mode-apply-zen/apply", {
+      method: "POST",
+      body: JSON.stringify({ sessionId }),
+    })
+    // The scoped model endpoint reads effectiveSessionSelection(sessionId).
+    // solo:false proves the prior session pin was cleared rather than replaced.
+    expect(await json(`/api/model?sessionId=${encodeURIComponent(sessionId)}`)).toMatchObject({
+      provider: "zen",
+      model: "glm-5.2",
+      effort: "low",
+      solo: false,
+    })
 
-  test("applying a second mode switches provider + model for the following turn", () => {
-    saveMode("nrt-grok", { provider: "grok", model: "grok-4.5", effort: "high" })
-    saveMode("nrt-zen", { provider: "zen", model: "glm-5.2", effort: "low" })
+    const noBody = await request("/api/modes/mode-apply-zen/apply", { method: "POST" })
+    expect(noBody.status).toBe(200)
+    expect(await noBody.json()).toMatchObject({
+      applied: "mode-apply-zen",
+      provider: "zen",
+      model: "glm-5.2",
+      effort: "low",
+    })
 
-    applyMode("nrt-grok")
-    expect(nextRootTurnSelection().provider).toBe("grok")
-
-    // A fresh apply (as if the user picked another saved mode from the menu)
-    // must be what the *next* turn sees — not the previous mode.
-    applyMode("nrt-zen")
-    const sel = nextRootTurnSelection()
-    expect(sel.provider).toBe("zen")
-    expect(sel.model).toBe("glm-5.2")
-    expect(sel.effort).toBe("low")
-
-    deleteMode("nrt-grok")
-    deleteMode("nrt-zen")
-  })
-
-  test("mode name resolves case-insensitively (matches the /mode apply flow)", () => {
-    saveMode("nrt-grok", { provider: "grok", model: "grok-4.5" })
-    // getMode is case-insensitive; the TUI hands the canonical name, but a typed
-    // /NRT-GROK must still apply.
-    expect(getMode("NRT-GROK")?.model).toBe("grok-4.5")
-    deleteMode("nrt-grok")
+    const unknown = await request("/api/modes/mode-apply-zen/apply", {
+      method: "POST",
+      body: JSON.stringify({ sessionId: "unknown-session" }),
+    })
+    expect(unknown.status).toBe(404)
+    expect(await unknown.json()).toEqual({ error: "unknown session" })
   })
 })

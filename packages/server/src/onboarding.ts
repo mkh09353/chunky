@@ -2,7 +2,7 @@ import type { ModeSpec } from "./settings.ts"
 import { saveMode, markSeededModes, setAdvisor, setSidekick, resetSidekickSeat, setSidekickSeats, setOnboardedAt, loadSettings } from "./settings.ts"
 import { getProvider, listModelsFor, listProviders, setActiveProviderId, setSelection, type ProviderDef } from "./providers/registry.ts"
 import { detectClaudeCredentials, type ClaudeCredentialDetection } from "./providers/anthropic-sdk.ts"
-import { tryImportCodexCliAuth } from "./providers/codex.ts"
+import { hasCodexCliAuthFile, tryImportCodexCliAuth } from "./providers/codex.ts"
 import { invalidateAgent } from "./agent.ts"
 import { AuthStore } from "./providers/auth-store.ts"
 import { saveCustomProviders, type CustomProvider } from "./settings.ts"
@@ -19,6 +19,7 @@ export interface OnboardingSuggestion { name: string; description: string; spec:
 interface OnboardingDependencies {
   providers: () => ProviderDef[]
   detectClaude: () => ClaudeCredentialDetection
+  hasCodexCliAuth: () => boolean
   importCodexCliAuth: () => Promise<boolean>
   suggestions: (ready: Set<string>) => Promise<OnboardingSuggestion[]>
   onboardedAt: () => number | undefined
@@ -27,6 +28,7 @@ interface OnboardingDependencies {
 const onboardingDefaults: OnboardingDependencies = {
   providers: () => listProviders(),
   detectClaude: detectClaudeCredentials,
+  hasCodexCliAuth: hasCodexCliAuthFile,
   importCodexCliAuth: tryImportCodexCliAuth,
   suggestions: suggestedModes,
   onboardedAt: () => loadSettings().onboardedAt,
@@ -41,7 +43,7 @@ export async function onboardingResponse(
   const providers = deps.providers()
   const codex = providers.find((provider) => provider.id === "codex")
   let codexImportFailed = false
-  if (codex && !codex.ready()) {
+  if (codex && !codex.ready() && deps.hasCodexCliAuth()) {
     try {
       codexImportFailed = !(await deps.importCodexCliAuth())
     } catch {

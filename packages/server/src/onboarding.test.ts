@@ -12,6 +12,26 @@ const { codexProvider } = await import("./providers/codex.ts")
 afterAll(() => rmSync(dir, { recursive: true, force: true }))
 beforeEach(() => { rmSync(process.env.CHUNKY_SETTINGS!, { force: true }); AuthStore.remove("codex") })
 describe("onboarding endpoint", () => {
+  test("reports plain missing detail when no Codex CLI auth file exists", async () => {
+    const cli = mkdtempSync(join(tmpdir(), "chunky-onboarding-codex-cli-missing-"))
+    const oldHome = process.env.CODEX_HOME
+    process.env.CODEX_HOME = cli
+    try {
+      const response = await onboardingResponse({
+        providers: () => [codexProvider],
+        detectClaude: () => ({ state: "missing", detail: "not used" }),
+        suggestions: async () => [],
+      })
+      const body = await response.json() as { providers: Array<{ id: string; status: string; detail?: string }> }
+      const codex = body.providers.find((provider) => provider.id === "codex")
+      expect(response.status).toBe(200)
+      expect(codex).toMatchObject({ status: "missing", detail: "No credentials configured." })
+    } finally {
+      if (oldHome == null) delete process.env.CODEX_HOME; else process.env.CODEX_HOME = oldHome
+      rmSync(cli, { recursive: true, force: true })
+    }
+  })
+
   test("imports existing Codex CLI auth and reports ready", async () => {
     const cli = mkdtempSync(join(tmpdir(), "chunky-onboarding-codex-cli-"))
     const oldHome = process.env.CODEX_HOME, oldFetch = globalThis.fetch

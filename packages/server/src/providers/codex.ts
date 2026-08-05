@@ -185,10 +185,19 @@ type CodexCliAuth = {
 }
 const failedCliAuthImports = new Set<string>()
 
+function codexCliAuthPath(): string {
+  const home = process.env.CODEX_HOME?.trim() || `${homedir()}/.codex`
+  return `${home}/auth.json`
+}
+
+/** Whether there is a Codex CLI credential file worth attempting to import. */
+export function hasCodexCliAuthFile(): boolean {
+  return existsSync(codexCliAuthPath())
+}
+
 /** Import (read-only) the refresh token from a Codex CLI installation. */
 export async function tryImportCodexCliAuth(): Promise<boolean> {
-  const home = process.env.CODEX_HOME?.trim() || `${homedir()}/.codex`
-  const path = `${home}/auth.json`
+  const path = codexCliAuthPath()
   if (failedCliAuthImports.has(path)) return false
   try {
     if (!existsSync(path)) throw new Error("missing auth file")

@@ -75,8 +75,8 @@ export type AgentEvent =
    * was injected by ANOTHER session via send_to_session (a short human label,
    * e.g. `fix tests (0f3a21c9)`) — clients render provenance instead of a
    * plain user bubble. */
-  | { type: "message.user"; text: string; threadId?: string; from?: string }
-  | { type: "message.interjection"; sessionId: string; text: string; injected: boolean }
+  | { type: "message.user"; text: string; threadId?: string; from?: string; imageCount?: number }
+  | { type: "message.interjection"; sessionId: string; text: string; injected: boolean; imageCount?: number }
   | { type: "queue.changed"; sessionId: string; entries: QueueEntry[]; running: boolean }
   | { type: "message.start"; role: "assistant"; threadId?: string }
   | { type: "message.delta"; text: string; threadId?: string }

@@ -436,8 +436,14 @@ function startRun(
         if (next) {
           queueBusy.add(sessionId)
           emitTo(sessionId, { type: "queue.changed", sessionId, entries: promptQueues.get(sessionId)?.snapshot() ?? [], running: false })
-          const nextTurn = beginUserTurn(sessionId, next.shown)
-          emitTo(sessionId, { type: "message.user", text: next.shown })
+          const nextTurn = next.shown ? beginUserTurn(sessionId, next.shown) : undefined
+          if (next.shown || next.images?.length) {
+            emitTo(sessionId, {
+              type: "message.user",
+              text: next.shown,
+              ...(next.images?.length ? { imageCount: next.images.length } : {}),
+            })
+          }
           void startRun(sessionId, next.prompt, next.images, undefined, nextTurn)
         } else {
           emitTo(sessionId, { type: "queue.changed", sessionId, entries: [], running: false })
@@ -488,7 +494,13 @@ async function deliverMessage(
     if (delivery === "steer") steerAtBoundary(buffer, note, () => detachThreadForSteer(sessionId))
     else buffer.push(note)
     interjections.set(sessionId, buffer)
-    emitTo(sessionId, { type: "message.interjection", sessionId, text: visibleText, injected: false })
+    emitTo(sessionId, {
+      type: "message.interjection",
+      sessionId,
+      text: visibleText,
+      injected: false,
+      ...(images?.length ? { imageCount: images.length } : {}),
+    })
     return new Response(null, { status: 202, headers: corsHeaders(req) })
   }
 
@@ -514,7 +526,13 @@ async function deliverMessage(
   }
 
   const turn = visibleText ? beginUserTurn(sessionId, visibleText) : undefined
-  if (visibleText) emitTo(sessionId, { type: "message.user", text: visibleText })
+  if (visibleText || images?.length) {
+    emitTo(sessionId, {
+      type: "message.user",
+      text: visibleText,
+      ...(images?.length ? { imageCount: images.length } : {}),
+    })
+  }
   dispatchRun(sessionId, text, images, { suppressCacheWarning: force }, turn)
   return new Response(null, { status: 202, headers: corsHeaders(req) })
 }

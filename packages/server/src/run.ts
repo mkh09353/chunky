@@ -34,6 +34,8 @@ export type { Emit } from "./event-emitter.ts"
  * so another instance changing the global selection cannot affect pinned
  * sessions. */
 export function effectiveSessionSelection(sessionId: string): AgentSelection {
+  const mode = Store.agentConfigOf(sessionId)
+  if (mode && getProvider(mode.selection.provider)) return mode.selection
   const pinned = Store.pinnedSelectionOf(sessionId)
   return pinned && getProvider(pinned.provider) ? pinned : activeSelection()
 }

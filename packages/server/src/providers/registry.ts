@@ -31,6 +31,8 @@ import {
   type Speed,
   loadSettings,
   type CustomProvider,
+  type AdvisorConfig,
+  type ReviewConfig,
   type SidekickConfig,
   type SidekickSeat,
 } from "../settings.ts"
@@ -43,6 +45,8 @@ export type { Effort, ModelSelection, Speed } from "../settings.ts"
 
 export function isSolo(sessionId?: string): boolean {
   if (sessionId) {
+    const mode = Store.agentConfigOf(sessionId)
+    if (mode && getProvider(mode.selection.provider)) return mode.selection.solo === true
     const pinned = Store.pinnedSelectionOf(sessionId)
     if (pinned && getProvider(pinned.provider)) return pinned.solo === true
   }
@@ -349,8 +353,13 @@ export function providerRuntime(id: string): NonNullable<ProviderDef["runtime"]>
 
 /** Resolve the configured advisor selection, or null when it can't run: disabled,
  *  no provider/model chosen, or the provider isn't registered. */
+export function effectiveAdvisorConfig(sessionId?: string): AdvisorConfig {
+  if (isSolo(sessionId)) return getSoloAdvisor()
+  return (sessionId ? Store.agentConfigOf(sessionId)?.advisor : null) ?? getAdvisor()
+}
+
 export function resolveAdvisorSelection(sessionId?: string): AgentSelection | null {
-  const cfg = isSolo(sessionId) ? getSoloAdvisor() : getAdvisor()
+  const cfg = effectiveAdvisorConfig(sessionId)
   if (!cfg.enabled || !cfg.provider || !cfg.model || !providers[cfg.provider]) return null
   return Object.freeze({ provider: cfg.provider, model: cfg.model, effort: cfg.effort, speed: undefined })
 }
@@ -368,11 +377,16 @@ export function advisorFor(executor: AgentSelection, sessionId?: string): AgentS
 /** Effective reviewer model after applying the active mode's tri-state override. */
 export function resolveReviewSelection(sessionId?: string): AgentSelection | null {
   if (isSolo(sessionId)) return null
-  const cfg = getEffectiveReview()
+  const cfg = effectiveReviewConfig(sessionId)
   if (!cfg.enabled || !cfg.provider || !cfg.model || !providers[cfg.provider]) return null
   const selection = Object.freeze({ provider: cfg.provider, model: cfg.model, effort: cfg.effort, speed: undefined })
   try { assertSelectionAllowed(sessionId ?? null, selection) } catch { return null }
   return selection
+}
+
+export function effectiveReviewConfig(sessionId?: string): ReviewConfig {
+  if (isSolo(sessionId)) return { enabled: false }
+  return (sessionId ? Store.agentConfigOf(sessionId)?.review : null) ?? getEffectiveReview()
 }
 
 // ---- Sidekick selection (the persistent worker side-thread model) ----
@@ -386,7 +400,7 @@ export function resolveReviewSelection(sessionId?: string): AgentSelection | nul
 /** Global sidekick defaults merged with this session's sparse override. */
 export function effectiveSidekickConfig(sessionId?: string): SidekickConfig {
   if (isSolo(sessionId)) return { enabled: false }
-  const global = getSidekick()
+  const global = (sessionId ? Store.agentConfigOf(sessionId)?.sidekick : null) ?? getSidekick()
   const override = sessionId ? Store.sidekickOverrideOf(sessionId) : null
   return { ...global, ...override?.config }
 }
@@ -394,7 +408,7 @@ export function effectiveSidekickConfig(sessionId?: string): SidekickConfig {
 /** Global named seats merged with this session's sparse patches. */
 export function effectiveSidekickSeats(sessionId?: string): Record<string, SidekickSeat> {
   if (isSolo(sessionId)) return {}
-  const seats = { ...getSidekickSeats() }
+  const seats = { ...((sessionId ? Store.agentConfigOf(sessionId)?.sidekickSeats : null) ?? getSidekickSeats()) }
   const patches = sessionId ? Store.sidekickOverrideOf(sessionId)?.seats : undefined
   if (patches) {
     for (const [name, patch] of Object.entries(patches)) {

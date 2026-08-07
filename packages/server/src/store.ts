@@ -7,7 +7,7 @@ import { notifySessionChanged } from "./session-changes.ts"
 import type { Goal } from "./goal.ts"
 import type { TodoSnapshot } from "./todos.ts"
 import type { AgentSelection } from "./providers/registry.ts"
-import type { SidekickConfig, SidekickSeat } from "./settings.ts"
+import type { AdvisorConfig, ReviewConfig, SidekickConfig, SidekickSeat } from "./settings.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { pricingFor } from "./providers/models-catalog.ts"
 import { isIncognitoSession } from "./incognito.ts"
@@ -15,6 +15,16 @@ import { isIncognitoSession } from "./incognito.ts"
 /** A session's pinned model choice (type-only alias — the import is erased, so
  *  the store keeps zero runtime provider dependencies). */
 export type PinnedSelection = AgentSelection & { solo?: boolean }
+/** Complete session-local mode materialization. Unlike sparse legacy overrides,
+ * every field is concrete so later global changes cannot leak into this mode. */
+export type SessionAgentConfig = {
+  activeMode: string
+  selection: PinnedSelection
+  advisor: AdvisorConfig
+  review: ReviewConfig
+  sidekick: SidekickConfig
+  sidekickSeats: Record<string, SidekickSeat>
+}
 /** Per-session changes layered over the server-wide sidekick defaults. A null
  * seat clears this session's override and therefore reveals the global seat. */
 export type SessionSidekickOverride = {
@@ -129,6 +139,9 @@ db.exec(`
   // Optional session-local sidekick configuration, parallel to `selection`.
   if (!cols.some((c) => c.name === "sidekick")) {
     db.exec("ALTER TABLE sessions ADD COLUMN sidekick TEXT")
+  }
+  if (!cols.some((c) => c.name === "agent_config")) {
+    db.exec("ALTER TABLE sessions ADD COLUMN agent_config TEXT")
   }
   if (!cols.some((c) => c.name === "incognito")) db.exec("ALTER TABLE sessions ADD COLUMN incognito INTEGER NOT NULL DEFAULT 0")
   if (!cols.some((c) => c.name === "incognito_allow")) db.exec("ALTER TABLE sessions ADD COLUMN incognito_allow TEXT")
@@ -528,6 +541,68 @@ export const Store = {
     } as SessionSummary))
   },
 
+  /**
+   * List sessions across a SET of workspaces — a repository plus its linked git
+   * worktrees, so a `/fork --worktree` child still appears under the repo it was
+   * cut from instead of vanishing from every tab.
+   *
+   * Deliberately additive: `list` keeps its exact-match single-workspace query
+   * for every other caller. An EMPTY set returns nothing rather than falling
+   * back to "all sessions" — a caller whose repo could not be resolved must get
+   * an empty tab, never every session on the machine.
+   *
+   * Paths are bound as parameters (only the placeholder count is interpolated),
+   * so a workspace path can never be SQL.
+   */
+  listByWorkspaces(workspaces: readonly string[]): SessionSummary[] {
+    const paths = [...new Set(workspaces.filter((path) => typeof path === "string" && path.length > 0))]
+    if (paths.length === 0) return []
+    const holes = paths.map(() => "?").join(",")
+    const columns = "SELECT id,title,created_at,last_activity,workspace FROM"
+    const tail = `WHERE workspace IN (${holes}) ORDER BY last_activity DESC LIMIT 100`
+    const rows = db.query(`${columns} sessions ${tail}`).all(...paths) as {
+      id: string
+      title: string
+      created_at: number
+      last_activity: number
+      workspace: string
+    }[]
+    const memoryRows = memoryDb.query(`${columns} sessions ${tail}`).all(...paths) as typeof rows
+    const archivedRows = db.query(`${columns} archived_sessions ${tail}`).all(...paths) as typeof rows
+    return [...rows, ...memoryRows, ...archivedRows].sort((a, b) => b.last_activity - a.last_activity).slice(0, 100).map((r) => ({
+      sessionId: r.id,
+      title: r.title,
+      createdAt: r.created_at,
+      lastActivity: r.last_activity,
+      workspace: r.workspace,
+      incognito: isIncognitoSession(r.id),
+      ...(archivedRows.some((a) => a.id === r.id) ? { archived: true } : {}),
+    } as SessionSummary))
+  },
+
+  /**
+   * Workspace paths of `/fork --worktree` children whose PARENT session lives in
+   * one of `parentWorkspaces`.
+   *
+   * This is the authoritative link for worktrees Chunky itself created, and it
+   * deliberately does not go through git: the child's workspace was recorded
+   * exactly as the fork wrote it, whereas `git worktree list` reports the
+   * canonicalized path. Where a path component is a symlink those two spellings
+   * differ, and matching on git's answer alone would silently drop the child
+   * from its parent repo's tab. Reading the recorded path instead cannot miss.
+   */
+  worktreeWorkspacesUnder(parentWorkspaces: readonly string[]): string[] {
+    const paths = [...new Set(parentWorkspaces.filter((path) => typeof path === "string" && path.length > 0))]
+    if (paths.length === 0) return []
+    const holes = paths.map(() => "?").join(",")
+    const rows = db.query(
+      `SELECT w.path AS path FROM session_workspaces w
+       JOIN sessions s ON s.id = w.parent_session_id
+       WHERE w.kind = 'worktree' AND s.workspace IN (${holes})`,
+    ).all(...paths) as { path: string }[]
+    return [...new Set(rows.map((row) => row.path).filter((path) => typeof path === "string" && path.length > 0))]
+  },
+
   // ---- Goal mode (one goal per session, persisted so it survives restart) ----
 
   getGoal(sessionId: string): Goal | null {
@@ -593,6 +668,26 @@ export const Store = {
     } catch { conn.query("DELETE FROM session_compaction_artifacts WHERE session_id=?").run(sessionId) }
   },
 
+  /** Complete mode pinned to this session, or null when it follows legacy
+   * selection/global configuration. Corrupt values fail closed to inheritance. */
+  agentConfigOf(sessionId: string): SessionAgentConfig | null {
+    const row = backend(sessionId).query("SELECT agent_config FROM sessions WHERE id=?").get(sessionId) as { agent_config: string | null } | null
+    if (!row?.agent_config) return null
+    try {
+      const parsed = JSON.parse(row.agent_config) as SessionAgentConfig
+      return parsed && typeof parsed.activeMode === "string" && typeof parsed.selection?.provider === "string" ? parsed : null
+    } catch { return null }
+  },
+
+  setAgentConfig(sessionId: string, config: SessionAgentConfig | null): void {
+    const conn = backend(sessionId)
+    const previous = this.agentConfigOf(sessionId)
+    conn.query("UPDATE sessions SET agent_config=? WHERE id=?").run(config ? JSON.stringify(config) : null, sessionId)
+    if (previous?.selection.provider !== config?.selection.provider || previous?.selection.model !== config?.selection.model) {
+      conn.query("DELETE FROM session_compaction_artifacts WHERE session_id=?").run(sessionId)
+    }
+  },
+
   setCompactionArtifact(sessionId: string, artifact: { provider: string; model: string; replacementHistory: unknown[]; boundary: string; usage?: unknown }): void {
     backend(sessionId).query(`INSERT INTO session_compaction_artifacts (session_id,provider,model,replacement_history_json,boundary,created_at,usage_json) VALUES (?,?,?,?,?,?,?) ON CONFLICT(session_id) DO UPDATE SET provider=excluded.provider,model=excluded.model,replacement_history_json=excluded.replacement_history_json,boundary=excluded.boundary,created_at=excluded.created_at,usage_json=excluded.usage_json`).run(sessionId, artifact.provider, artifact.model, JSON.stringify(artifact.replacementHistory), artifact.boundary, Date.now(), artifact.usage == null ? null : JSON.stringify(artifact.usage))
   },
@@ -606,7 +701,7 @@ export const Store = {
    * Pinned sessions retain their own compatible native history. */
   invalidateGlobalCompactionArtifacts(provider: string, model: string): void {
     db.query(`DELETE FROM session_compaction_artifacts
-      WHERE session_id IN (SELECT id FROM sessions WHERE selection IS NULL)
+      WHERE session_id IN (SELECT id FROM sessions WHERE selection IS NULL AND agent_config IS NULL)
         AND NOT (provider=? AND model=?)`).run(provider, model)
   },
 
@@ -634,13 +729,14 @@ export const Store = {
     if (isIncognitoSession(parentId)) {
       throw new Error("cannot fork an incognito session")
     }
-    const parent = db.query("SELECT title, selection, sidekick FROM sessions WHERE id = ?").get(parentId) as { title: string; selection: string | null; sidekick: string | null }
+    const parent = db.query("SELECT title, selection, sidekick, agent_config FROM sessions WHERE id = ?").get(parentId) as { title: string; selection: string | null; sidekick: string | null; agent_config: string | null }
     const now = Date.now()
     retrySqliteTransaction(db, () => {
       stmtCreate.run(childId, `${parent.title} · fork`, now, now, workspace)
       db.query("DELETE FROM session_compaction_artifacts WHERE session_id=?").run(childId)
       if (parent.selection) stmtPinSelection.run(parent.selection, childId)
       if (parent.sidekick) db.query("UPDATE sessions SET sidekick=? WHERE id=?").run(parent.sidekick, childId)
+      if (parent.agent_config) db.query("UPDATE sessions SET agent_config=? WHERE id=?").run(parent.agent_config, childId)
       stmtCopyEvents.run(childId, parentId)
       stmtCopyTurns.run(childId, parentId)
       const last = stmtLastSeq.get(parentId) as { n: number | null }

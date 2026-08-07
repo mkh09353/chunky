@@ -40,6 +40,7 @@ import {
   type PrActionRequest,
   type UpdatePrReviewsConfigRequest,
   type PrReviewsConfig,
+  type SessionAgentConfigResponse,
 } from "@chunky/protocol"
 import { effectiveSessionSelection, runAgent, type InputImage, type InterjectionBoundary } from "./run.ts"
 import { createMessageCoalescer } from "./message-coalescer.ts"
@@ -64,6 +65,8 @@ import {
   resolveAdvisorSelection,
   isSolo,
   resolveReviewSelection,
+  effectiveAdvisorConfig,
+  effectiveReviewConfig,
   effectiveSidekickConfig,
   effectiveSidekickSeats,
   selectionOf,
@@ -162,6 +165,7 @@ import { hasAppZoo, setAppZooEndpoint } from "./app-zoo.ts"
 import { currentPrReviews, currentGithubOrgs, pollPrReviews, startPrReviewsPoller } from "./github-prs.ts"
 import { getGithubConfig, setGithubConfig, githubConfigResponse } from "./settings.ts"
 import { joinPrLinks, startPrAction, getPrLink } from "./pr-actions.ts"
+import { repoWorkspaceSet, sessionGitFields, type SessionGitLookup } from "./worktrees.ts"
 
 type Subscriber = ReadableStreamDefaultController<Uint8Array>
 
@@ -269,23 +273,45 @@ function sessionBusy(sessionId: string): boolean {
   return running.has(sessionId) || hasLiveThreadDelegates(sessionId) || hasRunningDetachedSpawns(sessionId)
 }
 
+/** Store + registry reads behind the repo/branch/worktree summary fields. The
+ *  registry is the ONLY authority for repo identity: a path that is not a
+ *  registered repository simply reports no `repoId`. */
+const sessionGitLookup: SessionGitLookup = {
+  workspaceMetadataOf: (sessionId) => Store.workspaceMetadataOf(sessionId),
+  workspaceOf: (sessionId) => Store.workspaceOf(sessionId),
+  repoIdForPath: (path) => {
+    // canonicalWorkspace (resolve + realpath, never throws) so a symlinked repo
+    // path and the path git reports still identify the same registered repo.
+    const target = canonicalWorkspace(path)
+    return listRepos().repos.find((repo) => canonicalWorkspace(repo.path) === target)?.id ?? null
+  },
+}
+
+/** Which repository/branch/worktree a session row belongs to. Cached per
+ *  workspace (see worktrees.ts): this runs for every row of every 250ms session
+ *  delta, so it must never cost a subprocess per row. Absent fields are normal
+ *  and mean "client renders flat". */
+function gitFieldsFor(session: SessionSummary): SessionSummary {
+  return { ...session, ...sessionGitFields(session.sessionId, session.workspace, sessionGitLookup) }
+}
+
 /** The mobile shell intentionally contains only the public SessionSummary fields.
  *  `busy` is one of them: without it a client cannot tell a session whose root
  *  run stopped but whose sidekick is still working from a settled one, and would
  *  have to confirm every such row with an extra poll. */
 function shellSummary(sessionId: string): SessionSummary | null {
   const session = Store.summary(sessionId)
-  return session && {
+  return session && gitFieldsFor({
     ...session,
     attached: (live.get(sessionId)?.size ?? 0) > 0,
     running: running.has(sessionId),
     busy: sessionBusy(sessionId),
     incognito: isIncognitoSession(sessionId),
-  }
+  })
 }
 
 function shellSessions(): SessionSummary[] {
-  return Store.listShell().map((session) => ({
+  return Store.listShell().map((session) => gitFieldsFor({
     ...session,
     attached: (live.get(session.sessionId)?.size ?? 0) > 0,
     running: running.has(session.sessionId),
@@ -1059,15 +1085,15 @@ const server = Bun.serve(withCors({
     }
 
     // GET /api/model -> the current active selection, or a session's effective
-    // pinned selection when `sessionId` is supplied. Both forms preserve the
-    // established { provider, model, effort, speed } response shape.
+    // pinned selection when `sessionId` is supplied. Session reads add the
+    // backward-compatible `pinned` provenance flag.
     if (req.method === "GET" && pathname === "/api/model") {
       const sessionId = url.searchParams.get("sessionId") || undefined
       if (sessionId) {
         if (!Store.exists(sessionId)) return json({ error: "unknown session" }, 404)
 
         const sel = effectiveSessionSelection(sessionId)
-        return json({ provider: sel.provider, model: sel.model ?? null, effort: sel.effort ?? null, speed: sel.speed ?? null, solo: isSolo(sessionId) })
+        return json({ provider: sel.provider, model: sel.model ?? null, effort: sel.effort ?? null, speed: sel.speed ?? null, solo: isSolo(sessionId), pinned: Store.agentConfigOf(sessionId) != null || Store.pinnedSelectionOf(sessionId) != null })
       }
       const provider = activeProviderId()
       const sel = selectionOf(provider)
@@ -1103,10 +1129,12 @@ const server = Bun.serve(withCors({
 
       if (sessionId) {
         if (!Store.exists(sessionId)) return json({ error: "unknown session" }, 404)
+        // A raw model choice supersedes a complete mode pin for this session.
+        Store.setAgentConfig(sessionId, null)
         Store.pinSelection(sessionId, { provider, model, effort, speed, solo: true })
         invalidateAgent()
         const sel = effectiveSessionSelection(sessionId)
-        return json({ provider: sel.provider, model: sel.model ?? null, effort: sel.effort ?? null, speed: sel.speed ?? null, solo: isSolo(sessionId) })
+        return json({ provider: sel.provider, model: sel.model ?? null, effort: sel.effort ?? null, speed: sel.speed ?? null, solo: isSolo(sessionId), pinned: true })
       }
       setActiveProviderId(provider)
       setSelection(provider, { model, effort, speed })
@@ -1319,31 +1347,64 @@ const server = Bun.serve(withCors({
         try { body = (await req.json()) as typeof body } catch { /* body is optional */ }
         const sessionId = typeof body?.sessionId === "string" && body.sessionId ? body.sessionId : undefined
         if (sessionId && !Store.exists(sessionId)) return json({ error: "unknown session" }, 404)
-        // activeMode drives review's tri-state override for ordinary modes too.
+        if (sessionId) {
+          // Materialize every effective field. Legacy undefined mode fields keep
+          // their current effective value, while explicit null keeps the global
+          // mode semantics (off/reset). The resulting snapshot is independent.
+          const advisor: AdvisorConfig = spec.advisor
+            ? { enabled: true, provider: spec.advisor.provider, model: spec.advisor.model, effort: spec.advisor.effort }
+            : { enabled: false }
+          const review: ReviewConfig = spec.review === undefined
+            ? getReview()
+            : spec.review === null
+              ? { enabled: false }
+              : { enabled: true, provider: spec.review.provider, model: spec.review.model, effort: spec.review.effort }
+          const sidekick: SidekickConfig = spec.sidekick === undefined
+            ? effectiveSidekickConfig(sessionId)
+            : spec.sidekick === null
+              ? { enabled: true }
+              : { enabled: true, provider: spec.sidekick.provider, model: spec.sidekick.model, effort: spec.sidekick.effort }
+          const sidekickSeats = spec.sidekickSeats === undefined
+            ? effectiveSidekickSeats(sessionId)
+            : spec.sidekickSeats ?? {}
+          Store.setAgentConfig(sessionId, {
+            activeMode: name,
+            selection: { provider: spec.provider, model: spec.model, effort: spec.effort, speed: spec.speed, solo: false },
+            advisor,
+            review,
+            sidekick,
+            sidekickSeats,
+          })
+          // A complete mode supersedes legacy raw-model and sidekick pins.
+          Store.pinSelection(sessionId, null)
+          Store.setSidekickOverride(sessionId, null)
+          invalidateAgent()
+          emitLiveTo(sessionId, { type: "mode.applied", name, spec, sessionId })
+          return json({
+            applied: name,
+            provider: spec.provider,
+            model: spec.model,
+            effort: spec.effort ?? null,
+            speed: spec.speed ?? null,
+            advisor,
+            advisorActive: resolveAdvisorSelection(sessionId) != null,
+            review: { config: review, effective: review, active: resolveReviewSelection(sessionId) != null },
+            sidekick,
+            sidekickSeats,
+          })
+        }
+
+        // No session id is the established Settings/global-default operation.
         setActiveMode(name)
         setSolo(false)
         setActiveProviderId(spec.provider)
         setSelection(spec.provider, { model: spec.model, effort: spec.effort, speed: spec.speed })
-        if (spec.advisor) {
-          setAdvisor({ enabled: true, provider: spec.advisor.provider, model: spec.advisor.model, effort: spec.advisor.effort })
-        } else {
-          setAdvisor({ enabled: false })
-        }
-        // The sidekick seat is part of the trio, but only when the mode names
-        // one — a mode saved before sidekicks existed (spec.sidekick undefined)
-        // leaves the current seat alone; an explicit null resets to inherit.
-        if (spec.sidekick) {
-          setSidekick({ enabled: true, provider: spec.sidekick.provider, model: spec.sidekick.model, effort: spec.sidekick.effort })
-        } else if (spec.sidekick === null) {
-          resetSidekickSeat()
-        }
-        // Same absent/null contract for the NAMED seats: absent = leave alone.
-        if (spec.sidekickSeats) {
-          setSidekickSeats(spec.sidekickSeats)
-        } else if (spec.sidekickSeats === null) {
-          setSidekickSeats({})
-        }
-        if (sessionId) Store.pinSelection(sessionId, null)
+        if (spec.advisor) setAdvisor({ enabled: true, provider: spec.advisor.provider, model: spec.advisor.model, effort: spec.advisor.effort })
+        else setAdvisor({ enabled: false })
+        if (spec.sidekick) setSidekick({ enabled: true, provider: spec.sidekick.provider, model: spec.sidekick.model, effort: spec.sidekick.effort })
+        else if (spec.sidekick === null) resetSidekickSeat()
+        if (spec.sidekickSeats) setSidekickSeats(spec.sidekickSeats)
+        else if (spec.sidekickSeats === null) setSidekickSeats({})
         invalidateAgent()
         broadcastLive({ type: "mode.applied", name, spec })
         const sel = selectionOf(spec.provider)
@@ -1571,7 +1632,15 @@ const server = Bun.serve(withCors({
       const repoId = url.searchParams.get("repo")
       const repo = repoId ? repoById(repoId) : activeRepo()
       const cwd = url.searchParams.get("cwd")
-      const sessions = Store.list(cwd ? canonicalWorkspace(cwd) : repo?.path).map((session) => ({
+      // A repository tab means "this repo AND its linked worktrees": a
+      // `/fork --worktree` child runs at <state>/worktrees/..., so an
+      // exact-match list would drop it from every tab in the app. An explicit
+      // `cwd` is a precise question and keeps the exact-match answer.
+      const workspace = cwd ? canonicalWorkspace(cwd) : repo?.path
+      const rows = cwd || !workspace
+        ? Store.list(workspace)
+        : Store.listByWorkspaces(repoWorkspaceSet(workspace, (paths) => Store.worktreeWorkspacesUnder(paths)))
+      const sessions = rows.map((session) => gitFieldsFor({
         ...session,
         attached: (live.get(session.sessionId)?.size ?? 0) > 0,
         running: running.has(session.sessionId),
@@ -1666,7 +1735,7 @@ const server = Bun.serve(withCors({
     }
 
     // Match /api/sessions/:id/(events|messages|interrupt|goal|ship|cache)
-    const m = pathname.match(/^\/api\/sessions\/([^/]+)\/(events|messages|interrupt|compact|goal|todos|ship|cache|rewind-points|rewind|fork)$/)
+    const m = pathname.match(/^\/api\/sessions\/([^/]+)\/(events|messages|interrupt|compact|goal|todos|ship|cache|rewind-points|rewind|fork|agent-config)$/)
     if (m) {
       const [, sessionId, kind] = m
       // An interrupted restore may already have recreated the session row while
@@ -1675,6 +1744,21 @@ const server = Bun.serve(withCors({
       // Accept any session that exists on disk (enables resume across restart),
       // not just ones created in this process.
       if (!Store.exists(sessionId)) return json({ error: "unknown session" }, 404)
+      if (kind === "agent-config" && req.method === "GET") {
+        const selection = effectiveSessionSelection(sessionId)
+        const mode = Store.agentConfigOf(sessionId)
+        const response: SessionAgentConfigResponse = {
+          selection: { provider: selection.provider, model: selection.model ?? null, effort: selection.effort ?? null, speed: selection.speed ?? null, solo: isSolo(sessionId) },
+          source: mode ? "session-mode" : Store.pinnedSelectionOf(sessionId) ? "session-selection" : "global",
+          activeMode: mode?.activeMode ?? null,
+          advisor: effectiveAdvisorConfig(sessionId),
+          review: effectiveReviewConfig(sessionId),
+          sidekick: effectiveSidekickConfig(sessionId),
+          sidekickSeats: effectiveSidekickSeats(sessionId),
+        }
+        return json(response)
+      }
+
       if (kind === "compact" && req.method === "POST") {
         const body = await req.json().catch(() => ({})) as CompactRequest
         if (body.hint != null && typeof body.hint !== "string") return json({ error: "invalid hint" }, 400)

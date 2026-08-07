@@ -44,9 +44,9 @@ export type AgentEvent =
   /** Ask only currently attached app clients for this session to open a URL in
    * their browser pane. LIVE-ONLY: never persisted or replayed. */
   | { type: "app.open_url"; url: string }
-  /** A saved mode changed the server-wide executor/agent configuration. This is
-   * live-only and broadcasts to every currently attached session stream. */
-  | { type: "mode.applied"; name: string; spec: ModeSpec }
+  /** A saved mode changed executor/agent configuration. With `sessionId` this
+   * is live-only for that session; without it the server-wide defaults changed. */
+  | { type: "mode.applied"; name: string; spec: ModeSpec; sessionId?: string }
   /** Emitted at the START of a turn when the prompt cache for this thread is
    * cold — the previous turn's cached prefix is gone, so this turn re-sends the
    * whole context. Either the idle gap exceeded the cache TTL, or the model
@@ -218,6 +218,17 @@ export interface SessionSummary {
    * spawn, or workflow agent) is still running; excludes background tasks/monitors. */
   busy?: boolean
   incognito?: boolean
+  /** Registry id of the repository this session's workspace belongs to — its
+   *  MAIN worktree, so a session running in a linked worktree still reports the
+   *  repo it came from. Absent when the server cannot resolve it (no git, path
+   *  gone, older server): clients must then render a flat, ungrouped list. */
+  repoId?: string
+  /** Git branch checked out in the session's workspace. Absent on detached
+   *  HEAD, outside a repository, or when resolution failed. */
+  branch?: string
+  /** Set ONLY when `workspace` is a linked worktree rather than the repository's
+   *  main one. Its absence means "main worktree (or unknown)", never "no repo". */
+  worktree?: { path: string; isLinked: true }
 }
 export interface ListSessionsResponse {
   sessions: SessionSummary[]
@@ -421,6 +432,24 @@ export interface ModesResponse {
   modes: ModeInfo[]
   current: ModeSpec & { solo?: boolean }
 }
+
+/** One session's authoritative effective agent configuration. `source` says
+ * whether it is isolated from later global-default changes. */
+export interface SessionAgentConfigResponse {
+  selection: {
+    provider: string
+    model?: string | null
+    effort?: string | null
+    speed?: string | null
+    solo: boolean
+  }
+  source: "session-mode" | "session-selection" | "global"
+  activeMode: string | null
+  advisor: SoloAdvisorConfig
+  review: SoloAdvisorConfig
+  sidekick: SoloAdvisorConfig
+  sidekickSeats: Record<string, ModeAdvisor>
+}
 /** POST ROUTES.modes — save a mode. Omitted `spec` snapshots the current
  *  executor+advisor pairing under `name`. */
 export interface SaveModeRequest {
@@ -546,6 +575,8 @@ export const ROUTES = {
   rewindPoints: (id: string) => `/api/sessions/${id}/rewind-points`,
   rewind: (id: string) => `/api/sessions/${id}/rewind`,
   fork: (id: string) => `/api/sessions/${id}/fork`,
+  // GET -> SessionAgentConfigResponse: authoritative effective model + delegates.
+  agentConfig: (id: string) => `/api/sessions/${id}/agent-config`,
   // GET ?q=&limit=&repo=<id>&session=<id> -> { items: FileSearchItem[] } — FFF
   // fuzzy search for @-mentions. A session scopes to its pinned workspace;
   // repo/default scope remains for callers that omit it.

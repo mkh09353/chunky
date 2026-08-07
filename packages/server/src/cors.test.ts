@@ -85,6 +85,7 @@ describe("server CORS responses", () => {
       effort: "high",
       speed: "fast",
       solo: true,
+      pinned: true,
     })
   })
 

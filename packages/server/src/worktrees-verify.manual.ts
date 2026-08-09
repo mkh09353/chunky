@@ -64,7 +64,7 @@ console.log(`\nrepoWorkspaceSet -> ${JSON.stringify(workspaces, null, 2)}`)
 
 const rows = Store.listByWorkspaces(workspaces).map((s) => ({
   ...s,
-  ...sessionGitFields(s.sessionId, s.workspace, lookup),
+  ...sessionGitFields(s.sessionId, s.workspace ?? "", lookup),
 }))
 
 console.log(`\n--- GET /api/sessions?repo=${registered.id} would return ---`)

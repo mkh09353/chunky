@@ -389,9 +389,14 @@ export async function runAgent(
   // Freeze the run's workspace from the SESSION (not any global): every tool
   // call, child thread, and advisor consult in this run operates here, so
   // sessions in different repos run concurrently without interfering.
-  const workspace = Store.workspaceOf(sessionId) ?? LAUNCH_WORKSPACE
-  const agentsMd = await distilledAgentsMd(workspace, selection, sessionId)
-  const repoMemory = readRepoMemory(workspace, sessionId)
+  const repoLess = Store.repositoryScopeOf(sessionId) === "none"
+  const workspace = Store.workspaceOf(sessionId)
+  // LangChain requires a string context even when no filesystem tools are bound.
+  // This neutral value is never passed to a repository tool because repo-less
+  // construction excludes those tools by name.
+  const resolvedWorkspace = repoLess ? "/" : (workspace ?? LAUNCH_WORKSPACE)
+  const agentsMd = repoLess ? null : await distilledAgentsMd(resolvedWorkspace, selection, sessionId)
+  const repoMemory = repoLess ? null : readRepoMemory(resolvedWorkspace, sessionId)
 
   // Preflight credentials: refresh an expiring OAuth token, or fail fast with a
   // clear "run /login" error. Without this a revoked token hangs the whole turn
@@ -420,7 +425,7 @@ export async function runAgent(
   // Context for spawn_thread: any thread_id in this run (root or descendant)
   // resolves back to this manager via the thread registry. Defaults for the
   // agent factories; the workspace pins children to the session's repo.
-  const threads = new ThreadManager(emit, sessionId, selection, undefined, undefined, workspace, abort)
+  const threads = new ThreadManager(emit, sessionId, selection, undefined, undefined, resolvedWorkspace, abort)
   const cache: CacheContext | undefined = model ? { conversationId: sessionId, model } : undefined
 
   // One turn = one full agent run (a model call + any tool loop). Both runtimes
@@ -437,18 +442,18 @@ export async function runAgent(
     if (currentRuntime === "anthropic-sdk") {
       const { runAnthropicAgent } = await import("./anthropic-runner.ts")
       await runAnthropicAgent({
-        selection, threadId: sessionId, prompt: composedPrompt, images: turnImages, emit, cache, abort, workspace, agentsMd,
+        selection, threadId: sessionId, prompt: composedPrompt, repositoryLess: repoLess, images: turnImages, emit, cache, abort, workspace: resolvedWorkspace, agentsMd,
         usageContext: { sessionId, role: "lead" },
         onSubmitted: () => consumeTaskReminders(sessionId, pendingReminder.ids),
       })
     } else {
       const stream = await streamWithCheckpointRecovery(
-        getAgent(selection, workspace, agentsMd, sessionId, repoMemory),
+        getAgent(selection, resolvedWorkspace, agentsMd, sessionId, repoMemory),
         { messages: [{ role: "user", content: await userMessageContent(composedPrompt, turnImages) }] } as any,
         {
           configurable: {
             thread_id: sessionId,
-            workspace,
+            workspace: resolvedWorkspace,
             emitToolProgress: (toolCallId: string, chunk: string) =>
               taggedEmitter(emit, undefined)({ type: "tool.progress", id: toolCallId, chunk }),
             emitSessionEvent: (event: any) => emit(event),

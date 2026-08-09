@@ -300,7 +300,7 @@ const sessionGitLookup: SessionGitLookup = {
  *  delta, so it must never cost a subprocess per row. Absent fields are normal
  *  and mean "client renders flat". */
 function gitFieldsFor(session: SessionSummary): SessionSummary {
-  return { ...session, ...sessionGitFields(session.sessionId, session.workspace, sessionGitLookup) }
+  return { ...session, ...(session.repositoryScope === "none" ? {} : sessionGitFields(session.sessionId, session.workspace ?? "", sessionGitLookup)) }
 }
 
 /** The mobile shell intentionally contains only the public SessionSummary fields.
@@ -575,8 +575,9 @@ async function deliverMessage(
  * remove that event and everything after it. Snapshot failure is intentional
  * degradation: the agent still runs, but that point is unavailable to rewind. */
 function beginUserTurn(sessionId: string, text: string): number {
-  const workspace = Store.workspaceOf(sessionId) ?? LAUNCH_WORKSPACE
   const turn = Store.startTurn(sessionId, text, null)
+  if (Store.repositoryScopeOf(sessionId) === "none") return turn
+  const workspace = Store.workspaceOf(sessionId) ?? LAUNCH_WORKSPACE
   void snapshotWorkspaceAsync(workspace, `refs/sessions/${sessionId}`).then((snapshot) => {
     Store.setTurnSnapshot(sessionId, turn, snapshot)
   })
@@ -1684,6 +1685,10 @@ const server = Bun.serve(withCors({
     // default one). Threads are scoped per repo so each folder has its own list.
     if (req.method === "GET" && pathname === ROUTES.listSessions) {
       const repoId = url.searchParams.get("repo")
+      const scope = url.searchParams.get("scope")
+      if (scope !== null && scope !== "none") return json({ error: "scope must be none" }, 400)
+      if (scope === "none" && (repoId || url.searchParams.has("cwd"))) return json({ error: "scope=none cannot be combined with repo or cwd" }, 400)
+      if (scope === "none") return json({ sessions: Store.list(undefined, "none") })
       const repo = repoId ? repoById(repoId) : activeRepo()
       const cwd = url.searchParams.get("cwd")
       // A repository tab means "this repo AND its linked worktrees": a
@@ -1714,14 +1719,18 @@ const server = Bun.serve(withCors({
     // different repos run concurrently.
     if (req.method === "POST" && pathname === ROUTES.createSession) {
       let repoId: string | undefined
+      let repositoryScope: "repository" | "none" = "repository"
       try {
-        const body = (await req.json().catch(() => ({}))) as { repoId?: unknown; cwd?: unknown }
+        const body = (await req.json().catch(() => ({}))) as { repoId?: unknown; cwd?: unknown; repositoryScope?: unknown }
         if (typeof body?.repoId === "string" && body.repoId) repoId = body.repoId
         var clientCwd = typeof body?.cwd === "string" && body.cwd ? canonicalWorkspace(body.cwd) : undefined
+        if (body?.repositoryScope !== undefined && body.repositoryScope !== "default" && body.repositoryScope !== "none") return json({ error: "repositoryScope must be default or none" }, 400)
+        repositoryScope = body?.repositoryScope === "none" ? "none" : "repository"
+        if (repositoryScope === "none" && (body?.repoId || body?.cwd)) return json({ error: "repositoryScope=none cannot be combined with repoId or cwd" }, 400)
       } catch {
         // no/invalid body -> default repo
       }
-      const repo = repoId ? repoById(repoId) : activeRepo()
+      const repo = repositoryScope === "none" ? undefined : (repoId ? repoById(repoId) : activeRepo())
       if (repoId && !repo) return json({ error: `unknown repo "${repoId}"` }, 404)
       const sessionId = randomUUID()
       const activeMode = loadSettings().activeMode
@@ -1729,12 +1738,12 @@ const server = Bun.serve(withCors({
       if (mode?.incognito) {
         markSessionIncognito(sessionId, mode.incognito.allow)
       }
-      Store.createSession(sessionId, undefined, clientCwd ?? repo?.path)
+      Store.createSession(sessionId, undefined, repositoryScope === "none" ? null : (clientCwd ?? repo?.path), repositoryScope)
       if (mode?.incognito) Store.setIncognito(sessionId, mode.incognito.allow)
       // Warm FFF without delaying session creation; FileFinder's native watcher
       // keeps the index incrementally current. Its public API has no manual
       // update/rescan hook, so do not add a redundant JS watcher.
-      void getFinder(repo?.path).catch(() => {})
+      if (repositoryScope !== "none") void getFinder(repo?.path).catch(() => {})
       return json({ sessionId, incognito: isIncognitoSession(sessionId) })
     }
 
@@ -1826,6 +1835,7 @@ const server = Bun.serve(withCors({
       }
 
       if (kind === "fork" && req.method === "POST") {
+        if (Store.repositoryScopeOf(sessionId) === "none") return json({ error: "a repository is required to fork this session" }, 400)
         const retiring = refuseWhileRetiring(req)
         if (retiring) return retiring
         if (isIncognitoSession(sessionId)) return json({ error: "cannot fork an incognito session" }, 403)
@@ -1867,6 +1877,7 @@ const server = Bun.serve(withCors({
       }
 
       if (kind === "rewind" && req.method === "POST") {
+        if (Store.repositoryScopeOf(sessionId) === "none") return json({ error: "a repository is required to rewind this session" }, 400)
         let body: RewindRequest
         try { body = await req.json() as RewindRequest } catch { return json({ error: "invalid JSON body" }, 400) }
         if (!Number.isInteger(body.turn) || body.turn < 1) return json({ error: "invalid turn" }, 400)
@@ -1982,6 +1993,7 @@ const server = Bun.serve(withCors({
         if (!text && !(images && images.length)) return json({ error: "missing text or image" }, 400)
         const visibleText = text
         if (skill) {
+          if (Store.repositoryScopeOf(sessionId) === "none") return json({ error: "a repository is required to load a skill" }, 400)
           const loaded = loadSkill(Store.workspaceOf(sessionId) ?? process.cwd(), skill, sessionId, true)
           if ("error" in loaded) return json({ error: `skill selection failed: ${loaded.error}` }, 400)
           text = `<skill-context name="${loaded.name}">\n${loaded.body}\n</skill-context>\n\n${text}`
@@ -2004,6 +2016,7 @@ const server = Bun.serve(withCors({
       // creates + starts the fresh workflows-mode goal session. The prompt is
       // hidden (like a goal kickoff) — the user sees the brief being written.
       if (kind === "ship" && req.method === "POST") {
+        if (Store.repositoryScopeOf(sessionId) === "none") return json({ error: "a repository is required to ship this session" }, 400)
         const retiring = refuseWhileRetiring(req)
         if (retiring) return retiring
         let notes: string | undefined

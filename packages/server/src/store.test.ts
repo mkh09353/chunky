@@ -20,3 +20,21 @@ test("Store usage/delegation smoke test uses an isolated sqlite database", async
   expect(exitCode, `${stdout}\n${stderr}`).toBe(0)
   expect(stdout).toContain("store smoke: delegation lifecycle")
 })
+
+test("repository-less sessions persist null workspace and list by explicit scope", async () => {
+  const dir = await mkdtemp(join(tmpdir(), "chunky-store-repoless-test-"))
+  const dbPath = join(dir, "store.db")
+  const proc = Bun.spawn([process.execPath, "run", "packages/server/src/store-repoless-child.ts"], {
+    cwd: process.cwd(),
+    env: { ...process.env, CHUNKY_DB: dbPath },
+    stdout: "pipe",
+    stderr: "pipe",
+  })
+  const [exitCode, stdout, stderr] = await Promise.all([
+    proc.exited,
+    new Response(proc.stdout).text(),
+    new Response(proc.stderr).text(),
+  ])
+  expect(exitCode, `${stdout}\n${stderr}`).toBe(0)
+  expect(stdout).toContain("repo-less store smoke: ok")
+})

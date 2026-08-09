@@ -48,7 +48,7 @@ export function ResumePicker({ sessions, selected }: { sessions: SessionSummary[
             {s.incognito === true && <text fg={INCOGNITO_ACCENT}>{"  " + INCOGNITO_LABEL}</text>}
             <text attributes={TextAttributes.DIM}>{"  — " + ago(s.lastActivity)}</text>
             {s.attached && <text attributes={TextAttributes.DIM}>{"  · attached"}</text>}
-            {showWorkspace && <text attributes={TextAttributes.DIM}>{`  [${basename(s.workspace) || relative(cwd, s.workspace) || "."}]`}</text>}
+            {showWorkspace && <text attributes={TextAttributes.DIM}>{s.repositoryScope === "none" || !s.workspace ? "  [no repository]" : `  [${basename(s.workspace) || relative(cwd, s.workspace) || "."}]`}</text>}
           </box>
         )
       })}

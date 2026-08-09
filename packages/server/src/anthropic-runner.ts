@@ -191,7 +191,8 @@ export function createChunkySdkMcpServer(
   callerThreadId: string,
   emitRoot: Emit,
   displayThreadId?: string,
-  workspace: string = LAUNCH_WORKSPACE,
+  workspace: string = "/",
+  repositoryLess = false,
 ) {
   const emit = taggedEmitter(emitRoot, displayThreadId)
   const fileTools = anthropicFileTools()
@@ -228,11 +229,12 @@ export function createChunkySdkMcpServer(
     (args) => zooTool.invoke(args, runConfig),
     emit,
   ))
+  const exposedTools = repositoryLess ? [request_api_key] : undefined
   return createSdkMcpServer({
     name: SERVER_NAME,
     version: "0.0.0",
     alwaysLoad: true,
-    tools: [
+    tools: ( [
       wrapChunkyTool(
         fileTools.read.name,
         fileTools.read.description,
@@ -393,7 +395,7 @@ export function createChunkySdkMcpServer(
         (args) => shipGoal.invoke(args, runConfig),
         emit,
       ),
-    ],
+    ] as any).filter((tool: any) => !repositoryLess || exposedTools?.some((allowed) => allowed.name === tool.name)),
   })
 }
 
@@ -414,8 +416,10 @@ export interface AnthropicRunRequest {
   cache?: CacheContext
   /** Abort the in-flight SDK query (user interrupt). */
   abort?: AbortController
-  /** The session's workspace (cwd + tool jail). Defaults to the launch dir. */
+  /** The session's workspace (cwd + tool jail). */
   workspace?: string
+  /** Explicit no-repository execution; only conversational tooling is exposed. */
+  repositoryLess?: boolean
   agentsMd?: string | null
   /** Called once the SDK query has been constructed and provider submission has begun. */
   onSubmitted?: () => void
@@ -444,7 +448,8 @@ export async function buildAnthropicOptions(
   dependencies: AnthropicRunnerDependencies = defaultDependencies,
 ): Promise<AnthropicOptions> {
   const { selection, threadId, emit, eventThreadId, freshSession } = request
-  const workspace = request.workspace ?? LAUNCH_WORKSPACE
+  const repositoryLess = request.repositoryLess === true
+  const workspace = repositoryLess ? "/" : (request.workspace ?? LAUNCH_WORKSPACE)
   const sessionId = sdkSessionId(threadId)
   const shouldResume =
     !freshSession &&
@@ -458,7 +463,9 @@ export async function buildAnthropicOptions(
     effort: selection.effort,
     systemPrompt:
       request.systemPrompt ??
-      buildSystemPrompt("edit", false, workspace, {
+      (repositoryLess
+        ? "You are a conversational assistant. This session has no repository or working directory. Do not attempt repository, filesystem, shell, git, delegation, cross-session, or repository-specific skill operations."
+        : buildSystemPrompt("edit", false, workspace, {
         fileToolProfile: resolveFileToolProfile(),
         hasSidekick: sidekickFor(selection, request.usageContext?.sessionId) != null,
         hasReview: resolveReviewSelection(request.usageContext?.sessionId) != null,
@@ -469,13 +476,13 @@ export async function buildAnthropicOptions(
         sidekickSeatConfigs: effectiveSidekickSeats(request.usageContext?.sessionId),
         agentsMd: request.agentsMd,
         repoMemory: readRepoMemory(workspace, threadId),
-      }),
+      })),
     ...ANTHROPIC_SDK_ISOLATION_OPTIONS,
     mcpServers: {
-      [SERVER_NAME]: createChunkySdkMcpServer(threadId, emit, eventThreadId, workspace),
-      ...external.servers,
+      [SERVER_NAME]: createChunkySdkMcpServer(threadId, emit, eventThreadId, workspace, repositoryLess),
+      ...(repositoryLess ? {} : external.servers),
     },
-    allowedTools: request.allowedTools ?? [...ALLOWED_TOOLS, ...external.allowedTools],
+    allowedTools: request.allowedTools ?? (repositoryLess ? [`mcp__${SERVER_NAME}__request_api_key`] : [...ALLOWED_TOOLS, ...external.allowedTools]),
     includePartialMessages: true,
     persistSession: true,
     ...(shouldResume ? { resume: sessionId } : { sessionId }),

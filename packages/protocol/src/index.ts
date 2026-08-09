@@ -197,6 +197,9 @@ export interface GoalSnapshot {
 export interface CreateSessionRequest {
   repoId?: string
   cwd?: string
+  /** Omit for legacy default-repository creation. `none` creates a session
+   * with no repository or working directory. */
+  repositoryScope?: "default" | "none"
 }
 export interface CreateSessionResponse {
   sessionId: string
@@ -260,7 +263,9 @@ export interface SessionSummary {
   title: string
   createdAt: number
   lastActivity: number
-  workspace: string
+  workspace: string | null
+  /** Explicit repository-less scope; omitted by older servers. */
+  repositoryScope?: "repository" | "none"
   /** True while at least one live SSE client is attached to this session. */
   attached?: boolean
   /** True while the session's root run is currently executing. */
@@ -598,7 +603,7 @@ export const ROUTES = {
   // POST CreateSessionRequest -> CreateSessionResponse (pinned to repoId's
   // workspace; the default repo when omitted).
   createSession: `/api/sessions`,
-  listSessions: `/api/sessions`, // GET ?repo=<id>&cwd=<path> -> ListSessionsResponse
+  listSessions: `/api/sessions`, // GET ?repo=<id>&cwd=<path>&scope=none -> ListSessionsResponse
   shellSessions: `/api/sessions/shell`, // GET -> ShellSessionsResponse
   sessionStream: `/api/sessions/stream`, // GET SSE: snapshot + SessionDelta
   prReviews: `/api/pr-reviews`, // GET -> PrReviewsState (cached)

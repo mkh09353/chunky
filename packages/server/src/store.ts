@@ -133,6 +133,7 @@ db.exec(`
   // `selection`: an optional pinned model selection (JSON AgentSelection) so a
   // session can run a DIFFERENT model than the global active one — how a shipped
   // goal session keeps its orchestrator model while the user's session moves on.
+  if (!cols.some((c) => c.name === "repository_scope")) db.exec("ALTER TABLE sessions ADD COLUMN repository_scope TEXT NOT NULL DEFAULT 'repository'")
   if (!cols.some((c) => c.name === "selection")) {
     db.exec("ALTER TABLE sessions ADD COLUMN selection TEXT")
   }
@@ -242,7 +243,7 @@ function ratingAggregates(scope: UsageDashboardScope, from: string, to: string):
 }
 
 const stmtCreate = db.query(
-  "INSERT INTO sessions (id, title, created_at, last_activity, workspace, incognito, incognito_allow) VALUES (?, ?, ?, ?, ?, 0, NULL)",
+  "INSERT INTO sessions (id, title, created_at, last_activity, workspace, repository_scope, incognito, incognito_allow) VALUES (?, ?, ?, ?, ?, ?, 0, NULL)",
 )
 const stmtIncognito = db.query("UPDATE sessions SET incognito = ?, incognito_allow = ? WHERE id = ?")
 const stmtGetIncognito = db.query("SELECT incognito, incognito_allow FROM sessions WHERE id = ?")
@@ -409,14 +410,14 @@ export const Store = {
   },
   putTodos(sessionId: string, todos: TodoSnapshot[]): void { backend(sessionId).query("INSERT INTO todos (session_id,json) VALUES (?,?) ON CONFLICT(session_id) DO UPDATE SET json=excluded.json").run(sessionId, JSON.stringify(todos)) },
   clearTodos(sessionId: string): void { backend(sessionId).query("DELETE FROM todos WHERE session_id=?").run(sessionId) },
-  createSession(id: string, title = "New session", workspace: string = LAUNCH_WORKSPACE): void {
+  createSession(id: string, title = "New session", workspace: string | null = LAUNCH_WORKSPACE, repositoryScope: "repository" | "none" = "repository"): void {
     const now = Date.now()
     if (isIncognitoSession(id)) {
-      memoryDb.query("INSERT INTO sessions (id,title,created_at,last_activity,workspace,incognito) VALUES (?,?,?,?,?,1)").run(id,title,now,now,workspace)
+      memoryDb.query("INSERT INTO sessions (id,title,created_at,last_activity,workspace,repository_scope,incognito) VALUES (?,?,?,?,?,?,1)").run(id,title,now,now,workspace,repositoryScope)
       notifySessionChanged(id)
       return
     }
-    stmtCreate.run(id, title, now, now, workspace)
+    stmtCreate.run(id, title, now, now, workspace, repositoryScope)
     notifySessionChanged(id)
   },
   setIncognito(sessionId: string, allow: string[] | null): void {
@@ -448,6 +449,11 @@ export const Store = {
   workspaceOf(sessionId: string): string | null {
     const row = backend(sessionId).query("SELECT workspace FROM sessions WHERE id=?").get(sessionId) as { workspace: string | null } | null
     return row?.workspace ?? null
+  },
+
+  repositoryScopeOf(sessionId: string): "repository" | "none" {
+    const row = backend(sessionId).query("SELECT repository_scope FROM sessions WHERE id=?").get(sessionId) as { repository_scope: string | null } | null
+    return row?.repository_scope === "none" ? "none" : "repository"
   },
 
   /** Persist one event and bump the session's last_activity. */
@@ -615,29 +621,34 @@ export const Store = {
 
   /** Compact shell lookup: row only, never hydrates transcript events. */
   summary(sessionId: string): SessionSummary | null {
-    const row = backend(sessionId).query("SELECT id,title,created_at,last_activity,workspace,incognito FROM sessions WHERE id=?").get(sessionId) as { id: string; title: string; created_at: number; last_activity: number; workspace: string; incognito: number } | null
-    if (row) return { sessionId: row.id, title: row.title, createdAt: row.created_at, lastActivity: row.last_activity, workspace: row.workspace, incognito: !!row.incognito }
+    const row = backend(sessionId).query("SELECT id,title,created_at,last_activity,workspace,repository_scope,incognito FROM sessions WHERE id=?").get(sessionId) as { id: string; title: string; created_at: number; last_activity: number; workspace: string; repository_scope: string | null; incognito: number } | null
+    if (row) return { sessionId: row.id, title: row.title, createdAt: row.created_at, lastActivity: row.last_activity, workspace: row.workspace, ...(row.repository_scope === "none" ? { repositoryScope: "none" as const } : {}), incognito: !!row.incognito }
     const archived = db.query("SELECT id,title,created_at,last_activity,workspace FROM archived_sessions WHERE id=?").get(sessionId) as { id: string; title: string; created_at: number; last_activity: number; workspace: string } | null
     return archived && { sessionId: archived.id, title: archived.title, createdAt: archived.created_at, lastActivity: archived.last_activity, workspace: archived.workspace, archived: true } as SessionSummary
   },
 
   /** Unbounded compact row query for the mobile cross-repository shell. */
   listShell(): SessionSummary[] {
-    const rows = [...db.query("SELECT id,title,created_at,last_activity,workspace,incognito,0 archived FROM sessions").all(), ...memoryDb.query("SELECT id,title,created_at,last_activity,workspace,incognito,0 archived FROM sessions").all(), ...db.query("SELECT id,title,created_at,last_activity,workspace,0 incognito,1 archived FROM archived_sessions").all()] as Array<{ id: string; title: string; created_at: number; last_activity: number; workspace: string; incognito: number; archived: number }>
+    const rows = [...db.query("SELECT id,title,created_at,last_activity,workspace,repository_scope,incognito,0 archived FROM sessions").all(), ...memoryDb.query("SELECT id,title,created_at,last_activity,workspace,repository_scope,incognito,0 archived FROM sessions").all(), ...db.query("SELECT id,title,created_at,last_activity,workspace,'repository' repository_scope,0 incognito,1 archived FROM archived_sessions").all()] as Array<{ id: string; title: string; created_at: number; last_activity: number; workspace: string; repository_scope: string | null; incognito: number; archived: number }>
     const deduped = new Map<string, SessionSummary>()
-    for (const row of rows) deduped.set(row.id, { sessionId: row.id, title: row.title, createdAt: row.created_at, lastActivity: row.last_activity, workspace: row.workspace, incognito: !!row.incognito, ...(row.archived ? { archived: true } : {}) } as SessionSummary)
+    for (const row of rows) deduped.set(row.id, { sessionId: row.id, title: row.title, createdAt: row.created_at, lastActivity: row.last_activity, workspace: row.workspace, ...(row.repository_scope === "none" ? { repositoryScope: "none" as const } : {}), incognito: !!row.incognito, ...(row.archived ? { archived: true } : {}) } as SessionSummary)
     return [...deduped.values()].sort((a, b) => b.lastActivity - a.lastActivity)
   },
 
   /** List sessions, optionally scoped to one workspace (repo). Omit `workspace`
-   *  to list across all repos. */
-  list(workspace?: string): SessionSummary[] {
+   *  to list across all repos; pass repositoryScope="none" for unscoped chats. */
+  list(workspace?: string, repositoryScope?: "repository" | "none"): SessionSummary[] {
+    if (repositoryScope === "none") {
+      const rows = db.query("SELECT id,title,created_at,last_activity,workspace,repository_scope FROM sessions WHERE repository_scope = 'none' ORDER BY last_activity DESC LIMIT 100").all() as Array<{ id: string; title: string; created_at: number; last_activity: number; workspace: string; repository_scope: string }>
+      const memoryRows = memoryDb.query("SELECT id,title,created_at,last_activity,workspace,repository_scope FROM sessions WHERE repository_scope = 'none' ORDER BY last_activity DESC LIMIT 100").all() as typeof rows
+      return [...rows, ...memoryRows].sort((a,b) => b.last_activity - a.last_activity).map((r) => ({ sessionId:r.id, title:r.title, createdAt:r.created_at, lastActivity:r.last_activity, workspace:r.workspace, repositoryScope:"none", incognito:isIncognitoSession(r.id) } as SessionSummary))
+    }
     const rows = (workspace ? stmtListByWorkspace.all(workspace) : stmtListAll.all()) as {
       id: string
       title: string
       created_at: number
       last_activity: number
-      workspace: string
+      workspace: string | null
     }[]
     const memoryRows = (workspace ? memoryDb.query("SELECT id,title,created_at,last_activity,workspace FROM sessions WHERE workspace=?").all(workspace) : memoryDb.query("SELECT id,title,created_at,last_activity,workspace FROM sessions").all()) as typeof rows
     const archivedRows = (workspace ? db.query("SELECT id,title,created_at,last_activity,workspace FROM archived_sessions WHERE workspace=?").all(workspace) : db.query("SELECT id,title,created_at,last_activity,workspace FROM archived_sessions").all()) as typeof rows
@@ -676,7 +687,7 @@ export const Store = {
       title: string
       created_at: number
       last_activity: number
-      workspace: string
+      workspace: string | null
     }[]
     const memoryRows = memoryDb.query(`${columns} sessions ${tail}`).all(...paths) as typeof rows
     const archivedRows = db.query(`${columns} archived_sessions ${tail}`).all(...paths) as typeof rows
@@ -843,7 +854,7 @@ export const Store = {
     const parent = db.query("SELECT title, selection, sidekick, agent_config FROM sessions WHERE id = ?").get(parentId) as { title: string; selection: string | null; sidekick: string | null; agent_config: string | null }
     const now = Date.now()
     retrySqliteTransaction(db, () => {
-      stmtCreate.run(childId, `${parent.title} · fork`, now, now, workspace)
+      stmtCreate.run(childId, `${parent.title} · fork`, now, now, workspace, "repository")
       db.query("DELETE FROM session_compaction_artifacts WHERE session_id=?").run(childId)
       if (parent.selection) stmtPinSelection.run(parent.selection, childId)
       if (parent.sidekick) db.query("UPDATE sessions SET sidekick=? WHERE id=?").run(parent.sidekick, childId)

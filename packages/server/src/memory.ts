@@ -74,7 +74,7 @@ function truncateUtf8(text: string, maxBytes: number): string {
   return text.slice(0, end)
 }
 function cappedTranscript(workspace: string): string {
-  const sessions = Store.list().filter((s) => !s.incognito && memoryRepoKey(s.workspace) === memoryRepoKey(workspace)).slice(0, MAX_SESSIONS)
+  const sessions = Store.list().filter((s) => !s.incognito && s.workspace != null && memoryRepoKey(s.workspace) === memoryRepoKey(workspace)).slice(0, MAX_SESSIONS)
   const parts: string[] = []
   let bytes = 0
   for (const session of sessions) {

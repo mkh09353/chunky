@@ -80,7 +80,8 @@ import {
 import { AuthStore } from "./providers/auth-store.ts"
 import { requestCompaction } from "./compaction.ts"
 import { isMcpAuthorized, mcpConfig, startMcpAuthorization } from "./mcp-auth.ts"
-import { checkForUpdate, currentVersion, persistCheck, readPersistedCheck } from "./update/updater.ts"
+import { checkForUpdate, currentVersion, installedVersion, persistCheck, readPersistedCheck } from "./update/updater.ts"
+import { checkInstalledVersion, onStaleRuntime } from "./staleRuntime.ts"
 import { applyOnboardingMode, onboardingResponse, suggestedModes, ensureDefaultModes, saveCustomProvider } from "./onboarding.ts"
 import {
   currentModeSpec,
@@ -2093,6 +2094,7 @@ const server = Bun.serve(withCors({
 
 const discoveryRecord = process.env.CHUNKY_DISCOVERY_RECORD
 const ownershipId = process.env.CHUNKY_SERVER_ID
+let stopVersionStalenessPoller: (() => void) | undefined
 const cleanupDiscovery = () => {
   if (discoveryRecord && ownershipId) removeDiscoveryRecordIfOwned(discoveryRecord, ownershipId)
 }
@@ -2115,6 +2117,7 @@ function finishRetirement(): void {
  */
 function beginRetirement(reason: string): void {
   if (!drain.begin()) return
+  stopVersionStalenessPoller?.()
   console.log(`[@chunky/server] ${reason}; draining ${running.size} in-flight run(s) before exit`)
   const tick = () => {
     const done = drainStep(drain, {
@@ -2136,6 +2139,20 @@ const stopOwnershipPoller = discoveryRecord && ownershipId
       beginRetirement("this server's registration was taken over by a newer build")
     }, Number(process.env.CHUNKY_OWNERSHIP_POLL_MS) || undefined)
   : undefined
+onStaleRuntime(() => {
+  beginRetirement("the runtime under this server was replaced; agent binaries are missing")
+})
+const startupVersion = process.env.CHUNKY_VERSION
+if (startupVersion) {
+  const intervalMs = Number(process.env.CHUNKY_OWNERSHIP_POLL_MS) || 10_000
+  const timer = setInterval(() => {
+    checkInstalledVersion(startupVersion, installedVersion, (replacement) => {
+      beginRetirement(`the installed runtime was updated on disk (v${startupVersion} -> v${replacement})`)
+    })
+  }, intervalMs)
+  timer.unref?.()
+  stopVersionStalenessPoller = () => clearInterval(timer)
+}
 const runArchiveSweep = () => void sweepArchives(Date.now(), new Set(running.keys())).then(() => sweepOrphanCheckpoints()).catch((error) => console.warn(`[archive] sweep failed: ${(error as Error).message}`))
 runArchiveSweep()
 const archiveSweepTimer = setInterval(runArchiveSweep, ARCHIVE_SWEEP_MS)
@@ -2143,6 +2160,7 @@ archiveSweepTimer.unref()
 const shutdown = () => {
   clearInterval(archiveSweepTimer)
   stopOwnershipPoller?.()
+  stopVersionStalenessPoller?.()
   cleanupDiscovery()
   for (const controller of running.values()) controller.abort()
   relayUplink?.stop()

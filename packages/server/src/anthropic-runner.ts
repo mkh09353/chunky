@@ -27,6 +27,7 @@ import type { CacheContext, InputImage } from "./run.ts"
 import { loadAttachmentBase64 } from "./attachments.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { assertSelectionAllowed } from "./incognito.ts"
+import { reportStaleRuntime } from "./staleRuntime.ts"
 import { bash, bashInputShape } from "./tools/bash.ts"
 import { monitor, monitorInputShape } from "./tools/monitor.ts"
 import { editInputShape, editTool } from "./tools/edit.ts"
@@ -669,9 +670,10 @@ export async function runAnthropicAgent(
 ): Promise<string> {
   assertSelectionAllowed(request.usageContext?.sessionId ?? null, request.selection)
   const options = await buildAnthropicOptions(request, dependencies)
-  const q: Query = dependencies.query({ prompt: anthropicPrompt(request.prompt, request.images), options })
-  request.onSubmitted?.()
+  let q: Query | undefined
   try {
+    q = dependencies.query({ prompt: anthropicPrompt(request.prompt, request.images), options })
+    request.onSubmitted?.()
     const account = await q.accountInfo()
     if (!account.subscriptionType || account.apiProvider !== "firstParty") {
       throw new Error("anthropic: Agent SDK account is not backed by first-party Claude subscription OAuth")
@@ -685,7 +687,10 @@ export async function runAnthropicAgent(
     )
     knownSessions.add(request.threadId)
     return finalText
+  } catch (error) {
+    reportStaleRuntime(error)
+    throw error
   } finally {
-    q.close()
+    q?.close()
   }
 }

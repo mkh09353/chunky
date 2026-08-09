@@ -12,8 +12,15 @@ export type ReleaseInfo = { version: string; tarballUrl: string; checksum?: stri
 export type UpdateCheck = { current: string; latest: string | null; available: boolean; checkedAt?: number }
 
 function normalize(v: string) { return v.replace(/^v/, "") }
+/** Read the installed package identity without manufacturing one on failure. */
+export function installedVersion(): string | null {
+  try {
+    const version = JSON.parse(readFileSync(join(dirnameApp(), "package.json"), "utf8")).version
+    return typeof version === "string" && version ? version : null
+  } catch { return null }
+}
 export function currentVersion(): string {
-  try { return JSON.parse(readFileSync(join(dirnameApp(), "package.json"), "utf8")).version || "0.1.0" } catch { return "0.1.0" }
+  return installedVersion() ?? "0.1.0"
 }
 function dirnameApp() { return existsSync(join(APP_DIR, "package.json")) ? APP_DIR : join(import.meta.dir, "../../../../") }
 

@@ -43,6 +43,7 @@ import {
   type SessionAgentConfigResponse,
   type UsageSeriesResponse,
   type UsageBreakdownResponse,
+  type ProviderQuotasResponse,
 } from "@chunky/protocol"
 import { effectiveSessionSelection, runAgent, type InputImage, type InterjectionBoundary } from "./run.ts"
 import { createMessageCoalescer } from "./message-coalescer.ts"
@@ -78,6 +79,7 @@ import {
   type Speed,
 } from "./providers/registry.ts"
 import { AuthStore } from "./providers/auth-store.ts"
+import { providerQuotas } from "./provider-quotas.ts"
 import { requestCompaction } from "./compaction.ts"
 import { isMcpAuthorized, mcpConfig, startMcpAuthorization } from "./mcp-auth.ts"
 import { checkForUpdate, currentVersion, installedVersion, persistCheck, readPersistedCheck } from "./update/updater.ts"
@@ -861,6 +863,10 @@ const server = Bun.serve(withCors({
           active: p.id === active,
         })),
       })
+    }
+
+    if (req.method === "GET" && pathname === ROUTES.providerQuotas) {
+      return json(await providerQuotas() satisfies ProviderQuotasResponse)
     }
 
     if (req.method === "GET" && (pathname === ROUTES.usageSeries || pathname === ROUTES.usageBreakdown)) {

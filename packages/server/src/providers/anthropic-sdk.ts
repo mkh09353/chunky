@@ -3,7 +3,10 @@ import type {
   ModelInfo as AnthropicModelInfo,
   Options as AnthropicOptions,
   SDKUserMessage,
+  SDKControlGetUsageResponse,
 } from "@anthropic-ai/claude-agent-sdk"
+import type { ProviderQuotaWindow } from "@chunky/protocol"
+import type { CollectedProviderQuota } from "./quota-types.ts"
 import type { LoginInitiation, ProviderDef } from "./registry.ts"
 import type { ModelInfo } from "./models-catalog.ts"
 import { CHUNKY_USER_AGENT } from "./app-info.ts"
@@ -214,6 +217,60 @@ async function queryAnthropicModels(query: typeof import("@anthropic-ai/claude-a
     } satisfies AnthropicOptions,
   })
   try { return (await q.supportedModels()).map(toModelInfo) } finally { q.close() }
+}
+
+function quotaResetMillis(value: unknown): number | null {
+  if (typeof value !== "string") return null
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function anthropicWindow(value: unknown, kind: "five-hour" | "weekly" | "weekly-model", label: string, model?: string): ProviderQuotaWindow | undefined {
+  if (value == null || typeof value !== "object") return undefined
+  const record = value as { utilization?: unknown; resets_at?: unknown }
+  const usedPercent = typeof record.utilization === "number" && Number.isFinite(record.utilization) ? record.utilization : null
+  return { kind, label, usedPercent, resetAt: quotaResetMillis(record.resets_at), ...(model ? { model } : {}) }
+}
+
+/** Normalize only the quota fields; session costs and raw provider data never escape. */
+export function parseAnthropicQuota(body: SDKControlGetUsageResponse): CollectedProviderQuota {
+  if (!body.rate_limits_available) {
+    return { status: "unsupported", source: "anthropic-sdk", fetchedAt: Date.now(), windows: [] }
+  }
+  const limits = body.rate_limits
+  if (!limits) return { status: "unsupported", source: "anthropic-sdk", fetchedAt: Date.now(), windows: [] }
+  const windows: ProviderQuotaWindow[] = []
+  const add = (window: ProviderQuotaWindow | undefined) => { if (window) windows.push(window) }
+  add(anthropicWindow(limits.five_hour, "five-hour", "5-hour"))
+  add(anthropicWindow(limits.seven_day, "weekly", "Weekly"))
+  add(anthropicWindow(limits.seven_day_opus, "weekly-model", "Opus weekly", "opus"))
+  add(anthropicWindow(limits.seven_day_sonnet, "weekly-model", "Sonnet weekly", "sonnet"))
+  for (const window of limits.model_scoped ?? []) {
+    add(anthropicWindow(window, "weekly-model", window.display_name, window.display_name))
+  }
+  return { status: "available", source: "anthropic-sdk", fetchedAt: Date.now(), windows }
+}
+
+export async function fetchAnthropicQuota(dependencies: {
+  query?: typeof import("@anthropic-ai/claude-agent-sdk").query
+  now?: () => number
+} = {}): Promise<CollectedProviderQuota> {
+  async function* noInput(): AsyncGenerator<SDKUserMessage> {}
+  const query = dependencies.query ?? (await import("@anthropic-ai/claude-agent-sdk")).query
+  const q = query({
+    prompt: noInput(),
+    options: {
+      env: anthropicOAuthEnvironment(),
+      systemPrompt: "You are Chunky.",
+      ...ANTHROPIC_SDK_ISOLATION_OPTIONS,
+    } satisfies AnthropicOptions,
+  })
+  try {
+    const result = parseAnthropicQuota(await q.usage_EXPERIMENTAL_MAY_CHANGE_DO_NOT_RELY_ON_THIS_API_YET())
+    return { ...result, fetchedAt: (dependencies.now ?? Date.now)() }
+  } finally {
+    q.close()
+  }
 }
 
 export async function listAnthropicModels(

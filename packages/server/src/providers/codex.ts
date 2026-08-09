@@ -21,12 +21,15 @@ import { AuthStore, type OAuthInfo } from "./auth-store.ts"
 import type { LoginInitiation, ProviderDef } from "./registry.ts"
 import { enrichModels, type ModelInfo } from "./models-catalog.ts"
 import type { ModelSelection } from "../settings.ts"
+import type { ProviderQuotaWindow } from "@chunky/protocol"
+import type { CollectedProviderQuota } from "./quota-types.ts"
 import { CHUNKY_USER_AGENT } from "./app-info.ts"
 import { Store } from "../store.ts"
 
 const CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 const ISSUER = "https://auth.openai.com"
 export const CODEX_API_ENDPOINT = "https://chatgpt.com/backend-api/codex/responses"
+export const CODEX_USAGE_ENDPOINT = "https://chatgpt.com/backend-api/wham/usage"
 const CODEX_COMPATIBILITY_VERSION = "0.144.0"
 const RESPONSES_LITE_MODEL = "gpt-5.6-luna"
 const OAUTH_PORT = 1455
@@ -396,6 +399,93 @@ export async function codexRequestHeaders(base?: Headers): Promise<Headers> {
   return headers
 }
 
+type CodexQuotaSnapshot = { fetchedAt: number; windows: ProviderQuotaWindow[] }
+let passiveQuotaSnapshot: CodexQuotaSnapshot | undefined
+
+function finiteNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value
+  if (typeof value === "string" && value.trim() && Number.isFinite(Number(value))) return Number(value)
+  return undefined
+}
+
+function resetMillis(value: unknown): number | null {
+  const numeric = finiteNumber(value)
+  if (numeric !== undefined) return numeric < 10_000_000_000 ? numeric * 1000 : numeric
+  if (typeof value !== "string") return null
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function codexWindow(value: unknown, kind: "five-hour" | "weekly" | "other", label: string, defaultMinutes?: number): ProviderQuotaWindow | undefined {
+  if (!value || typeof value !== "object") return undefined
+  const record = value as Record<string, unknown>
+  const usedPercent = finiteNumber(record.used_percent ?? record.usedPercent ?? record.utilization)
+  const seconds = finiteNumber(record.limit_window_seconds ?? record.limitWindowSeconds)
+  const minutes = finiteNumber(record.window_minutes ?? record.windowMinutes) ?? (seconds === undefined ? defaultMinutes : seconds / 60)
+  const resetAt = resetMillis(record.reset_at ?? record.resetAt)
+  if (usedPercent === undefined && resetAt === null && minutes === undefined) return undefined
+  return { kind, label, usedPercent: usedPercent ?? null, resetAt, ...(minutes === undefined ? {} : { windowMinutes: minutes }) }
+}
+
+/** Parse the account usage response without retaining or exposing its raw body. */
+export function parseCodexUsage(body: unknown): ProviderQuotaWindow[] {
+  if (!body || typeof body !== "object") return []
+  const root = body as Record<string, any>
+  const limits = root.rate_limit ?? root.rate_limits ?? root.rateLimit ?? root
+  const primary = limits?.primary_window ?? limits?.primary ?? limits?.primaryWindow
+  const secondary = limits?.secondary_window ?? limits?.secondary ?? limits?.secondaryWindow
+  const primaryMinutes = primary && typeof primary === "object"
+    ? finiteNumber(primary.window_minutes ?? primary.windowMinutes) ?? ((finiteNumber(primary.limit_window_seconds ?? primary.limitWindowSeconds) ?? 18_000) / 60)
+    : 300
+  const primaryKind = Math.abs(primaryMinutes - 300) <= 5
+    ? "five-hour"
+    : Math.abs(primaryMinutes - 7 * 24 * 60) <= 5 ? "weekly" : "other"
+  return [
+    codexWindow(primary, primaryKind, primaryKind === "five-hour" ? "5-hour" : primaryKind === "weekly" ? "Weekly" : "Primary", 300),
+    codexWindow(secondary, "weekly", "Weekly", 7 * 24 * 60),
+  ].filter((window): window is ProviderQuotaWindow => Boolean(window))
+}
+
+/** Parse rate-limit headers attached to ordinary Codex Responses calls. */
+export function parseCodexQuotaHeaders(headers: Headers): ProviderQuotaWindow[] {
+  const fromPrefix = (prefix: "primary" | "secondary", kind: "five-hour" | "weekly", label: string) => {
+    const used = headers.get(`x-codex-${prefix}-used-percent`)
+    const minutes = headers.get(`x-codex-${prefix}-window-minutes`)
+    const reset = headers.get(`x-codex-${prefix}-reset-at`)
+    if (used == null && minutes == null && reset == null) return undefined
+    const parsedMinutes = finiteNumber(minutes)
+    const validatedKind = prefix === "primary" && parsedMinutes !== undefined
+      ? Math.abs(parsedMinutes - 300) <= 5 ? "five-hour" : Math.abs(parsedMinutes - 7 * 24 * 60) <= 5 ? "weekly" : "other"
+      : kind
+    const validatedLabel = validatedKind === "five-hour" ? "5-hour" : validatedKind === "weekly" ? "Weekly" : "Primary"
+    return codexWindow({ used_percent: used, window_minutes: minutes, reset_at: reset }, validatedKind, validatedLabel)
+  }
+  return [
+    fromPrefix("primary", "five-hour", "5-hour"),
+    fromPrefix("secondary", "weekly", "Weekly"),
+  ].filter((window): window is ProviderQuotaWindow => Boolean(window))
+}
+
+export function captureCodexQuotaHeaders(headers: Headers, now = Date.now()): void {
+  const windows = parseCodexQuotaHeaders(headers)
+  if (windows.length) passiveQuotaSnapshot = { fetchedAt: now, windows }
+}
+
+export function currentCodexPassiveQuota(): CodexQuotaSnapshot | undefined {
+  return passiveQuotaSnapshot ? { fetchedAt: passiveQuotaSnapshot.fetchedAt, windows: passiveQuotaSnapshot.windows.map((window) => ({ ...window })) } : undefined
+}
+
+export function resetCodexQuotaForTests(): void { passiveQuotaSnapshot = undefined }
+
+export async function fetchCodexQuota(dependencies: { fetch?: typeof fetch; now?: () => number } = {}): Promise<CollectedProviderQuota> {
+  const headers = await codexRequestHeaders()
+  const response = await (dependencies.fetch ?? fetch)(CODEX_USAGE_ENDPOINT, { method: "GET", headers })
+  if (!response.ok) throw new Error(`Codex usage request failed (${response.status})`)
+  const windows = parseCodexUsage(await response.json())
+  if (!windows.length) throw new Error("Codex usage response did not contain quota windows")
+  return { status: "available", source: "codex-usage", fetchedAt: (dependencies.now ?? Date.now)(), windows }
+}
+
 async function injectingFetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response> {
   const baseHeaders = new Headers(input instanceof Request ? input.headers : undefined)
   if (init?.headers) {
@@ -424,6 +514,7 @@ async function injectingFetch(input: RequestInfo | URL, init?: RequestInit): Pro
   }
 
   const res = await fetch(target, { ...init, headers })
+  captureCodexQuotaHeaders(res.headers)
   if (process.env.CHUNKY_DEBUG_CODEX && !res.ok) {
     const reqBody = typeof init?.body === "string" ? init.body.slice(0, 700) : "(non-string body)"
     const resBody = await res

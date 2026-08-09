@@ -50,6 +50,27 @@ export interface UsageBreakdownResponse {
   providers: { provider: string; billing: string | null; estimatedApiCost: number; tokens: number; share: number }[]
 }
 
+export type ProviderQuotaStatus = "available" | "stale" | "not-authenticated" | "unsupported" | "error"
+export type ProviderQuotaWindowKind = "five-hour" | "weekly" | "weekly-model" | "other"
+export interface ProviderQuotaWindow {
+  kind: ProviderQuotaWindowKind
+  label: string
+  usedPercent: number | null
+  resetAt: number | null
+  windowMinutes?: number
+  model?: string
+}
+export interface ProviderQuota {
+  provider: string
+  billing: "subscription" | "api-key" | null
+  status: ProviderQuotaStatus
+  source: "codex-usage" | "response-headers" | "anthropic-sdk" | null
+  fetchedAt: number | null
+  windows: ProviderQuotaWindow[]
+  error?: string
+}
+export interface ProviderQuotasResponse { fetchedAt: number; providers: ProviderQuota[] }
+
 export type MessageEndReason = "complete" | "max_tokens" | "interrupted" | "error"
 
 export type MessageDelivery = "auto" | "queue" | "interject" | "steer"
@@ -544,6 +565,7 @@ export const ROUTES = {
   customProvider: `/api/providers/custom`,
   usageSeries: `/api/usage/series`,
   usageBreakdown: `/api/usage/breakdown`,
+  providerQuotas: `/api/provider-quotas`,
   // Local authenticated desktop pairing API. No unpair route: the hosted relay
   // protocol has no targeted revocation operation.
   relay: `/api/relay`,

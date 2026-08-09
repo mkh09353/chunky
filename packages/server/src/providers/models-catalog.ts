@@ -26,8 +26,7 @@ export interface ModelInfo {
   verified?: boolean
 }
 
-/** USD per million tokens.  This deliberately remains a small, conservative
- * table: unknown models are recorded without a guessed price. */
+/** USD per million tokens. Unknown models are recorded without a guessed price. */
 export interface ModelPricing { input: number; output: number; cacheRead: number; cacheWrite: number }
 export const MODEL_PRICING: Record<string, ModelPricing> = {
   "gpt-4o": { input: 2.5, output: 10, cacheRead: 1.25, cacheWrite: 1.25 },
@@ -35,29 +34,78 @@ export const MODEL_PRICING: Record<string, ModelPricing> = {
   "claude-sonnet-4": { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
   "gemini-2.5-pro": { input: 1.25, output: 10, cacheRead: 0.3125, cacheWrite: 0.3125 },
 }
-export function pricingFor(model: string): ModelPricing | undefined {
-  return MODEL_PRICING[model] ?? Object.entries(MODEL_PRICING).find(([id]) => model.includes(id))?.[1]
-}
 
 const MODELS_DEV_URL = "https://models.dev/api.json"
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000 // 24h
 
 // Minimal slice of the models.dev schema we care about (see opencode's
 // packages/core/src/models-dev.ts for the full Schema).
-interface DevModel {
+export interface DevModel {
   id?: string
   name?: string
   reasoning?: boolean
   limit?: { context?: number }
+  cost?: { input?: number; output?: number; cache_read?: number; cache_write?: number }
 }
 interface DevProvider {
   id?: string
   models?: Record<string, DevModel>
 }
-type DevCatalog = Record<string, DevProvider>
+export type DevCatalog = Record<string, DevProvider>
 
 function cachePath(): string {
   return process.env.CHUNKY_MODELS_CACHE || "models-dev-cache.json"
+}
+
+function pricingOf(model: DevModel): ModelPricing | undefined {
+  const cost = model.cost
+  if (typeof cost?.input !== "number" || typeof cost.output !== "number") return undefined
+  return {
+    input: cost.input,
+    output: cost.output,
+    cacheRead: typeof cost.cache_read === "number" ? cost.cache_read : cost.input * 0.1,
+    cacheWrite: typeof cost.cache_write === "number" ? cost.cache_write : cost.input,
+  }
+}
+
+/** Exact first, then the longest contained id. models.dev wins over static data. */
+export function pricingForCatalog(model: string, catalog?: DevCatalog): ModelPricing | undefined {
+  const dev = new Map<string, ModelPricing>()
+  for (const provider of Object.values(catalog ?? {})) {
+    for (const [id, metadata] of Object.entries(provider.models ?? {})) {
+      const pricing = pricingOf(metadata)
+      if (pricing && !dev.has(id)) dev.set(id, pricing)
+    }
+  }
+  const exact = dev.get(model)
+  if (exact) return exact
+  const devMatch = [...dev.entries()].filter(([id]) => model.includes(id)).sort((a, b) => b[0].length - a[0].length)[0]
+  if (devMatch) return devMatch[1]
+  const staticExact = MODEL_PRICING[model]
+  if (staticExact) return staticExact
+  return Object.entries(MODEL_PRICING).filter(([id]) => model.includes(id)).sort((a, b) => b[0].length - a[0].length)[0]?.[1]
+}
+
+let synchronousPricingCatalog: DevCatalog | undefined
+let synchronousPricingPath: string | undefined
+function cachedPricingCatalog(): DevCatalog | undefined {
+  const path = cachePath()
+  if (synchronousPricingPath === path) return synchronousPricingCatalog
+  synchronousPricingPath = path
+  try {
+    // Pricing queries never fetch. A stale catalog is still a better known API
+    // price than zero; the async metadata loader separately owns TTL refresh.
+    const parsed = JSON.parse(readFileSync(path, "utf8")) as { catalog?: DevCatalog }
+    synchronousPricingCatalog = parsed?.catalog
+  } catch {
+    synchronousPricingCatalog = undefined
+  }
+  return synchronousPricingCatalog
+}
+
+/** Synchronous and network-free: dashboard/store callers use only the disk snapshot. */
+export function pricingFor(model: string): ModelPricing | undefined {
+  return pricingForCatalog(model, cachedPricingCatalog())
 }
 
 // Process-lifetime memo of the in-flight/complete fetch so concurrent callers
@@ -79,7 +127,10 @@ function readDiskCache(): DevCatalog | undefined {
 
 function writeDiskCache(catalog: DevCatalog): void {
   try {
-    writeFileSync(cachePath(), JSON.stringify({ fetchedAt: Date.now(), catalog }))
+    const path = cachePath()
+    writeFileSync(path, JSON.stringify({ fetchedAt: Date.now(), catalog }))
+    synchronousPricingPath = path
+    synchronousPricingCatalog = catalog
   } catch {
     // best-effort; the in-memory memo still serves this process
   }

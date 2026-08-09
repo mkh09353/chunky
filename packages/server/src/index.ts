@@ -41,6 +41,8 @@ import {
   type UpdatePrReviewsConfigRequest,
   type PrReviewsConfig,
   type SessionAgentConfigResponse,
+  type UsageSeriesResponse,
+  type UsageBreakdownResponse,
 } from "@chunky/protocol"
 import { effectiveSessionSelection, runAgent, type InputImage, type InterjectionBoundary } from "./run.ts"
 import { createMessageCoalescer } from "./message-coalescer.ts"
@@ -643,6 +645,23 @@ function corsHeaders(req?: Request): Record<string, string> {
   }
 }
 
+function localDateString(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
+}
+function validLocalDate(value: string): boolean {
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false
+  const [year, month, day] = value.split("-").map(Number)
+  return localDateString(new Date(year!, month! - 1, day!)) === value
+}
+function usageDateRange(fromValue: string | null, toValue: string | null): { from: string; to: string } | { error: string } {
+  const today = new Date(); today.setHours(0, 0, 0, 0)
+  const start = new Date(today); start.setDate(start.getDate() - 29)
+  const from = fromValue ?? localDateString(start), to = toValue ?? localDateString(today)
+  if (!validLocalDate(from) || !validLocalDate(to)) return { error: "from and to must be valid YYYY-MM-DD dates" }
+  if (from > to) return { error: "from must not be after to" }
+  return { from, to }
+}
+
 function json(body: unknown, status = 200, req?: Request): Response {
   return new Response(JSON.stringify(body), {
     status,
@@ -841,6 +860,25 @@ const server = Bun.serve(withCors({
           active: p.id === active,
         })),
       })
+    }
+
+    if (req.method === "GET" && (pathname === ROUTES.usageSeries || pathname === ROUTES.usageBreakdown)) {
+      const params = new URL(req.url).searchParams
+      const scope = params.get("scope") ?? "all"
+      const session = params.get("session") ?? undefined
+      if (scope !== "all" && scope !== "session") return json({ error: "scope must be all or session" }, 400)
+      if (scope === "session" && !session) return json({ error: "session is required when scope=session" }, 400)
+      const range = usageDateRange(params.get("from"), params.get("to"))
+      if ("error" in range) return json({ error: range.error }, 400)
+      const billing = new Map(listProviders(scope === "session" ? session ?? null : null).map((provider) => [provider.id,
+        provider.billing === "subscription" ? "subscription" : provider.billing === "metered" ? "api-key" : null]))
+      const target: { scope: "all" | "session"; sessionId?: string } = { scope, ...(session ? { sessionId: session } : {}) }
+      if (pathname === ROUTES.usageSeries) {
+        const body: UsageSeriesResponse = Store.usageSeries(target, range.from, range.to, (provider) => billing.get(provider) ?? null)
+        return json(body)
+      }
+      const body: UsageBreakdownResponse = Store.usageBreakdown(target, range.from, range.to, (provider) => billing.get(provider) ?? null)
+      return json(body)
     }
 
     if (req.method === "GET" && pathname === "/api/usage") {

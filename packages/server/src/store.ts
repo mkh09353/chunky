@@ -2,7 +2,7 @@
 // Makes transcripts survive a server restart, so reconnecting to a sessionId
 // replays the full prior run — i.e. "resume". Kept deliberately tiny.
 import { openSqlite, retrySqliteTransaction } from "./sqlite.ts"
-import type { AgentEvent, RewindPoint, SessionSummary } from "@chunky/protocol"
+import type { AgentEvent, RewindPoint, SessionSummary, UsageBreakdownResponse, UsageSeriesResponse } from "@chunky/protocol"
 import { notifySessionChanged } from "./session-changes.ts"
 import type { Goal } from "./goal.ts"
 import type { TodoSnapshot } from "./todos.ts"
@@ -168,6 +168,70 @@ db.exec(`
 for (const row of db.query("SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL").all() as Array<{ sql: string }>) memoryDb.exec(row.sql)
 function backend(sessionId: string) { return isIncognitoSession(sessionId) ? memoryDb : db }
 
+type UsageDashboardScope = { scope: "all" | "session"; sessionId?: string }
+type BillingLookup = (provider: string) => string | null
+type UsageAggregate = {
+  day?: string; provider: string; model: string; requests: number
+  inputTokens: number; outputTokens: number; reasoningTokens: number
+  cacheReadTokens: number; cacheWriteTokens: number
+}
+
+function usageConnection(scope: UsageDashboardScope) {
+  return scope.scope === "session" ? backend(scope.sessionId!) : db
+}
+
+/** Local-midnight bounds: dashboard dates intentionally follow server time. */
+function localDateStart(date: string): number {
+  const [year, month, day] = date.split("-").map(Number)
+  return new Date(year!, month! - 1, day!).getTime()
+}
+function localDateString(date: Date): string {
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, "0")}-${String(date.getDate()).padStart(2, "0")}`
+}
+function nextLocalDate(date: string): string {
+  const next = new Date(localDateStart(date)); next.setDate(next.getDate() + 1); return localDateString(next)
+}
+function tokenTotal(row: Pick<UsageAggregate, "inputTokens" | "outputTokens" | "reasoningTokens" | "cacheReadTokens" | "cacheWriteTokens">): number {
+  return row.inputTokens + row.outputTokens + row.reasoningTokens + row.cacheReadTokens + row.cacheWriteTokens
+}
+function whatIfCost(row: UsageAggregate): { cost: number; savings: number; priced: boolean } {
+  const pricing = pricingFor(row.model)
+  if (!pricing) return { cost: 0, savings: 0, priced: false }
+  // Catalog entries normally carry cache rates. If one does not, model the
+  // conventional 90%-discount cache read rather than silently treating it free.
+  const cacheRead = pricing.cacheRead ?? pricing.input * 0.1
+  const cacheWrite = pricing.cacheWrite ?? pricing.input
+  return {
+    cost: (row.inputTokens * pricing.input + row.outputTokens * pricing.output + row.cacheReadTokens * cacheRead + row.cacheWriteTokens * cacheWrite) / 1_000_000,
+    savings: row.cacheReadTokens * (pricing.input - cacheRead) / 1_000_000,
+    priced: true,
+  }
+}
+function usageAggregates(scope: UsageDashboardScope, from: string, to: string, daily: boolean): UsageAggregate[] {
+  const conn = usageConnection(scope)
+  const sessionWhere = scope.scope === "session" ? "AND session_id = $session" : ""
+  const day = daily ? "date(ts / 1000, 'unixepoch', 'localtime') day," : ""
+  const group = daily ? "day,provider,model" : "provider,model"
+  return conn.query(`SELECT ${day}provider,model,COUNT(*) requests,
+    SUM(input_tokens) inputTokens,SUM(output_tokens) outputTokens,SUM(reasoning_tokens) reasoningTokens,
+    SUM(cache_read_tokens) cacheReadTokens,SUM(cache_write_tokens) cacheWriteTokens
+    FROM usage_log WHERE ts >= $start AND ts < $end ${sessionWhere} GROUP BY ${group}`)
+    .all(scope.scope === "session"
+      ? { $start: localDateStart(from), $end: localDateStart(nextLocalDate(to)), $session: scope.sessionId! }
+      : { $start: localDateStart(from), $end: localDateStart(nextLocalDate(to)) }) as UsageAggregate[]
+}
+function ratingAggregates(scope: UsageDashboardScope, from: string, to: string): Array<{ provider: string; model: string; avgRating: number | null; ratedCount: number; reworkRate: number | null }> {
+  const conn = usageConnection(scope)
+  const sessionWhere = scope.scope === "session" ? "AND d.session_id = $session" : ""
+  return conn.query(`SELECT d.provider,d.model,AVG(r.rating) avgRating,COUNT(r.rating) ratedCount,AVG(r.rework) reworkRate
+    FROM delegations d LEFT JOIN ratings r ON r.delegation_id=d.id
+    WHERE EXISTS (SELECT 1 FROM usage_log u WHERE u.delegation_id=d.id AND u.ts >= $start AND u.ts < $end)
+    ${sessionWhere} GROUP BY d.provider,d.model`)
+    .all(scope.scope === "session"
+      ? { $start: localDateStart(from), $end: localDateStart(nextLocalDate(to)), $session: scope.sessionId! }
+      : { $start: localDateStart(from), $end: localDateStart(nextLocalDate(to)) }) as any[]
+}
+
 // Migration: goals gained `mode` ('direct' | 'workflows'). Older rows were all
 // hands-on direct goals.
 {
@@ -287,11 +351,58 @@ export const Store = {
     } catch { /* intentionally swallowed */ }
   },
   usageRows(sessionId: string) { return backend(sessionId).query("SELECT role,provider,model,effort,SUM(input_tokens) inputTokens,SUM(output_tokens) outputTokens,SUM(reasoning_tokens) reasoningTokens,SUM(cache_read_tokens) cacheReadTokens,SUM(cache_write_tokens) cacheWriteTokens,SUM(cost) cost,COUNT(*) requests FROM usage_log WHERE session_id = ? GROUP BY role,provider,model,effort").all(sessionId) as any[] },
+  usageSeries(scope: UsageDashboardScope, from: string, to: string, billingFor: BillingLookup): UsageSeriesResponse {
+    const grouped = new Map<string, UsageAggregate[]>()
+    for (const row of usageAggregates(scope, from, to, true)) {
+      const rows = grouped.get(row.day!) ?? []; rows.push(row); grouped.set(row.day!, rows)
+    }
+    const buckets: UsageSeriesResponse["buckets"] = []
+    for (let date = from; date <= to; date = nextLocalDate(date)) {
+      const rows = grouped.get(date) ?? []
+      const providers = new Map<string, { provider: string; billing: string | null; estimatedApiCost: number; tokens: number }>()
+      let requests = 0, inputTokens = 0, outputTokens = 0, reasoningTokens = 0, cacheReadTokens = 0, cacheWriteTokens = 0, estimatedApiCost = 0, unpricedRequests = 0
+      for (const row of rows) {
+        const priced = whatIfCost(row); requests += row.requests; inputTokens += row.inputTokens; outputTokens += row.outputTokens
+        reasoningTokens += row.reasoningTokens; cacheReadTokens += row.cacheReadTokens; cacheWriteTokens += row.cacheWriteTokens
+        estimatedApiCost += priced.cost; if (!priced.priced) unpricedRequests += row.requests
+        const provider = providers.get(row.provider) ?? { provider: row.provider, billing: billingFor(row.provider), estimatedApiCost: 0, tokens: 0 }
+        provider.estimatedApiCost += priced.cost; provider.tokens += tokenTotal(row); providers.set(row.provider, provider)
+      }
+      buckets.push({ date, requests, inputTokens, outputTokens, reasoningTokens, cacheReadTokens, cacheWriteTokens,
+        estimatedApiCost, unpricedRequests, byProvider: [...providers.values()].sort((a, b) => b.estimatedApiCost - a.estimatedApiCost || a.provider.localeCompare(b.provider)) })
+    }
+    return { from, to, bucket: "day", buckets }
+  },
+  usageBreakdown(scope: UsageDashboardScope, from: string, to: string, billingFor: BillingLookup): UsageBreakdownResponse {
+    const ratings = new Map(ratingAggregates(scope, from, to).map((row) => [`${row.provider}\u0000${row.model}`, row]))
+    let estimatedApiCost = 0, totalTokens = 0, cacheSavings = 0, requests = 0, pricedRequests = 0
+    const rows = usageAggregates(scope, from, to, false).map((row) => {
+      const priced = whatIfCost(row), rating = ratings.get(`${row.provider}\u0000${row.model}`)
+      const tokens = tokenTotal(row); estimatedApiCost += priced.cost; totalTokens += tokens; cacheSavings += priced.savings; requests += row.requests
+      if (priced.priced) pricedRequests += row.requests
+      return { ...row, billing: billingFor(row.provider), estimatedApiCost: priced.cost, priced: priced.priced,
+        avgRating: rating?.avgRating == null ? null : Number(rating.avgRating), ratedCount: rating?.ratedCount ?? 0,
+        reworkRate: rating?.reworkRate == null ? null : Number(rating.reworkRate) }
+    }).sort((a, b) => b.estimatedApiCost - a.estimatedApiCost || b.requests - a.requests || `${a.provider}/${a.model}`.localeCompare(`${b.provider}/${b.model}`))
+    const rollups = new Map<string, { provider: string; billing: string | null; estimatedApiCost: number; tokens: number; share: number }>()
+    for (const row of rows) {
+      const provider = rollups.get(row.provider) ?? { provider: row.provider, billing: row.billing, estimatedApiCost: 0, tokens: 0, share: 0 }
+      provider.estimatedApiCost += row.estimatedApiCost; provider.tokens += tokenTotal(row); rollups.set(row.provider, provider)
+    }
+    const providers = [...rollups.values()].map((row) => ({ ...row, share: totalTokens ? row.tokens / totalTokens : 0 }))
+      .sort((a, b) => b.tokens - a.tokens || a.provider.localeCompare(b.provider))
+    return { rows, totals: { estimatedApiCost, totalTokens, pricedShare: requests ? pricedRequests / requests : 0, cacheSavings }, providers }
+  },
   /** The last completed lead request, used only to detect runtime handoffs. */
   latestLeadUsage(sessionId: string): { provider: string; model: string } | null {
     return backend(sessionId).query("SELECT provider,model FROM usage_log WHERE session_id=? AND role='lead' ORDER BY ts DESC,id DESC LIMIT 1").get(sessionId) as { provider: string; model: string } | null
   },
-  scoreboardRows(sessionId?: string) { return db.query(`SELECT d.provider,d.model,d.effort,d.kind,d.seat,COUNT(*) samples,AVG(r.rating) avgRating,COUNT(r.rating) ratedCount,AVG(r.rework) reworkRate,SUM(u.cost) totalCost,SUM(COALESCE(u.input_tokens,0)+COALESCE(u.output_tokens,0)) totalTokens FROM delegations d LEFT JOIN ratings r ON r.delegation_id=d.id LEFT JOIN usage_log u ON u.delegation_id=d.id ${sessionId ? "WHERE d.session_id = ?" : ""} GROUP BY d.provider,d.model,d.effort,d.kind,d.seat`).all(...(sessionId ? [sessionId] : [])) as any[] },
+  scoreboardRows(sessionId?: string) { return db.query(`WITH usage_by_delegation AS (
+    SELECT delegation_id,SUM(cost) totalCost,SUM(input_tokens+output_tokens) totalTokens FROM usage_log WHERE delegation_id IS NOT NULL GROUP BY delegation_id
+  ) SELECT d.provider,d.model,d.effort,d.kind,d.seat,COUNT(*) samples,AVG(r.rating) avgRating,COUNT(r.rating) ratedCount,
+    AVG(r.rework) reworkRate,SUM(u.totalCost) totalCost,SUM(COALESCE(u.totalTokens,0)) totalTokens
+    FROM delegations d LEFT JOIN ratings r ON r.delegation_id=d.id LEFT JOIN usage_by_delegation u ON u.delegation_id=d.id
+    ${sessionId ? "WHERE d.session_id = ?" : ""} GROUP BY d.provider,d.model,d.effort,d.kind,d.seat`).all(...(sessionId ? [sessionId] : [])) as any[] },
   getTodos(sessionId: string): TodoSnapshot[] {
     const row = backend(sessionId).query("SELECT json FROM todos WHERE session_id=?").get(sessionId) as { json: string } | null
     return row ? JSON.parse(row.json) as TodoSnapshot[] : []

@@ -23,6 +23,33 @@ export interface UsageDelta {
   model?: string
 }
 
+export interface UsageSeriesBucket {
+  date: string
+  requests: number
+  inputTokens: number
+  outputTokens: number
+  reasoningTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  estimatedApiCost: number
+  unpricedRequests: number
+  byProvider: { provider: string; billing: string | null; estimatedApiCost: number; tokens: number }[]
+}
+export interface UsageSeriesResponse { from: string; to: string; bucket: "day"; buckets: UsageSeriesBucket[] }
+export interface UsageModelRow {
+  provider: string; model: string; billing: string | null
+  requests: number
+  inputTokens: number; outputTokens: number; reasoningTokens: number
+  cacheReadTokens: number; cacheWriteTokens: number
+  estimatedApiCost: number; priced: boolean
+  avgRating: number | null; ratedCount: number; reworkRate: number | null
+}
+export interface UsageBreakdownResponse {
+  rows: UsageModelRow[]
+  totals: { estimatedApiCost: number; totalTokens: number; pricedShare: number; cacheSavings: number }
+  providers: { provider: string; billing: string | null; estimatedApiCost: number; tokens: number; share: number }[]
+}
+
 export type MessageEndReason = "complete" | "max_tokens" | "interrupted" | "error"
 
 export type MessageDelivery = "auto" | "queue" | "interject" | "steer"
@@ -515,6 +542,8 @@ export const ROUTES = {
   onboardingComplete: `/api/onboarding/complete`,
   onboardingApply: `/api/onboarding/apply`,
   customProvider: `/api/providers/custom`,
+  usageSeries: `/api/usage/series`,
+  usageBreakdown: `/api/usage/breakdown`,
   // Local authenticated desktop pairing API. No unpair route: the hosted relay
   // protocol has no targeted revocation operation.
   relay: `/api/relay`,

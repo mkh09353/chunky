@@ -49,6 +49,8 @@ import { rateDelegate, rateDelegateInputShape } from "./tools/rate-delegate.ts"
 import { spawnThread, spawnThreadInputShape } from "./tools/spawn-thread.ts"
 import { workflow, workflowInputShape } from "./tools/workflow.ts"
 import { manageModels, manageModelsInputShape } from "./tools/manage-models.ts"
+import { manageProvidersTool, manageProvidersInputShape } from "./tools/manage-providers.ts"
+import { request_api_key } from "./tools/request-api-key.ts"
 import {
   manageSkillReposTool,
   manageSkillReposInputShape,
@@ -89,6 +91,7 @@ const CHUNKY_TOOLS = [
   spawnThread,
   workflow,
   manageModels,
+  manageProvidersTool,
   manageSkillReposTool,
   searchSkillsTool,
   loadSkillTool,
@@ -101,6 +104,7 @@ const CHUNKY_TOOLS = [
   review,
   ...browserTools,
   open_app_browser,
+  request_api_key,
   ...zooTools,
 ]
 const SDK_TOOL_NAMES = new Set(CHUNKY_TOOLS.map((chunkyTool) => `mcp__${SERVER_NAME}__${chunkyTool.name}`))
@@ -210,6 +214,13 @@ export function createChunkySdkMcpServer(
     (args) => browserTool.invoke(args, runConfig),
     emit,
   ))
+  const wrappedRequestApiKey = browserTier ? [wrapChunkyTool(
+    request_api_key.name,
+    request_api_key.description,
+    request_api_key.schema.shape,
+    (args) => request_api_key.invoke(args, runConfig),
+    emit,
+  )] : []
   const wrappedZooTools = (hasAppZoo() ? zooTools : []).map((zooTool: any) => wrapChunkyTool(
     zooTool.name,
     zooTool.description,
@@ -267,6 +278,7 @@ export function createChunkySdkMcpServer(
         emit,
       ),
       wrapChunkyTool(remember.name, remember.description, rememberInputShape, (args) => remember.invoke(args, runConfig), emit),
+      ...wrappedRequestApiKey,
       ...wrappedAppBrowserTools,
       ...wrappedZooTools,
       wrapChunkyTool(
@@ -310,6 +322,13 @@ export function createChunkySdkMcpServer(
         manageModels.description,
         manageModelsInputShape,
         (args) => manageModels.invoke(args, runConfig),
+        emit,
+      ),
+      wrapChunkyTool(
+        manageProvidersTool.name,
+        manageProvidersTool.description,
+        manageProvidersInputShape,
+        (args) => manageProvidersTool.invoke(args, runConfig),
         emit,
       ),
       wrapChunkyTool(

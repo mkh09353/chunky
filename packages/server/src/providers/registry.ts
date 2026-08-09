@@ -141,6 +141,17 @@ function customProvider(def: CustomProvider): ProviderDef {
     label: def.label,
     billing: def.billing ?? "metered",
     ready: () => Boolean(AuthStore.getApiKey(def.id)),
+    ensureAuth: async () => {
+      const key = AuthStore.getApiKey(def.id)
+      if (!key) throw new Error(`Missing API key for ${def.id}`)
+      let response: Response
+      try {
+        response = await fetch(`${base}/models`, { headers: { Authorization: `Bearer ${key}` } })
+      } catch (error) {
+        throw new Error(`Could not reach ${def.label} models endpoint: ${(error as Error)?.message ?? String(error)}`)
+      }
+      if (!response.ok) throw new Error(`${def.label} models endpoint returned ${response.status}`)
+    },
     listModels: async () => {
       const key = AuthStore.getApiKey(def.id)
       if (!key) return def.defaultModel ? enrichModels([def.defaultModel], []) : []

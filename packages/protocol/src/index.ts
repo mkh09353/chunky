@@ -92,6 +92,9 @@ export type AgentEvent =
   /** Ask only currently attached app clients for this session to open a URL in
    * their browser pane. LIVE-ONLY: never persisted or replayed. */
   | { type: "app.open_url"; url: string }
+  /** Ask only currently attached desktop clients for this session to collect an
+   * API key. LIVE-ONLY: the request and secret are never persisted or replayed. */
+  | { type: "app.request_api_key"; requestId: string; providerId: string; label: string }
   /** A saved mode changed executor/agent configuration. With `sessionId` this
    * is live-only for that session; without it the server-wide defaults changed. */
   | { type: "mode.applied"; name: string; spec: ModeSpec; sessionId?: string }
@@ -524,6 +527,18 @@ export interface AuthLogoutResult {
   ok: boolean
 }
 
+/** Body for POST ROUTES.providerKey. A missing/empty key cancels requestId. */
+export interface ProviderKeyRequest {
+  requestId?: string
+  key?: string
+}
+
+/** Result of POST ROUTES.providerKey. The submitted key is never returned. */
+export interface ProviderKeyResponse {
+  ok: boolean
+  error?: string
+}
+
 export type McpServerStatus = "unconfigured" | "needs-auth" | "connected"
 export interface McpServerSummary { id: string; url?: string; enabled: boolean; status: McpServerStatus }
 export interface McpServersResponse { servers: McpServerSummary[] }
@@ -563,6 +578,7 @@ export const ROUTES = {
   onboardingComplete: `/api/onboarding/complete`,
   onboardingApply: `/api/onboarding/apply`,
   customProvider: `/api/providers/custom`,
+  providerKey: (provider: string) => `/api/providers/${encodeURIComponent(provider)}/key`,
   usageSeries: `/api/usage/series`,
   usageBreakdown: `/api/usage/breakdown`,
   providerQuotas: `/api/provider-quotas`,

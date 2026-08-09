@@ -6,11 +6,11 @@ import { hasCodexCliAuthFile, tryImportCodexCliAuth } from "./providers/codex.ts
 import { invalidateAgent } from "./agent.ts"
 import { AuthStore } from "./providers/auth-store.ts"
 import { saveCustomProviders, type CustomProvider } from "./settings.ts"
-export function saveCustomProvider(input: CustomProvider & { key: string }): { id: string; label: string } {
+export function saveCustomProvider(input: CustomProvider & { key?: string }): { id: string; label: string } {
   if (["zen", "codex", "grok", "anthropic"].includes(input.id)) throw new Error("provider id is reserved")
   const { key, ...provider } = input
   saveCustomProviders([...(loadSettings().customProviders ?? []).filter((p) => p.id !== input.id), provider])
-  AuthStore.set(input.id, { type: "api", key })
+  if (key !== undefined) AuthStore.set(input.id, { type: "api", key })
   return { id: input.id, label: input.label }
 }
 

@@ -127,4 +127,13 @@ describe("onboarding suggestions", () => {
     expect(settings.loadSettings().customProviders?.[0]?.id).toBe("private")
     expect(() => saveCustomProvider({ id: "zen", label: "bad", baseURL: "x", key: "secret" })).toThrow("reserved")
   })
+  test("custom provider can register metadata without replacing its existing key", () => {
+    AuthStore.set("metadata-only", { type: "api", key: "existing-secret" })
+    const result = saveCustomProvider({ id: "metadata-only", label: "Metadata only", baseURL: "http://localhost/v1", defaultModel: "example" })
+    expect(result).toEqual({ id: "metadata-only", label: "Metadata only" })
+    expect(AuthStore.getApiKey("metadata-only")).toBe("existing-secret")
+    expect(settings.loadSettings().customProviders?.find((provider) => provider.id === "metadata-only")).toEqual({
+      id: "metadata-only", label: "Metadata only", baseURL: "http://localhost/v1", defaultModel: "example",
+    })
+  })
 })

@@ -124,7 +124,7 @@ describe("codex provider", () => {
     process.env.CODEX_HOME = dir
     process.env.CHUNKY_AUTH = `${dir}/chunky-auth.json`
     writeFileSync(`${dir}/auth.json`, JSON.stringify({ tokens: { refresh_token: "cli-refresh", account_id: "acct-cli" } }))
-    globalThis.fetch = (async () => new Response(JSON.stringify({ access_token: "fresh-access", refresh_token: "fresh-refresh", expires_in: 3600 }), { status: 200 })) as typeof fetch
+    globalThis.fetch = (async () => new Response(JSON.stringify({ access_token: "fresh-access", refresh_token: "fresh-refresh", expires_in: 3600 }), { status: 200 })) as unknown as typeof fetch
     try {
       expect(await tryImportCodexCliAuth()).toBe(true)
       expect(AuthStore.get("codex")).toMatchObject({ access: "fresh-access", refresh: "fresh-refresh", accountId: "acct-cli" })
@@ -152,7 +152,7 @@ describe("codex provider", () => {
       const rejected = mkdtempSync(`${tmpdir()}/chunky-codex-cli-rejected-`)
       process.env.CODEX_HOME = rejected
       writeFileSync(`${rejected}/auth.json`, JSON.stringify({ tokens: { refresh_token: "bad" } }))
-      globalThis.fetch = (async () => new Response("no", { status: 401 })) as typeof fetch
+      globalThis.fetch = (async () => new Response("no", { status: 401 })) as unknown as typeof fetch
       expect(await tryImportCodexCliAuth()).toBe(false)
       rmSync(missing, { recursive: true, force: true }); rmSync(rejected, { recursive: true, force: true })
     } finally {

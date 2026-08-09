@@ -16,6 +16,7 @@ function sdkToolNames() {
 }
 function expectBrowserTools(names: string[], tier: "open" | "cdp" | undefined) {
   expect(names.includes("open_app_browser")).toBe(tier != null)
+  expect(names.includes("request_api_key")).toBe(tier != null)
   for (const name of CDP_TOOLS) expect(names.includes(name)).toBe(tier === "cdp")
 }
 

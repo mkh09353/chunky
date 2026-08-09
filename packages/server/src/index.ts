@@ -27,6 +27,8 @@ import {
   type AppZooResponse,
   type AuthTestResult,
   type AuthLogoutResult,
+  type ProviderKeyRequest,
+  type ProviderKeyResponse,
   type McpServersResponse,
   type RelayBeginPairingResponse,
   type RelayPollPairingResponse,
@@ -79,6 +81,7 @@ import {
   type Speed,
 } from "./providers/registry.ts"
 import { AuthStore } from "./providers/auth-store.ts"
+import { submitProviderKey } from "./provider-key-requests.ts"
 import { providerQuotas } from "./provider-quotas.ts"
 import { requestCompaction } from "./compaction.ts"
 import { isMcpAuthorized, mcpConfig, startMcpAuthorization } from "./mcp-auth.ts"
@@ -843,9 +846,15 @@ const server = Bun.serve(withCors({
     }
     if (req.method === "POST" && pathname === ROUTES.customProvider) {
       const body = await req.json().catch(() => null) as { id?: string; label?: string; baseURL?: string; billing?: "subscription" | "metered"; defaultModel?: string; key?: string } | null
-      if (!body?.id || !body.label || !body.baseURL || !body.key) return json({ error: "id, label, baseURL, and key are required" }, 400)
+      if (!body?.id || !body.label || !body.baseURL) return json({ error: "id, label, and baseURL are required" }, 400)
       try { return json(saveCustomProvider({ id: body.id, label: body.label, baseURL: body.baseURL, billing: body.billing, defaultModel: body.defaultModel, key: body.key })) }
       catch (err) { return json({ error: (err as Error).message }, 400) }
+    }
+    const providerKeyMatch = pathname.match(/^\/api\/providers\/([^/]+)\/key$/)
+    if (providerKeyMatch && req.method === "POST") {
+      const providerId = decodeURIComponent(providerKeyMatch[1]!)
+      const body = await req.json().catch(() => ({})) as ProviderKeyRequest
+      return json(submitProviderKey(providerId, body) satisfies ProviderKeyResponse)
     }
     if (req.method === "POST" && pathname === ROUTES.onboardingComplete) {
       return json({ onboardedAt: setOnboardedAt() })

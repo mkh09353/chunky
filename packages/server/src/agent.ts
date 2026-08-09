@@ -57,6 +57,8 @@ import { sidekick } from "./tools/sidekick.ts"
 import { spawnThread } from "./tools/spawn-thread.ts"
 import { workflow } from "./tools/workflow.ts"
 import { manageModels } from "./tools/manage-models.ts"
+import { manageProvidersTool } from "./tools/manage-providers.ts"
+import { request_api_key } from "./tools/request-api-key.ts"
 import { manageSkillReposTool } from "./tools/manage-skill-repos.ts"
 import { skillTools } from "./tools/skills.ts"
 import { write } from "./tools/write.ts"
@@ -333,8 +335,10 @@ export function executorToolsFor(selection: AgentSelection, sessionId?: string) 
     ...sessionTools,
     workflow,
     manageModels,
+    manageProvidersTool,
     manageSkillReposTool,
     ...skillTools,
+    ...(browserTier ? [request_api_key] : []),
     ...(browserTier === "cdp" ? [...browserTools, open_app_browser] : browserTier === "open" ? [open_app_browser] : []),
     ...(hasAppZoo() ? zooTools : []),
     ...(advisorSel ? [advisor] : []),

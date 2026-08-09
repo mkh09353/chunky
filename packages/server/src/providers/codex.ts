@@ -55,7 +55,7 @@ export function swapCodexCompactionHistory(bodyStr: string, artifact: CodexCompa
   try {
     const body = JSON.parse(bodyStr) as any
     if (body.model !== artifact.model || !Array.isArray(body.input)) return bodyStr
-    const matches = body.input.map((item: any, index: number) => ({ item, index })).filter(({ item }) => {
+    const matches = body.input.map((item: any, index: number) => ({ item, index })).filter(({ item }: { item: any }) => {
       const text = typeof item?.content === "string" ? item.content : Array.isArray(item?.content) ? item.content.map((x: any) => x?.text ?? "").join("") : ""
       return text.includes(artifact.boundary)
     })

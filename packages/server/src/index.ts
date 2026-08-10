@@ -4,7 +4,7 @@ try { process.title = "chunky-server" } catch {} // Helps ps/top on platforms th
 import { randomUUID } from "node:crypto"
 import { detachThreadForSteer } from "./thread-context.ts"
 import { steerAtBoundary } from "./steer.ts"
-import { rmSync } from "node:fs"
+import { readFileSync, rmSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import { AsyncLocalStorageProviderSingleton } from "@langchain/core/singletons"
@@ -36,6 +36,7 @@ import {
   type SessionSummary,
   type ShellSessionsResponse,
   type SessionDelta,
+  type ServerInfoResponse,
   type CompactRequest,
   type PromoteQueueRequest,
   type PromoteQueueResult,
@@ -728,6 +729,14 @@ void seedDefaultSkillRepos().catch(() => {})
 rmSync(join(tmpdir(), "chunky-incognito"), { recursive: true, force: true })
 
 if (getGithubConfig()?.org) void startPrReviewsPoller()
+
+const serverVersion = (() => {
+  try {
+    const value = JSON.parse(readFileSync(join(import.meta.dir, "../../../package.json"), "utf8")) as { version?: unknown }
+    return typeof value.version === "string" && value.version ? value.version : undefined
+  } catch { return undefined }
+})()
+const managedServer = !!(process.env.CHUNKY_SERVER_NONCE && process.env.CHUNKY_SERVER_ID && process.env.CHUNKY_BUILD_ID && process.env.CHUNKY_VERSION)
 
 const server = Bun.serve(withCors({
   port,
@@ -1710,7 +1719,12 @@ const server = Bun.serve(withCors({
     }
 
     if (req.method === "GET" && pathname === ROUTES.serverInfo) {
-      return json({ workspace: canonicalWorkspace(process.env.CHUNKY_WORKSPACE || LAUNCH_WORKSPACE) })
+      return json({
+        workspace: canonicalWorkspace(process.env.CHUNKY_WORKSPACE || LAUNCH_WORKSPACE),
+        version: process.env.CHUNKY_VERSION || serverVersion,
+        ...(process.env.CHUNKY_BUILD_ID ? { buildId: process.env.CHUNKY_BUILD_ID } : {}),
+        channel: managedServer ? "managed" : "dev",
+      } satisfies ServerInfoResponse)
     }
 
     // POST /api/sessions { repoId? } -> { sessionId }. The session is PINNED to

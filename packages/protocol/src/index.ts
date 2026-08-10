@@ -204,7 +204,7 @@ export interface CreateSessionRequest {
 export interface CreateSessionResponse {
   sessionId: string
 }
-export interface ServerInfoResponse { workspace: string }
+export interface ServerInfoResponse { workspace: string; version?: string; buildId?: string; channel?: "managed" | "dev" }
 /** POST CompactRequest -> { ok: boolean } */
 export interface CompactRequest { hint?: string }
 

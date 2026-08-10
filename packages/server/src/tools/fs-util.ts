@@ -13,6 +13,7 @@ import { isAbsolute, relative, resolve } from "node:path"
  *  agent paginates (offset/limit) or narrows its search instead. */
 export const MAX_LINES = 1200
 export const MAX_BYTES = 40_000
+export const MAX_LINE_CHARS = 2_000
 
 /**
  * Resolve `p` (relative OR absolute) against `workspace` and reject any escape.
@@ -52,6 +53,15 @@ function splitLines(text: string): string[] {
   return lines
 }
 
+/** Bound pathological minified/generated lines without splitting a surrogate pair. */
+function clampLine(line: string): string {
+  if (line.length <= MAX_LINE_CHARS) return line
+  let end = MAX_LINE_CHARS
+  const code = line.charCodeAt(end - 1)
+  if (code >= 0xd800 && code <= 0xdbff) end--
+  return `${line.slice(0, end)}… [line truncated, ${line.length} chars total]`
+}
+
 /**
  * Cap `text` to at most `maxLines` complete lines AND `maxBytes` bytes — whichever
  * limit is reached first wins. `keep: "head"` returns the first fitting lines,
@@ -60,12 +70,18 @@ function splitLines(text: string): string[] {
 export function truncateOutput(text: string, opts: TruncateOptions): TruncateResult {
   const maxLines = opts.maxLines ?? MAX_LINES
   const maxBytes = opts.maxBytes ?? MAX_BYTES
-  const lines = splitLines(text)
-  const originalLines = lines.length
-  const totalBytes = Buffer.byteLength(text, "utf-8")
+  const original = splitLines(text)
+  const originalLines = original.length
+  const lines = original.map(clampLine)
+  const linesClamped = lines.some((line, i) => line !== original[i])
+  const clampedText = lines.join("\n") + (text.endsWith("\n") ? "\n" : "")
+  const totalBytes = Buffer.byteLength(clampedText, "utf-8")
 
-  if (originalLines <= maxLines && totalBytes <= maxBytes) {
+  if (!linesClamped && originalLines <= maxLines && totalBytes <= maxBytes) {
     return { content: text, truncated: false, originalLines }
+  }
+  if (originalLines <= maxLines && totalBytes <= maxBytes) {
+    return { content: clampedText, truncated: true, originalLines }
   }
 
   const kept: string[] = []

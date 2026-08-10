@@ -1,6 +1,15 @@
 import { describe, expect, test } from "bun:test"
 import type { AgentEvent, ModeSpec, QueueEntry } from "./index.ts"
 
+describe("ports protocol events", () => {
+  test("ports.changed carries an authoritative listening-port snapshot", () => {
+    const event: AgentEvent = { type: "ports.changed", sessionId: "s-1", ports: [
+      { port: 3000, address: "127.0.0.1", pid: 42, command: "node", taskId: "task-1", url: "http://localhost:3000/" },
+    ] }
+    expect(event.ports[0]).toEqual({ port: 3000, address: "127.0.0.1", pid: 42, command: "node", taskId: "task-1", url: "http://localhost:3000/" })
+  })
+})
+
 describe("queue and interjection protocol events", () => {
   test("mode.applied carries the saved mode name and full spec", () => {
     const spec: ModeSpec = { provider: "zen", model: "glm-5" }

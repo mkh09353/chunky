@@ -78,6 +78,14 @@ export interface QueueEntry {
   id: string; version: number; text: string; shown: string
   kind: "prompt" | "steer" | "interject"; position: number; createdAt: number
 }
+export interface ListeningPort {
+  port: number        // listening TCP port
+  address: string     // bind address as reported (e.g. "127.0.0.1", "*", "::")
+  pid: number         // owning process pid
+  command: string     // short process name (e.g. "ruby", "node")
+  taskId: string      // owning background task/monitor id
+  url: string | null  // server-suggested URL ("http://localhost:<port>/") when plausibly reachable, else null
+}
 export interface PromoteQueueRequest { delivery: "steer" | "interject" }
 export interface PromoteQueueResult { outcome: "promoted" | "already-running" | "not-found" }
 
@@ -89,6 +97,8 @@ export type AgentEvent =
   | { type: "session.rewound"; sessionId: string; turn: number }
   /** Live task counts; deliberately not persisted in transcript history. */
   | { type: "background.changed"; sessionId: string; tasks: number; monitors: number }
+  /** Authoritative live listening-port snapshot; deliberately not persisted in transcript history. */
+  | { type: "ports.changed"; sessionId: string; ports: ListeningPort[] }
   /** Ask only currently attached app clients for this session to open a URL in
    * their browser pane. LIVE-ONLY: never persisted or replayed. */
   | { type: "app.open_url"; url: string }

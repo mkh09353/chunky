@@ -4,6 +4,7 @@ import { join } from "node:path"
 import type { Subprocess } from "bun"
 import { terminateProcessTree } from "./process-tree.ts"
 import { backgroundChanged } from "./background-dispatch.ts"
+import { clearSessionPorts, finishTaskPorts, resetPortTracking, trackTaskPorts } from "./ports.ts"
 
 export type TaskStatus = "running" | "completed" | "failed" | "cancelled"
 
@@ -66,6 +67,7 @@ export function createTask(sessionId: string, input: { command: string; descript
     try { renameSync(input.spillPath, taskPath); record.spillPath = taskPath } catch { /* retain the initialized path */ }
   }
   sessionTasks(sessionId).set(id, record)
+  trackTaskPorts(sessionId, id, input.process.pid)
   backgroundChanged(sessionId)
   return record
 }
@@ -118,6 +120,7 @@ export function finishTask(record: TaskRecord, exitCode: number | null, signal?:
   record.isTerminal = true
   record.process = undefined
   record.resolveDone()
+  finishTaskPorts(record.sessionId, record.taskId)
   backgroundChanged(record.sessionId)
   const reminders = pendingReminders.get(record.sessionId) ?? []
   if (!reminders.includes(record.taskId) && reminders.length < 32) reminders.push(record.taskId)
@@ -212,8 +215,9 @@ export async function cleanupSession(sessionId: string): Promise<void> {
     try { unlinkSync(record.spillPath) } catch {}
   }
   tasks.delete(sessionId); pendingReminders.delete(sessionId); nextIds.delete(sessionId)
+  clearSessionPorts(sessionId)
 }
-export async function resetTasks(): Promise<void> { for (const id of [...tasks.keys()]) await cleanupSession(id) }
+export async function resetTasks(): Promise<void> { for (const id of [...tasks.keys()]) await cleanupSession(id); resetPortTracking() }
 export const taskOutputCap = OUTPUT_CAP
 export function taskSpillPath(sessionId: string, taskId = "task"): string {
   const path = join("/tmp", `chunky-bash-${sessionId}-${taskId}-${randomUUID()}.txt`)

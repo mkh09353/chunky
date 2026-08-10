@@ -156,6 +156,7 @@ import { resetTasks, liveTaskCounts } from "./tasks.ts"
 import { hasRunningDetachedSpawns, resetDetachedSpawns } from "./detached-spawns.ts"
 import { hasLiveThreadDelegates } from "./threads.ts"
 import { installBackgroundDispatcher } from "./background-dispatch.ts"
+import { currentSessionPorts, installPortEmitter } from "./ports.ts"
 import { databaseErrorMessage } from "./sqlite.ts"
 import { dreamRepoMemory, memoryRepoKey } from "./memory.ts"
 import { autoTitleSession } from "./auto-title.ts"
@@ -261,7 +262,7 @@ const coalescePersistedMessage = createMessageCoalescer((sessionId, event) => St
 
 /** Persist status/history events, then push every live event to subscribers. */
 function emitTo(sessionId: string, ev: AgentEvent): void {
-  if (ev.type !== "tool.progress" && ev.type !== "session.rewound" && ev.type !== "background.changed" && ev.type !== "context.compaction_failed") {
+  if (ev.type !== "tool.progress" && ev.type !== "session.rewound" && ev.type !== "background.changed" && ev.type !== "ports.changed" && ev.type !== "context.compaction_failed") {
     coalescePersistedMessage(sessionId, ev)
   }
   const set = live.get(sessionId)
@@ -642,6 +643,7 @@ installBackgroundDispatcher({
   },
   changed(sessionId) { emitTo(sessionId, { type: "background.changed", sessionId, ...liveTaskCounts(sessionId) }) },
 })
+installPortEmitter((sessionId, ports) => emitLiveTo(sessionId, { type: "ports.changed", sessionId, ports }))
 
 const ALLOWED_ORIGINS = new Set(["http://localhost:5173", "http://127.0.0.1:5173", "http://localhost:4620", "http://127.0.0.1:4620", "views://mainview"])
 function corsHeaders(req?: Request): Record<string, string> {
@@ -1935,6 +1937,7 @@ const server = Bun.serve(withCors({
             for (const ev of history) {
               controller.enqueue(encoder.encode(sse(ev)))
             }
+            controller.enqueue(encoder.encode(sse({ type: "ports.changed", sessionId, ports: currentSessionPorts(sessionId) })))
             subscribers(sessionId).add(controller)
             notifyShellSessionChanged(sessionId)
             // Heartbeat: an SSE comment every 20s so an otherwise-idle stream keeps

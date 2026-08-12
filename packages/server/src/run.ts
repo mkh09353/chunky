@@ -12,9 +12,10 @@ import { activeSelection, getProvider, providerRuntime } from "./providers/regis
 import { composePortablePrompt } from "./portable-handoff.ts"
 import { ThreadManager } from "./threads.ts"
 import { usageFromLangChainMessage, promptTokensOf } from "./usage.ts"
-import { checkCacheCold, cacheWarningEvent, noteRequest } from "./cache-watch.ts"
+import { checkCacheCold, classifyCache, cacheWarningEvent, noteRequest } from "./cache-watch.ts"
 import { Store } from "./store.ts"
 import type { AgentSelection } from "./providers/registry.ts"
+import type { DetachedWakeProvenance } from "./background-dispatch.ts"
 import { databaseErrorMessage, isSqliteBusy } from "./sqlite.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { classifyGoalError, decideGoalStep, firstLine, goalContinuationPrompt, toSnapshot, type GoalStep } from "./goal.ts"
@@ -117,7 +118,8 @@ export async function translateStream(
   emit: Emit,
   cache?: CacheContext,
   onToolBoundary?: () => InterjectionBoundary | undefined,
-  usageContext?: { sessionId: string; selection?: AgentSelection; role?: "lead" | "sidekick" | "advisor" | "review" | "child"; delegationId?: string | null },
+  usageContext?: { sessionId: string; selection?: AgentSelection; role?: "lead" | "sidekick" | "advisor" | "review" | "child"; delegationId?: string | null
+    cacheCold?: boolean | null; cacheColdReason?: "idle" | "model-switch" | null; idleMs?: number | null; wakeSource?: string | null; detachedSpawnId?: string | null; turnIndex?: number | null },
 ): Promise<string> {
   // Tag message/tool/error events with the owning threadId (omitted for main).
   const emitT = taggedEmitter(emit, threadId)
@@ -282,7 +284,9 @@ export async function translateStream(
       provider: usageContext.selection?.provider ?? "unknown", model: usageContext.selection?.model ?? lastRequestUsage.model ?? "unknown",
       effort: usageContext.selection?.effort, delegationId: usageContext.delegationId, inputTokens: lastRequestUsage.inputTokens,
       outputTokens: lastRequestUsage.outputTokens, reasoningTokens: lastRequestUsage.reasoningTokens,
-      cacheReadTokens: lastRequestUsage.cacheReadTokens, cacheWriteTokens: lastRequestUsage.cacheWriteTokens })
+      cacheReadTokens: lastRequestUsage.cacheReadTokens, cacheWriteTokens: lastRequestUsage.cacheWriteTokens,
+      ...(usageContext.role === "lead" ? { cacheCold: usageContext.cacheCold, cacheColdReason: usageContext.cacheColdReason, idleMs: usageContext.idleMs,
+        wakeSource: usageContext.wakeSource, detachedSpawnId: usageContext.detachedSpawnId, turnIndex: usageContext.turnIndex } : {}) })
   }
 
   if (!sawAssistantOrTool) {
@@ -361,6 +365,25 @@ export async function userMessageContent(text: string, images?: InputImage[]): P
  * `images` are pasted attachments (Ctrl+V); sent as multimodal content on both
  * the LangChain (`image_url`) and Anthropic-SDK (image content blocks) paths.
  */
+export function classifyLeadCache(
+  sessionId: string,
+  model: string | undefined,
+  suppressWarning: boolean,
+  emit: Emit,
+  now = Date.now(),
+): { cacheCold?: boolean; cacheColdReason?: "idle" | "model-switch"; idleMs?: number } {
+  const classification = model ? classifyCache(sessionId, model, now) : undefined
+  // Preserve the existing notice floor: measurement classifies every known
+  // prior cache, while presentation still warns only for meaningful contexts.
+  const warning = model && !suppressWarning ? checkCacheCold(sessionId, model, now) : undefined
+  if (warning) emit(cacheWarningEvent(sessionId, warning))
+  return {
+    cacheCold: classification?.cold,
+    cacheColdReason: classification?.cold ? classification.warning.reason : undefined,
+    idleMs: classification?.idleMs,
+  }
+}
+
 export async function runAgent(
   sessionId: string,
   text: string,
@@ -371,6 +394,8 @@ export async function runAgent(
     /** Skip the turn-start cold-cache notice — the user already confirmed this
      *  re-send through the cache guard, so repeating the warning is noise. */
     suppressCacheWarning?: boolean
+    wakeProvenance?: DetachedWakeProvenance
+    turnIndex?: number
     onToolBoundary?: () => InterjectionBoundary | undefined
   },
 ): Promise<void> {
@@ -417,9 +442,13 @@ export async function runAgent(
   // the last turn (idle past the TTL, or a model switch) — a cue to start fresh.
   // Only meaningful when the model is known (needed to detect a switch).
   const model = selection.model
-  if (model && !options?.suppressCacheWarning) {
-    const cold = checkCacheCold(sessionId, model, Date.now())
-    if (cold) emit(cacheWarningEvent(sessionId, cold))
+  const cacheMeasurement = classifyLeadCache(sessionId, model, !!options?.suppressCacheWarning, emit)
+  const leadUsageContext = {
+    sessionId, role: "lead" as const,
+    ...cacheMeasurement,
+    wakeSource: options?.wakeProvenance?.kind,
+    detachedSpawnId: options?.wakeProvenance?.detachedSpawnId,
+    turnIndex: options?.turnIndex,
   }
 
   // Context for spawn_thread: any thread_id in this run (root or descendant)
@@ -443,7 +472,7 @@ export async function runAgent(
       const { runAnthropicAgent } = await import("./anthropic-runner.ts")
       await runAnthropicAgent({
         selection, threadId: sessionId, prompt: composedPrompt, repositoryLess: repoLess, images: turnImages, emit, cache, abort, workspace: resolvedWorkspace, agentsMd,
-        usageContext: { sessionId, role: "lead" },
+        usageContext: leadUsageContext,
         onSubmitted: () => consumeTaskReminders(sessionId, pendingReminder.ids),
       })
     } else {
@@ -470,7 +499,7 @@ export async function runAgent(
         emit,
         cache,
         options?.onToolBoundary,
-        { sessionId, selection, role: "lead" },
+        { ...leadUsageContext, selection },
       )
     }
   }

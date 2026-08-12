@@ -40,15 +40,17 @@ describe("detached spawn_thread", () => {
   test("returns immediately and wakes an idle lead with its report", async () => {
     let release!: () => void
     const gate = new Promise<void>((resolve) => { release = resolve })
-    const wakes: Array<{ prompt: string; shown: string; from?: string }> = []
-    installBackgroundDispatcher({ isRunning: () => false, wake: (_id, prompt, shown, from) => wakes.push({ prompt, shown, from }), changed: () => {} })
+    const wakes: Array<{ prompt: string; shown: string; from?: string; provenance?: { kind: string; detachedSpawnId: string } }> = []
+    installBackgroundDispatcher({ isRunning: () => false, wake: (_id, prompt, shown, from, provenance) => wakes.push({ prompt, shown, from, provenance }), changed: () => {} })
     const manager = new ThreadManager(() => {}, "detached-idle", selection, gatedAgent(gate), undefined, "/tmp")
     const result = manager.launchDetachedSpawn({ callerThreadId: "detached-idle", title: "Inspect", instructions: "inspect it" })
     expect(result).toMatch(/^Detached child "Inspect" launched: /)
     expect(wakes).toHaveLength(0)
     release()
     await eventually(() => wakes.length === 1)
-    expect(wakes[0]).toMatchObject({ shown: expect.stringContaining('Detached child "Inspect"'), from: "spawn_thread" })
+    const detachedSpawnId = result.match(/launched: ([0-9a-f-]+)/i)?.[1]
+    expect(wakes[0]).toMatchObject({ shown: expect.stringContaining('Detached child "Inspect"'), from: "spawn_thread",
+      provenance: { kind: "spawn_thread", detachedSpawnId } })
     expect(wakes[0]!.prompt).toContain("detached report")
     manager.dispose()
   })

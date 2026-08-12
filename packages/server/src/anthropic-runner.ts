@@ -426,7 +426,8 @@ export interface AnthropicRunRequest {
   agentsMd?: string | null
   /** Called once the SDK query has been constructed and provider submission has begun. */
   onSubmitted?: () => void
-  usageContext?: { sessionId: string; role: "lead" | "sidekick" | "advisor" | "review" | "child"; delegationId?: string | null }
+  usageContext?: { sessionId: string; role: "lead" | "sidekick" | "advisor" | "review" | "child"; delegationId?: string | null
+    cacheCold?: boolean | null; cacheColdReason?: "idle" | "model-switch" | null; idleMs?: number | null; wakeSource?: string | null; detachedSpawnId?: string | null; turnIndex?: number | null }
 }
 
 export async function externalMcpConfig(): Promise<{ servers: Record<string, unknown>; allowedTools: string[]; ids: string[] }> {
@@ -636,7 +637,9 @@ export async function translateAnthropicMessages(
         emit({ type: "usage.update", usage: delta })
         if (usageContext) Store.logUsage({ sessionId: usageContext.sessionId, threadId: displayThreadId, role: usageContext.role,
           provider: "anthropic", model: delta.model ?? "unknown", delegationId: usageContext.delegationId,
-          inputTokens: delta.inputTokens, outputTokens: delta.outputTokens, reasoningTokens: delta.reasoningTokens, cacheReadTokens: delta.cacheReadTokens, cacheWriteTokens: delta.cacheWriteTokens })
+          inputTokens: delta.inputTokens, outputTokens: delta.outputTokens, reasoningTokens: delta.reasoningTokens, cacheReadTokens: delta.cacheReadTokens, cacheWriteTokens: delta.cacheWriteTokens,
+          ...(usageContext.role === "lead" ? { cacheCold: usageContext.cacheCold, cacheColdReason: usageContext.cacheColdReason, idleMs: usageContext.idleMs,
+            wakeSource: usageContext.wakeSource, detachedSpawnId: usageContext.detachedSpawnId, turnIndex: usageContext.turnIndex } : {}) })
       }
     }
   } catch (error) {

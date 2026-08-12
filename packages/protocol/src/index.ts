@@ -49,6 +49,20 @@ export interface UsageBreakdownResponse {
   totals: { estimatedApiCost: number; totalTokens: number; pricedShare: number; cacheSavings: number }
   providers: { provider: string; billing: string | null; estimatedApiCost: number; tokens: number; share: number }[]
 }
+export interface SessionCacheMetrics {
+  turns: number
+  inputTokens: number
+  cacheReadTokens: number
+  cacheWriteTokens: number
+  promptTokens: number
+  cacheHitRate: number | null
+  coldTurns: number
+  unclassifiedTurns: number
+  detachedWakeTurns: number
+  coldDetachedWakeTurns: number
+  coldDetachedWakeInputTokens: number
+  coldDetachedWakeCacheWriteTokens: number
+}
 
 export type ProviderQuotaStatus = "available" | "stale" | "not-authenticated" | "unsupported" | "error"
 export type ProviderQuotaWindowKind = "five-hour" | "weekly" | "weekly-model" | "other"
@@ -596,6 +610,7 @@ export const ROUTES = {
   providerKey: (provider: string) => `/api/providers/${encodeURIComponent(provider)}/key`,
   usageSeries: `/api/usage/series`,
   usageBreakdown: `/api/usage/breakdown`,
+  usageCache: `/api/usage/cache`,
   providerQuotas: `/api/provider-quotas`,
   // Local authenticated desktop pairing API. No unpair route: the hosted relay
   // protocol has no targeted revocation operation.

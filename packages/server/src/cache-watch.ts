@@ -77,30 +77,39 @@ export function cacheModelKey(model: string): string {
   return model.replace(/\s*\[[^\]]*\]\s*$/, "").toLowerCase()
 }
 
+export type CacheClassification =
+  | { cold: false; idleMs: number }
+  | { cold: true; idleMs: number; warning: CacheWarning }
+
+/** Classify a turn for accounting. Undefined means there is no prior request, so
+ * cold/warm is unknowable (first turn or server restart). Small prior contexts
+ * are still classifiable as warm even though they are below the warning floor. */
+export function classifyCache(
+  conversationId: string,
+  model: string,
+  now: number,
+): CacheClassification | undefined {
+  const prev = lastByConversation.get(conversationId)
+  if (!prev) return undefined
+
+  const modelChanged = cacheModelKey(model) !== cacheModelKey(prev.model)
+  const idleMs = Math.max(0, now - prev.at)
+  const warning = modelChanged
+    ? { reason: "model-switch" as const, approxTokens: prev.contextTokens, fromModel: prev.model, toModel: model }
+    : idleMs >= CACHE_TTL_MS
+      ? { reason: "idle" as const, idleMs, approxTokens: prev.contextTokens }
+      : undefined
+  return warning ? { cold: true, idleMs, warning } : { cold: false, idleMs }
+}
+
 export function checkCacheCold(
   conversationId: string,
   model: string,
   now: number,
 ): CacheWarning | undefined {
-  const prev = lastByConversation.get(conversationId)
-  if (!prev) return undefined
-  if (prev.contextTokens < NOTICE_MIN_TOKENS) return undefined
-
-  const modelChanged = cacheModelKey(model) !== cacheModelKey(prev.model)
-  const idleMs = Math.max(0, now - prev.at)
-
-  if (modelChanged) {
-    return {
-      reason: "model-switch",
-      approxTokens: prev.contextTokens,
-      fromModel: prev.model,
-      toModel: model,
-    }
-  }
-  if (idleMs >= CACHE_TTL_MS) {
-    return { reason: "idle", idleMs, approxTokens: prev.contextTokens }
-  }
-  return undefined
+  const classification = classifyCache(conversationId, model, now)
+  if (!classification?.cold || classification.warning.approxTokens < NOTICE_MIN_TOKENS) return undefined
+  return classification.warning
 }
 
 /**

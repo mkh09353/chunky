@@ -239,7 +239,7 @@ export class ThreadManager implements ThreadSpawner {
       try {
         const reminder = `${title} ${reasonText} (${record.id}) finished. Report:\n${record.result}`
         const wakePrompt = `${reminder}\n\nAssess this detached delegate report and act on any valid findings before finalizing.`
-        if (routeBackgroundNotice(this.rootId, wakePrompt, `${title} ${reasonText} finished.`, kind) === "reminder") appendReminder(this.rootId, reminder)
+        if (routeBackgroundNotice(this.rootId, wakePrompt, `${title} ${reasonText} finished.`, kind, { kind, detachedSpawnId: record.id }) === "reminder") appendReminder(this.rootId, reminder)
       } finally {
         clearSeatGuard()
       }
@@ -248,7 +248,7 @@ export class ThreadManager implements ThreadSpawner {
       finishDetachedSpawn(record, report)
       try {
         const reminder = `${title} ${reasonText} (${record.id}) failed. Report:\n${record.result}`
-        if (routeBackgroundNotice(this.rootId, reminder, `${title} ${reasonText} failed.`, kind) === "reminder") appendReminder(this.rootId, reminder)
+        if (routeBackgroundNotice(this.rootId, reminder, `${title} ${reasonText} failed.`, kind, { kind, detachedSpawnId: record.id }) === "reminder") appendReminder(this.rootId, reminder)
       } finally {
         clearSeatGuard()
       }
@@ -464,7 +464,7 @@ export class ThreadManager implements ThreadSpawner {
       const reminder = `Detached child "${record.title}" (${record.id}) finished. Report:\n${record.result}`
       const shownText = `Detached child "${record.title}" (${record.id}) finished.`
       const wakePrompt = `${reminder}\n\nAssess this detached child report and act on any valid findings before finalizing.`
-      if (routeBackgroundNotice(record.sessionId, wakePrompt, shownText, "spawn_thread") === "reminder") appendReminder(record.sessionId, reminder)
+      if (routeBackgroundNotice(record.sessionId, wakePrompt, shownText, "spawn_thread", { kind: "spawn_thread", detachedSpawnId: record.id }) === "reminder") appendReminder(record.sessionId, reminder)
     }
   }
 

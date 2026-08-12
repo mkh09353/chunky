@@ -46,6 +46,7 @@ import {
   type SessionAgentConfigResponse,
   type UsageSeriesResponse,
   type UsageBreakdownResponse,
+  type SessionCacheMetrics,
   type ProviderQuotasResponse,
 } from "@chunky/protocol"
 import { effectiveSessionSelection, runAgent, type InputImage, type InterjectionBoundary } from "./run.ts"
@@ -155,7 +156,7 @@ import { manageSkillRepos, seedDefaultSkillRepos, type SkillRepoMutationAction }
 import { resetTasks, liveTaskCounts } from "./tasks.ts"
 import { hasRunningDetachedSpawns, resetDetachedSpawns } from "./detached-spawns.ts"
 import { hasLiveThreadDelegates } from "./threads.ts"
-import { installBackgroundDispatcher } from "./background-dispatch.ts"
+import { installBackgroundDispatcher, type DetachedWakeProvenance } from "./background-dispatch.ts"
 import { currentSessionPorts, installPortEmitter } from "./ports.ts"
 import { databaseErrorMessage } from "./sqlite.ts"
 import { dreamRepoMemory, memoryRepoKey } from "./memory.ts"
@@ -420,7 +421,7 @@ function startRun(
   sessionId: string,
   text: string,
   images?: InputImage[],
-  options?: { suppressCacheWarning?: boolean },
+  options?: { suppressCacheWarning?: boolean; wakeProvenance?: DetachedWakeProvenance },
   turn?: number,
 ): Promise<void> {
   const workspace = Store.workspaceOf(sessionId)
@@ -434,6 +435,7 @@ function startRun(
   notifyShellSessionChanged(sessionId)
   const done = runAgent(sessionId, text, (ev) => emitTo(sessionId, ev), images, ac, {
     ...options,
+    turnIndex: turn,
     onToolBoundary: (): InterjectionBoundary | undefined => {
       const notes = drainInterjections(sessionId)
       return notes.length ? {
@@ -636,10 +638,10 @@ installSessionBus({
 // context: their wake turns belong exclusively to their owning session.
 installBackgroundDispatcher({
   isRunning: (sessionId) => running.has(sessionId),
-  wake(sessionId, prompt, shownText, from) {
+  wake(sessionId, prompt, shownText, from, provenance) {
     const turn = beginUserTurn(sessionId, shownText)
     emitTo(sessionId, { type: "message.user", text: shownText, from: from ?? "monitor" })
-    void AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () => startRun(sessionId, prompt, undefined, undefined, turn))
+    void AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () => startRun(sessionId, prompt, undefined, provenance ? { wakeProvenance: provenance } : undefined, turn))
   },
   changed(sessionId) { emitTo(sessionId, { type: "background.changed", sessionId, ...liveTaskCounts(sessionId) }) },
 })
@@ -906,6 +908,14 @@ const server = Bun.serve(withCors({
         return json(body)
       }
       const body: UsageBreakdownResponse = Store.usageBreakdown(target, range.from, range.to, (provider) => billing.get(provider) ?? null)
+      return json(body)
+    }
+
+    if (req.method === "GET" && pathname === ROUTES.usageCache) {
+      const session = new URL(req.url).searchParams.get("session")
+      if (!session) return json({ error: "session is required" }, 400)
+      if (!Store.exists(session)) return json({ error: "unknown session" }, 400)
+      const body: SessionCacheMetrics = Store.sessionCacheMetrics(session)
       return json(body)
     }
 

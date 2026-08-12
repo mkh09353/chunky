@@ -5,6 +5,7 @@ import {
   cacheColdPayload,
   cacheWarningEvent,
   checkCacheCold,
+  classifyCache,
   exceedsGuard,
   noteRequest,
   resetCacheWatch,
@@ -89,6 +90,15 @@ describe("checkCacheCold", () => {
   test("a zero-token request does not arm the watch", () => {
     noteRequest(CONV, { inputTokens: 0, outputTokens: 0 }, "claude-opus-4-8", T0)
     expect(checkCacheCold(CONV, "claude-opus-4-8", T0 + 60 * 60_000)).toBeUndefined()
+  })
+})
+
+describe("classifyCache idle gap", () => {
+  test("exposes idleMs for warm and cold turns but not the first turn", () => {
+    expect(classifyCache(CONV, "claude-opus-4-8", T0)).toBeUndefined()
+    noteRequest(CONV, { inputTokens: BIG, outputTokens: 100 }, "claude-opus-4-8", T0)
+    expect(classifyCache(CONV, "claude-opus-4-8", T0 + 1_000)).toEqual({ cold: false, idleMs: 1_000 })
+    expect(classifyCache(CONV, "claude-opus-4-8", T0 + CACHE_TTL_MS)).toMatchObject({ cold: true, idleMs: CACHE_TTL_MS })
   })
 })
 

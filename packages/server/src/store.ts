@@ -36,6 +36,8 @@ export type UsageLedgerInput = {
   provider: string; model: string; effort?: string | null; delegationId?: string | null
   inputTokens?: number; outputTokens?: number; reasoningTokens?: number
   cacheReadTokens?: number; cacheWriteTokens?: number; ts?: number
+  cacheCold?: boolean | null; cacheColdReason?: string | null; idleMs?: number | null; wakeSource?: string | null
+  detachedSpawnId?: string | null; turnIndex?: number | null
 }
 export type DelegationInput = { id: string; sessionId: string; kind: "sidekick" | "review" | "child" | "workflow_agent"; seat?: string; provider: string; model: string; effort?: string; briefSnippet: string }
 
@@ -97,7 +99,8 @@ db.exec(`
     provider TEXT NOT NULL, model TEXT NOT NULL, effort TEXT, delegation_id TEXT, ts INTEGER NOT NULL,
     input_tokens INTEGER NOT NULL DEFAULT 0, output_tokens INTEGER NOT NULL DEFAULT 0,
     reasoning_tokens INTEGER NOT NULL DEFAULT 0, cache_read_tokens INTEGER NOT NULL DEFAULT 0,
-    cache_write_tokens INTEGER NOT NULL DEFAULT 0, cost REAL
+    cache_write_tokens INTEGER NOT NULL DEFAULT 0, cost REAL, cache_cold INTEGER,
+    cache_cold_reason TEXT, idle_ms INTEGER, wake_source TEXT, detached_spawn_id TEXT, turn_index INTEGER
   );
   CREATE TABLE IF NOT EXISTS delegations (
     id TEXT PRIMARY KEY, session_id TEXT NOT NULL, kind TEXT NOT NULL, seat TEXT,
@@ -153,6 +156,18 @@ db.exec(`
   const cols = db.query("PRAGMA table_info(archived_sessions)").all() as { name: string }[]
   if (!cols.some((c) => c.name === "byte_length")) db.exec("ALTER TABLE archived_sessions ADD COLUMN byte_length INTEGER")
   if (!cols.some((c) => c.name === "sha256")) db.exec("ALTER TABLE archived_sessions ADD COLUMN sha256 TEXT")
+}
+
+// Cache measurement metadata is nullable so historical usage remains explicitly
+// unclassified rather than being mistaken for a warm turn.
+{
+  const cols = db.query("PRAGMA table_info(usage_log)").all() as { name: string }[]
+  if (!cols.some((c) => c.name === "cache_cold")) db.exec("ALTER TABLE usage_log ADD COLUMN cache_cold INTEGER")
+  if (!cols.some((c) => c.name === "cache_cold_reason")) db.exec("ALTER TABLE usage_log ADD COLUMN cache_cold_reason TEXT")
+  if (!cols.some((c) => c.name === "idle_ms")) db.exec("ALTER TABLE usage_log ADD COLUMN idle_ms INTEGER")
+  if (!cols.some((c) => c.name === "wake_source")) db.exec("ALTER TABLE usage_log ADD COLUMN wake_source TEXT")
+  if (!cols.some((c) => c.name === "detached_spawn_id")) db.exec("ALTER TABLE usage_log ADD COLUMN detached_spawn_id TEXT")
+  if (!cols.some((c) => c.name === "turn_index")) db.exec("ALTER TABLE usage_log ADD COLUMN turn_index INTEGER")
 }
 
 // Migration: ratings gained an optional diagnosis for learning from failed or
@@ -347,11 +362,29 @@ export const Store = {
       const read = u.cacheReadTokens ?? 0, write = u.cacheWriteTokens ?? 0
       const p = pricingFor(u.model)
       const cost = p ? (input * p.input + output * p.output + read * p.cacheRead + write * p.cacheWrite) / 1_000_000 : null
-      backend(u.sessionId).query(`INSERT INTO usage_log (session_id,thread_id,role,provider,model,effort,delegation_id,ts,input_tokens,output_tokens,reasoning_tokens,cache_read_tokens,cache_write_tokens,cost) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(u.sessionId, u.threadId ?? null, u.role, u.provider, u.model, u.effort ?? null, u.delegationId ?? null,
-        u.ts ?? Date.now(), input, output, u.reasoningTokens ?? 0, read, write, cost)
+      backend(u.sessionId).query(`INSERT INTO usage_log (session_id,thread_id,role,provider,model,effort,delegation_id,ts,input_tokens,output_tokens,reasoning_tokens,cache_read_tokens,cache_write_tokens,cost,cache_cold,cache_cold_reason,idle_ms,wake_source,detached_spawn_id,turn_index) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(u.sessionId, u.threadId ?? null, u.role, u.provider, u.model, u.effort ?? null, u.delegationId ?? null,
+        u.ts ?? Date.now(), input, output, u.reasoningTokens ?? 0, read, write, cost, u.cacheCold == null ? null : u.cacheCold ? 1 : 0,
+        u.cacheColdReason ?? null, u.idleMs ?? null, u.wakeSource ?? null, u.detachedSpawnId ?? null, u.turnIndex ?? null)
     } catch { /* intentionally swallowed */ }
   },
   usageRows(sessionId: string) { return backend(sessionId).query("SELECT role,provider,model,effort,SUM(input_tokens) inputTokens,SUM(output_tokens) outputTokens,SUM(reasoning_tokens) reasoningTokens,SUM(cache_read_tokens) cacheReadTokens,SUM(cache_write_tokens) cacheWriteTokens,SUM(cost) cost,COUNT(*) requests FROM usage_log WHERE session_id = ? GROUP BY role,provider,model,effort").all(sessionId) as any[] },
+  sessionCacheMetrics(sessionId: string) {
+    const row = backend(sessionId).query(`SELECT COUNT(*) turns,
+      COALESCE(SUM(input_tokens),0) inputTokens,COALESCE(SUM(cache_read_tokens),0) cacheReadTokens,
+      COALESCE(SUM(cache_write_tokens),0) cacheWriteTokens,
+      COALESCE(SUM(input_tokens+cache_read_tokens+cache_write_tokens),0) promptTokens,
+      COALESCE(SUM(cache_cold=1),0) coldTurns,COALESCE(SUM(cache_cold IS NULL),0) unclassifiedTurns,
+      COALESCE(SUM(wake_source IS NOT NULL),0) detachedWakeTurns,
+      COALESCE(SUM(cache_cold=1 AND wake_source IS NOT NULL),0) coldDetachedWakeTurns,
+      COALESCE(SUM(CASE WHEN cache_cold=1 AND wake_source IS NOT NULL THEN input_tokens ELSE 0 END),0) coldDetachedWakeInputTokens,
+      COALESCE(SUM(CASE WHEN cache_cold=1 AND wake_source IS NOT NULL THEN cache_write_tokens ELSE 0 END),0) coldDetachedWakeCacheWriteTokens
+      FROM usage_log WHERE session_id=? AND role='lead'`).get(sessionId) as {
+        turns: number; inputTokens: number; cacheReadTokens: number; cacheWriteTokens: number; promptTokens: number
+        coldTurns: number; unclassifiedTurns: number; detachedWakeTurns: number; coldDetachedWakeTurns: number
+        coldDetachedWakeInputTokens: number; coldDetachedWakeCacheWriteTokens: number
+      }
+    return { ...row, cacheHitRate: row.promptTokens ? row.cacheReadTokens / row.promptTokens : null }
+  },
   usageSeries(scope: UsageDashboardScope, from: string, to: string, billingFor: BillingLookup): UsageSeriesResponse {
     const grouped = new Map<string, UsageAggregate[]>()
     for (const row of usageAggregates(scope, from, to, true)) {

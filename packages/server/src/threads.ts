@@ -334,6 +334,7 @@ export class ThreadManager implements ThreadSpawner {
             eventThreadId: childThreadId,
             freshSession: true,
             workspace: this.workspace,
+            repositoryLess: Store.repositoryScopeOf(this.rootId) === "none",
             abort: dog.abort,
             usageContext: { sessionId: this.rootId, role: "child", delegationId },
           }),
@@ -437,7 +438,7 @@ export class ThreadManager implements ThreadSpawner {
         const { runAnthropicAgent } = await import("./anthropic-runner.ts")
         report = await runAnthropicAgent({
           selection, threadId: record.childThreadId, prompt: instructions, emit: dog.emit, eventThreadId: record.childThreadId,
-          freshSession: true, workspace, abort: dog.abort,
+          freshSession: true, workspace, repositoryLess: Store.repositoryScopeOf(record.sessionId) === "none", abort: dog.abort,
           usageContext: { sessionId: record.sessionId, role: "child", delegationId },
         })
       } else {

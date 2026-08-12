@@ -37,7 +37,7 @@ import { runningDetachedSpawnSummaries } from "./detached-spawns.ts"
 import { todoSummary } from "./todos.ts"
 import { formatSystemReminder } from "./system-reminder.ts"
 import { activeSidekickSummaries, runningChildSummaries } from "./threads.ts"
-import { ADVISOR_SYSTEM_PROMPT, REVIEW_SYSTEM_PROMPT, sidekickSystemPrompt, buildSystemPrompt, type EditToolName } from "./prompt.ts"
+import { ADVISOR_SYSTEM_PROMPT, REVIEW_SYSTEM_PROMPT, sidekickSystemPrompt, buildRepoLessSystemPrompt, buildSystemPrompt, type EditToolName } from "./prompt.ts"
 import {
   buildToolSearchMiddleware,
   portableToolSetFor,
@@ -259,7 +259,7 @@ function makeCheckpointer() {
 }
 
 export interface BuildAgentOpts {
-  /** Build a conversational agent with all repository-bound tools removed. */
+  /** Build the normal agent with repository-less working-directory guidance. */
   repoLess?: boolean
   // Retained for compatibility. Real nested threads now come from the spawn_thread
   // tool (see threads.ts), not DeepAgents' subagent roster / task tool, so this is
@@ -348,34 +348,6 @@ export function executorToolsFor(selection: AgentSelection, sessionId?: string) 
     ...(advisorSel ? [advisor] : []),
     ...(reviewSel ? [review] : []),
   ]
-  const repoLess = sessionId ? Store.repositoryScopeOf(sessionId) === "none" : false
-  if (repoLess) {
-    // Positive allowlist: a new tool must be explicitly reviewed before it can
-    // appear in a session with no repository or working directory.
-    const available = new Set([
-      "recall",
-      "rate_delegate",
-      "get_goal",
-      "goal_complete",
-      "goal_blocked",
-      "create_goal",
-      "update_todos",
-      "manage_models",
-      "manage_providers",
-      "request_api_key",
-      "open_app_browser",
-      "zoo_board",
-      "zoo_search",
-      "zoo_get_idea",
-      "zoo_get_item",
-      "zoo_move_item",
-      "zoo_promote_idea",
-      "zoo_dismiss_idea",
-      "zoo_create_idea",
-      "zoo_add_note",
-    ])
-    return { tools: tools.filter((candidate) => available.has(candidate.name)), hasAdvisor: false, hasSidekick: false, hasReview: false }
-  }
   return { tools, hasAdvisor: advisorSel != null, hasSidekick: sidekickSel != null, hasReview: reviewSel != null }
 }
 
@@ -431,7 +403,7 @@ export function buildAgent(
   const modelId = selection.model ?? (providerId === "codex" ? CODEX_DEFAULT_MODEL : "unknown")
   const model = resolveModel(selection, sessionId)
   const repoLess = _opts.repoLess === true
-  const plan = repoLess ? { ...agentPlanFor(selection, undefined), ...executorToolsFor(selection, sessionId) } : agentPlanFor(selection, sessionId)
+  const plan = agentPlanFor(selection, sessionId)
   // TODO: prompt-caching middleware. langchain exports anthropicPromptCachingMiddleware,
   // but every current provider builds an OpenAI-compatible ChatOpenAI (zen/grok/codex),
   // not ChatAnthropic, so it would be a no-op here. Wire it in if/when an Anthropic
@@ -445,7 +417,7 @@ export function buildAgent(
   return createAgent({
     model,
     tools: boundTools,
-    systemPrompt: repoLess ? "You are a conversational assistant. This session has no repository or working directory. Do not attempt repository, filesystem, shell, git, or repository-specific skill operations." : buildSystemPrompt(plan.editToolName, plan.hasAdvisor, workspace, {
+    systemPrompt: (repoLess ? buildRepoLessSystemPrompt : buildSystemPrompt)(plan.editToolName, plan.hasAdvisor, workspace, {
       fileToolProfile: resolveFileToolProfile(),
       nativeToolSearch: plan.nativeToolSearch,
       portableToolSearch: providerId === "grok",

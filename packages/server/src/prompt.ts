@@ -230,6 +230,19 @@ ${appZooGuideline}
 Working directory: ${workspace}${repoNotes}${repoMemory}`
 }
 
+
+/** Normal full-tool prompt for a chat that is not pinned to a repository. */
+export function buildRepoLessSystemPrompt(
+  activeEditToolName: EditToolName,
+  hasAdvisor: boolean,
+  workspace: string,
+  opts: SystemPromptOpts = {},
+): string {
+  return `${buildSystemPrompt(activeEditToolName, hasAdvisor, workspace, opts)}
+
+No repository is pinned to this session. The working directory defaults to the user's home directory. You may use the full filesystem, shell, git, browser, skills, and delegation toolset, and may clone, fetch, or inspect anything the user asks.`
+}
+
 export function sidekickSystemPrompt(agentsMd?: string | null, profile: FileToolProfile = "standard", repoMemory?: string | null): string {
   const guidance = profile === "hashline" ? "\n\nFile profile: hashline. Read output includes LINE:LOCAL:CHUNK→content anchors; use fresh anchor prefixes, inclusive ranges, atomic batches, and strip anchors from replacement content." : ""
   const notes = agentsMd?.trim() ? `\n\nRepo notes (distilled from AGENTS.md — follow these):\n${agentsMd.trim()}` : ""

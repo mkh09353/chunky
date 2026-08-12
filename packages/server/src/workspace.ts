@@ -5,11 +5,22 @@
 // different repos run concurrently on one server — an in-flight run can never be
 // retargeted by another client switching folders.
 import { resolve } from "node:path"
+import { homedir } from "node:os"
 
 /** The directory the server was launched in — the default workspace for
  *  sessions created without an explicit repo, and the guaranteed fallback for
  *  anything that predates per-session workspaces. */
 export const LAUNCH_WORKSPACE = resolve(process.env.CHUNKY_WORKSPACE || process.cwd())
+
+/** Resolve a persisted session workspace into the directory used at runtime.
+ * Repository-less sessions deliberately persist `workspace = null` for their
+ * identity, but their tools still need a real cwd. */
+export function runtimeWorkspace(
+  workspace: string | null | undefined,
+  repositoryScope: "repository" | "none",
+): string {
+  return repositoryScope === "none" ? homedir() : resolve(workspace ?? LAUNCH_WORKSPACE)
+}
 
 /**
  * The workspace for the run a tool is executing inside. Tools receive the

@@ -17,7 +17,7 @@ import { AuthStore } from "./providers/auth-store.ts"
 import type { AgentSelection } from "./providers/registry.ts"
 import { join } from "node:path"
 import { mkdtempSync, writeFileSync } from "node:fs"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { toolResult } from "./tools/result.ts"
 
 const selection: AgentSelection = Object.freeze({
@@ -70,6 +70,18 @@ async function main() {
   assert(fresh.env?.ANTHROPIC_PROFILE === undefined, "alternate Anthropic auth profiles must be removed")
   assert(fresh.env?.CLAUDE_CODE_USE_GATEWAY === undefined, "enterprise gateway auth must be removed")
   assert(fresh.mcpServers?.chunky?.type === "sdk", "Chunky tools must be an in-process SDK MCP server")
+  const repositoryLess = await buildAnthropicOptions(
+    { selection, threadId: "22222222-2222-4222-8222-222222222222", emit, repositoryLess: true },
+    {
+      query: fakeQuery,
+      getSessionInfo: (async () => undefined) as AnthropicRunnerDependencies["getSessionInfo"],
+    },
+  )
+  const repositoryLessTools = Object.keys((repositoryLess.mcpServers?.chunky as any).instance._registeredTools)
+  assert(repositoryLess.cwd === homedir(), "repository-less SDK runs must use the user's home directory")
+  assert(repositoryLessTools.includes("bash") && repositoryLessTools.includes("read") && repositoryLessTools.includes("write") && repositoryLessTools.includes("edit"), "repository-less SDK runs must retain filesystem tools")
+  assert(repositoryLess.allowedTools?.includes("mcp__chunky__*"), "repository-less SDK runs must allow the full Chunky MCP tool set")
+  assert(typeof repositoryLess.systemPrompt === "string" && repositoryLess.systemPrompt.includes("No repository is pinned") && repositoryLess.systemPrompt.includes("clone, fetch, or inspect anything"), "repository-less SDK runs must receive permissive home-directory guidance")
   AuthStore.remove("mcp-gmail")
   const unauthorized = await externalMcpConfig()
   assert(Object.keys(unauthorized.servers).length === 0 && unauthorized.allowedTools.length === 0, "unauthorized MCP servers must be absent")

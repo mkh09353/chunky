@@ -17,7 +17,7 @@ import { Store } from "./store.ts"
 import type { AgentSelection } from "./providers/registry.ts"
 import type { DetachedWakeProvenance } from "./background-dispatch.ts"
 import { databaseErrorMessage, isSqliteBusy } from "./sqlite.ts"
-import { LAUNCH_WORKSPACE } from "./workspace.ts"
+import { runtimeWorkspace } from "./workspace.ts"
 import { classifyGoalError, decideGoalStep, firstLine, goalContinuationPrompt, toSnapshot, type GoalStep } from "./goal.ts"
 import { distilledAgentsMd } from "./agents-md.ts"
 import { readRepoMemory } from "./memory.ts"
@@ -416,10 +416,7 @@ export async function runAgent(
   // sessions in different repos run concurrently without interfering.
   const repoLess = Store.repositoryScopeOf(sessionId) === "none"
   const workspace = Store.workspaceOf(sessionId)
-  // LangChain requires a string context even when no filesystem tools are bound.
-  // This neutral value is never passed to a repository tool because repo-less
-  // construction excludes those tools by name.
-  const resolvedWorkspace = repoLess ? "/" : (workspace ?? LAUNCH_WORKSPACE)
+  const resolvedWorkspace = runtimeWorkspace(workspace, repoLess ? "none" : "repository")
   const agentsMd = repoLess ? null : await distilledAgentsMd(resolvedWorkspace, selection, sessionId)
   const repoMemory = repoLess ? null : readRepoMemory(resolvedWorkspace, sessionId)
 

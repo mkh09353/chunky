@@ -6,7 +6,7 @@ import { detachThreadForSteer } from "./thread-context.ts"
 import { steerAtBoundary } from "./steer.ts"
 import { readFileSync, rmSync } from "node:fs"
 import { join } from "node:path"
-import { tmpdir } from "node:os"
+import { homedir, tmpdir } from "node:os"
 import { AsyncLocalStorageProviderSingleton } from "@langchain/core/singletons"
 import {
   DEFAULT_PORT,
@@ -2020,8 +2020,7 @@ const server = Bun.serve(withCors({
         if (!text && !(images && images.length)) return json({ error: "missing text or image" }, 400)
         const visibleText = text
         if (skill) {
-          if (Store.repositoryScopeOf(sessionId) === "none") return json({ error: "a repository is required to load a skill" }, 400)
-          const loaded = loadSkill(Store.workspaceOf(sessionId) ?? process.cwd(), skill, sessionId, true)
+          const loaded = loadSkill(Store.workspaceOf(sessionId) ?? homedir(), skill, sessionId, true)
           if ("error" in loaded) return json({ error: `skill selection failed: ${loaded.error}` }, 400)
           text = `<skill-context name="${loaded.name}">\n${loaded.body}\n</skill-context>\n\n${text}`
         }

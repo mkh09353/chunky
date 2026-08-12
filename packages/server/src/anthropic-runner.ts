@@ -16,7 +16,7 @@ import { z } from "zod"
 import type { MessageEndReason, UsageDelta } from "@chunky/protocol"
 import { Store } from "./store.ts"
 import { taggedEmitter, type Emit } from "./event-emitter.ts"
-import { buildSystemPrompt } from "./prompt.ts"
+import { buildRepoLessSystemPrompt, buildSystemPrompt } from "./prompt.ts"
 import { appBrowserTier } from "./app-browser.ts"
 import { hasAppZoo } from "./app-zoo.ts"
 import { effectiveSidekickConfig, effectiveSidekickSeats, listSidekickSeats, resolveReviewSelection, sidekickFor, type AgentSelection } from "./providers/registry.ts"
@@ -25,7 +25,7 @@ import { promptTokensOf, usageForAnthropicCache, usageFromAnthropicAssistant, us
 import { cacheModelKey, noteRequest } from "./cache-watch.ts"
 import type { CacheContext, InputImage } from "./run.ts"
 import { loadAttachmentBase64 } from "./attachments.ts"
-import { LAUNCH_WORKSPACE } from "./workspace.ts"
+import { runtimeWorkspace } from "./workspace.ts"
 import { assertSelectionAllowed } from "./incognito.ts"
 import { reportStaleRuntime } from "./staleRuntime.ts"
 import { bash, bashInputShape } from "./tools/bash.ts"
@@ -231,7 +231,6 @@ export function createChunkySdkMcpServer(
     (args) => zooTool.invoke(args, runConfig),
     emit,
   ))
-  const exposedTools = repositoryLess ? [request_api_key] : undefined
   return createSdkMcpServer({
     name: SERVER_NAME,
     version: "0.0.0",
@@ -398,7 +397,7 @@ export function createChunkySdkMcpServer(
         (args) => shipGoal.invoke(args, runConfig),
         emit,
       ),
-    ] as any).filter((tool: any) => !repositoryLess || exposedTools?.some((allowed) => allowed.name === tool.name)),
+    ] as any),
   })
 }
 
@@ -421,7 +420,7 @@ export interface AnthropicRunRequest {
   abort?: AbortController
   /** The session's workspace (cwd + tool jail). */
   workspace?: string
-  /** Explicit no-repository execution; only conversational tooling is exposed. */
+  /** Explicit no-repository execution; cwd defaults to home while all tools remain available. */
   repositoryLess?: boolean
   agentsMd?: string | null
   /** Called once the SDK query has been constructed and provider submission has begun. */
@@ -453,7 +452,7 @@ export async function buildAnthropicOptions(
 ): Promise<AnthropicOptions> {
   const { selection, threadId, emit, eventThreadId, freshSession } = request
   const repositoryLess = request.repositoryLess === true
-  const workspace = repositoryLess ? "/" : (request.workspace ?? LAUNCH_WORKSPACE)
+  const workspace = runtimeWorkspace(request.workspace, repositoryLess ? "none" : "repository")
   const sessionId = sdkSessionId(threadId)
   const shouldResume =
     !freshSession &&
@@ -467,9 +466,7 @@ export async function buildAnthropicOptions(
     effort: selection.effort,
     systemPrompt:
       request.systemPrompt ??
-      (repositoryLess
-        ? "You are a conversational assistant. This session has no repository or working directory. Do not attempt repository, filesystem, shell, git, delegation, cross-session, or repository-specific skill operations."
-        : buildSystemPrompt("edit", false, workspace, {
+      (repositoryLess ? buildRepoLessSystemPrompt : buildSystemPrompt)("edit", false, workspace, {
         fileToolProfile: resolveFileToolProfile(),
         hasSidekick: sidekickFor(selection, request.usageContext?.sessionId) != null,
         hasReview: resolveReviewSelection(request.usageContext?.sessionId) != null,
@@ -480,13 +477,13 @@ export async function buildAnthropicOptions(
         sidekickSeatConfigs: effectiveSidekickSeats(request.usageContext?.sessionId),
         agentsMd: request.agentsMd,
         repoMemory: readRepoMemory(workspace, threadId),
-      })),
+      }),
     ...ANTHROPIC_SDK_ISOLATION_OPTIONS,
     mcpServers: {
       [SERVER_NAME]: createChunkySdkMcpServer(threadId, emit, eventThreadId, workspace, repositoryLess),
-      ...(repositoryLess ? {} : external.servers),
+      ...external.servers,
     },
-    allowedTools: request.allowedTools ?? (repositoryLess ? [`mcp__${SERVER_NAME}__request_api_key`] : [...ALLOWED_TOOLS, ...external.allowedTools]),
+    allowedTools: request.allowedTools ?? [...ALLOWED_TOOLS, ...external.allowedTools],
     includePartialMessages: true,
     persistSession: true,
     ...(shouldResume ? { resume: sessionId } : { sessionId }),

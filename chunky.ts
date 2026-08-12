@@ -24,6 +24,7 @@ import {
   type LauncherServerIdentity,
 } from "./packages/server/src/launcher-discovery.ts"
 import { getServerToken } from "./packages/server/src/settings.ts"
+import { runPapercutsCli } from "./packages/server/src/papercuts-cli.ts"
 
 const APP = dirname(fileURLToPath(import.meta.url))
 const PACKAGE = JSON.parse(readFileSync(join(APP, "package.json"), "utf8")) as { version: string }
@@ -44,6 +45,11 @@ if (process.argv[2] === "update") {
       console.log(`Updated to v${release.version}. Restart chunky to finish updating.`)
     }
   } catch (err) { console.error(`Update failed: ${(err as Error).message}`); process.exitCode = 1 }
+  process.exit()
+}
+if (process.argv[2] === "papercuts") {
+  try { console.log(await runPapercutsCli(process.argv.slice(3))) }
+  catch (err) { console.error(`Papercuts failed: ${(err as Error).message}`); process.exitCode = 1 }
   process.exit()
 }
 

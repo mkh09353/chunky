@@ -75,6 +75,7 @@ import { hasAppZoo, onAppZooChange } from "./app-zoo.ts"
 import { zooTools } from "./tools/zoo.ts"
 import { rateDelegate } from "./tools/rate-delegate.ts"
 import { remember } from "./tools/remember.ts"
+import { papercut } from "./tools/papercut.ts"
 import { review } from "./tools/review.ts"
 import { CODEX_API_ENDPOINT, codexRequestHeaders } from "./providers/codex.ts"
 
@@ -327,6 +328,7 @@ export function executorToolsFor(selection: AgentSelection, sessionId?: string) 
     find_references,
     write,
     remember,
+    papercut,
     ...(sidekickSel ? [sidekick] : []),
     spawnThread,
     rateDelegate,

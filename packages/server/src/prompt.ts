@@ -215,6 +215,7 @@ Guidelines:
 ${editGuideline}
 - Use write only for new files or full rewrites.
 - Use remember to append a lesson when you hit a real, repeatable failure (wrong command, environment quirk, workflow rule) — not routine notes. Keep it to a sentence or two.
+- papercut: if a tool, doc, or workflow wasted your time, file a one-line papercut before moving on — it's a complaint box, not a fix request.
 - PARALLELIZE tool calls aggressively: independent calls emitted in one response run CONCURRENTLY, so default to issuing 2–4 at once — several reads, a read + ffgrep + fffind, a build + a test run, git status + git diff. Serializing independent calls wastes the user's time; only put a call in a later response when it genuinely depends on an earlier result. Don't batch multiple writes to the same file.
 ${multiAgentGuideline}${advisorGuideline}${reviewGuideline}
 ${skillsGuideline}

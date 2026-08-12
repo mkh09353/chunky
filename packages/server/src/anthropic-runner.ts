@@ -69,6 +69,7 @@ import { hashlineEditInputShape } from "./tools/hashline/types.ts"
 import { resolveFileToolProfile, loadSettings, type FileToolProfile } from "./settings.ts"
 import { readRepoMemory } from "./memory.ts"
 import { remember, rememberInputShape } from "./tools/remember.ts"
+import { papercut, papercutInputShape } from "./tools/papercut.ts"
 import { review, reviewInputShape } from "./tools/review.ts"
 import { browserTools, open_app_browser } from "./tools/browser.ts"
 import { zooTools } from "./tools/zoo.ts"
@@ -101,6 +102,7 @@ const CHUNKY_TOOLS = [
   goalBlockedTool,
   shipGoal,
   remember,
+  papercut,
   review,
   ...browserTools,
   open_app_browser,
@@ -280,6 +282,7 @@ export function createChunkySdkMcpServer(
         emit,
       ),
       wrapChunkyTool(remember.name, remember.description, rememberInputShape, (args) => remember.invoke(args, runConfig), emit),
+      wrapChunkyTool(papercut.name, papercut.description, papercutInputShape, (args) => papercut.invoke(args, runConfig), emit),
       ...wrappedRequestApiKey,
       ...wrappedAppBrowserTools,
       ...wrappedZooTools,

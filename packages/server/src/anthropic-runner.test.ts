@@ -84,6 +84,9 @@ async function main() {
   assertOAuthOnlyInit(initMessage)
   AuthStore.remove("mcp-gmail")
   const registeredTools = Object.keys((fresh.mcpServers?.chunky as any).instance._registeredTools).sort()
+  const sidekickSchema = (fresh.mcpServers?.chunky as any).instance._registeredTools.sidekick.inputSchema
+  assert(sidekickSchema.safeParse({ task: "frontend brief", seat: "frontend", detach: true }).success, "Anthropic sidekick MCP schema must accept detach=true")
+  assert(!sidekickSchema.safeParse({ task: "frontend brief", detach: "yes" }).success, "Anthropic sidekick MCP schema must reject non-boolean detach")
   assert(
     JSON.stringify(registeredTools) === JSON.stringify([
       "bash", "create_goal", "edit", "fffind", "ffgrep", "get_goal", "get_task_output", "goal_blocked",

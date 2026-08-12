@@ -79,6 +79,9 @@ const sidekickHandoffsBySession = new Map<string, number>()
 const activeSidekicks = new Map<string, Map<string, { seat: string; brief: string }>>()
 const runningChildrenBySession = new Map<string, Map<string, { threadId: string; title: string }>>()
 const sidekickSeatTails = new Map<string, Promise<void>>()
+/** Seats with a detached sidekick brief still in flight. Keyed by root session
+ * because detached work can outlive the originating ThreadManager registration. */
+const detachedSidekickSeats = new Map<string, Set<string>>()
 
 /** How many briefs the sidekick has been handed in this session so far. */
 export function sidekickHandoffCount(sessionId: string): number {
@@ -177,8 +180,19 @@ export class ThreadManager implements ThreadSpawner {
   async runSteerDetachable(
     kind: "sidekick" | "spawn_thread" | "workflow",
     title: string,
-    work: Promise<string>,
+    workOrStart: Promise<string> | (() => Promise<string>),
+    options: { detach?: boolean; seat?: string } = {},
   ): Promise<string> {
+    const seat = options.seat?.trim() || "default"
+    if (kind === "sidekick" && detachedSidekickSeats.get(this.rootId)?.has(seat)) {
+      return `error: seat "${seat}" has a detached brief in flight — wait for its report or route to another seat`
+    }
+
+    // A thunk lets explicit sidekick detach claim its seat before starting work,
+    // so a same-turn duplicate cannot slip into the persistent seat queue.
+    if (options.detach) return this.detachDelegate(kind, title, workOrStart, "requested", seat)
+    const work = typeof workOrStart === "function" ? workOrStart() : workOrStart
+
     let detach!: () => void
     const detached = new Promise<void>((resolve) => { detach = resolve })
     this.steerDetach.add(detach)
@@ -189,19 +203,57 @@ export class ThreadManager implements ThreadSpawner {
     this.steerDetach.delete(detach)
     if (!winner.detached) return winner.report
 
+    return this.detachDelegate(kind, title, work, "steer", seat)
+  }
+
+  /** Shared detached-spawn lifecycle and report routing for explicit detach and
+   * STEER detach. */
+  private detachDelegate(
+    kind: "sidekick" | "spawn_thread" | "workflow",
+    title: string,
+    workOrStart: Promise<string> | (() => Promise<string>),
+    reason: "requested" | "steer",
+    seat: string,
+  ): string {
+    if (kind === "sidekick") {
+      let seats = detachedSidekickSeats.get(this.rootId)
+      if (!seats) { seats = new Set(); detachedSidekickSeats.set(this.rootId, seats) }
+      seats.add(seat)
+    }
+    const clearSeatGuard = () => {
+      if (kind !== "sidekick") return
+      const seats = detachedSidekickSeats.get(this.rootId)
+      seats?.delete(seat)
+      if (seats?.size === 0) detachedSidekickSeats.delete(this.rootId)
+    }
     const record = createDetachedSpawn(this.rootId, `${this.rootId}:${kind}:${randomUUID()}`, title, true)!
+    const reasonText = reason === "steer" ? "detached by steer" : "detached"
+    let work: Promise<string>
+    try {
+      work = typeof workOrStart === "function" ? workOrStart() : workOrStart
+    } catch (err) {
+      work = Promise.reject(err)
+    }
     void work.then((report) => {
       finishDetachedSpawn(record, report)
-      const reminder = `${title} detached by steer (${record.id}) finished. Report:\n${record.result}`
-      const wakePrompt = `${reminder}\n\nAssess this detached delegate report and act on any valid findings before finalizing.`
-      if (routeBackgroundNotice(this.rootId, wakePrompt, `${title} detached by steer finished.`, kind) === "reminder") appendReminder(this.rootId, reminder)
+      try {
+        const reminder = `${title} ${reasonText} (${record.id}) finished. Report:\n${record.result}`
+        const wakePrompt = `${reminder}\n\nAssess this detached delegate report and act on any valid findings before finalizing.`
+        if (routeBackgroundNotice(this.rootId, wakePrompt, `${title} ${reasonText} finished.`, kind) === "reminder") appendReminder(this.rootId, reminder)
+      } finally {
+        clearSeatGuard()
+      }
     }, (err) => {
       const report = `error: ${(err as Error)?.message ?? String(err)}`
       finishDetachedSpawn(record, report)
-      const reminder = `${title} detached by steer (${record.id}) failed. Report:\n${record.result}`
-      if (routeBackgroundNotice(this.rootId, reminder, `${title} detached by steer failed.`, kind) === "reminder") appendReminder(this.rootId, reminder)
+      try {
+        const reminder = `${title} ${reasonText} (${record.id}) failed. Report:\n${record.result}`
+        if (routeBackgroundNotice(this.rootId, reminder, `${title} ${reasonText} failed.`, kind) === "reminder") appendReminder(this.rootId, reminder)
+      } finally {
+        clearSeatGuard()
+      }
     })
-    return `${title} detached by steer; the worker continues and its report will arrive as a wake/reminder. Run id: ${record.id}.`
+    return `${title} ${reasonText}; the worker continues and its report will arrive as a wake/reminder. Run id: ${record.id}.`
   }
 
   /**

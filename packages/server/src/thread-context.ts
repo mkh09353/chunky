@@ -21,9 +21,14 @@ export interface ThreadSpawner {
   readonly sessionId: string
 
   /** Resolve an awaited delegate tool call immediately while allowing its worker
-   * to continue in the background. Used only by STEER; hard aborts still flow
-   * through the run controller. */
-  runSteerDetachable?(kind: "sidekick" | "spawn_thread" | "workflow", title: string, work: Promise<string>): Promise<string>
+   * to continue in the background, either on request or on STEER. Hard aborts
+   * still flow through the run controller. */
+  runSteerDetachable?(
+    kind: "sidekick" | "spawn_thread" | "workflow",
+    title: string,
+    work: Promise<string> | (() => Promise<string>),
+    options?: { detach?: boolean; seat?: string },
+  ): Promise<string>
   detachForSteer?(): boolean
 
   /**

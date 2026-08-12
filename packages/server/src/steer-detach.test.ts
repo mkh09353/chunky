@@ -37,6 +37,97 @@ test("steer detaches an awaited delegate exactly once and routes its report thro
   manager.dispose()
 })
 
+test("explicit sidekick detach returns immediately, routes its report, and guards seats until settle", async () => {
+  const wakes: string[] = []
+  installBackgroundDispatcher({
+    isRunning: () => false,
+    wake: (_sessionId, prompt) => { wakes.push(prompt) },
+    changed: () => {},
+  })
+  let finishFrontend!: (text: string) => void
+  let frontendStarts = 0
+  const frontendWork = () => {
+    frontendStarts++
+    return new Promise<string>((resolve) => { finishFrontend = resolve })
+  }
+  let finishBackend!: (text: string) => void
+  const backendWork = () => new Promise<string>((resolve) => { finishBackend = resolve })
+  const manager = new ThreadManager((_: AgentEvent) => {}, "explicit-sidekick-detach", selection)
+
+  const first = await manager.runSteerDetachable("sidekick", "Sidekick (frontend)", frontendWork, { detach: true, seat: "frontend" })
+  expect(first).toMatch(/detached;.*Run id: [0-9a-f-]+/i)
+  expect(frontendStarts).toBe(1)
+  expect(runningDetachedSpawnSummaries("explicit-sidekick-detach")).toHaveLength(1)
+
+  const blocked = await manager.runSteerDetachable("sidekick", "Sidekick (frontend)", frontendWork, { detach: true, seat: "frontend" })
+  expect(blocked).toBe('error: seat "frontend" has a detached brief in flight — wait for its report or route to another seat')
+  expect(frontendStarts).toBe(1)
+
+  const other = await manager.runSteerDetachable("sidekick", "Sidekick (backend)", backendWork, { detach: true, seat: "backend" })
+  expect(other).toContain("detached;")
+  finishBackend("backend report")
+  finishFrontend("frontend report")
+  await Bun.sleep(0)
+  expect(wakes.some((wake) => wake.includes("frontend report"))).toBe(true)
+  expect(wakes.some((wake) => wake.includes("backend report"))).toBe(true)
+
+  let retryFinish!: (text: string) => void
+  const retry = await manager.runSteerDetachable(
+    "sidekick",
+    "Sidekick (frontend)",
+    () => new Promise<string>((resolve) => { retryFinish = resolve }),
+    { detach: true, seat: "frontend" },
+  )
+  expect(retry).toContain("detached;")
+  retryFinish("retry report")
+  await Bun.sleep(0)
+  manager.dispose()
+})
+
+test("detached sidekick default-seat guard clears after failure", async () => {
+  const manager = new ThreadManager((_: AgentEvent) => {}, "default-seat-detach", selection)
+  let fail!: (err: Error) => void
+  const first = await manager.runSteerDetachable(
+    "sidekick",
+    "Sidekick",
+    () => new Promise<string>((_resolve, reject) => { fail = reject }),
+    { detach: true },
+  )
+  expect(first).toContain("detached;")
+  expect(await manager.runSteerDetachable("sidekick", "Sidekick", () => Promise.resolve("unused"), { detach: true }))
+    .toContain('seat "default" has a detached brief in flight')
+  fail(new Error("worker failed"))
+  await Bun.sleep(0)
+  let finish!: (text: string) => void
+  const retry = await manager.runSteerDetachable(
+    "sidekick",
+    "Sidekick",
+    () => new Promise<string>((resolve) => { finish = resolve }),
+    { detach: true },
+  )
+  expect(retry).toContain("detached;")
+  finish("recovered")
+  await Bun.sleep(0)
+  manager.dispose()
+})
+
+test("omitting explicit detach still waits synchronously", async () => {
+  const manager = new ThreadManager((_: AgentEvent) => {}, "synchronous-sidekick", selection)
+  let finish!: (text: string) => void
+  let settled = false
+  const result = manager.runSteerDetachable(
+    "sidekick",
+    "Sidekick",
+    () => new Promise<string>((resolve) => { finish = resolve }),
+  ).then((text) => { settled = true; return text })
+  await Bun.sleep(0)
+  expect(settled).toBe(false)
+  finish("synchronous report")
+  expect(await result).toBe("synchronous report")
+  expect(runningDetachedSpawnSummaries("synchronous-sidekick")).toHaveLength(0)
+  manager.dispose()
+})
+
 test("steer without an awaited delegate buffers until a boundary without detaching or aborting", () => {
   const controller = new AbortController()
   const buffer = new InterjectionBuffer()

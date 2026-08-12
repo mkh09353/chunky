@@ -16,7 +16,7 @@ After it reports back, review with git diff/git show — do NOT pull its files i
 
 The rhythm on a typical task: recon handoff → review its report and write ONE spec-quality brief → it implements + tests → you review the diff and hand back feedback if needed → commit. The best runs are the ones where you never open a repo file yourself.
 
-NAMED SEATS: the user may configure domain seats (e.g. "backend", "frontend"), each a SEPARATE persistent worker on its own model — pass seat to route a brief to one; omit it for the default seat. Route by domain, and keep each domain's follow-ups on the same seat (that's where its context lives). Independent briefs to two different seats may be sent in the same turn to run concurrently. When you parallelize across seats, write the shared contract (endpoints, types, events) VERBATIM into both briefs — each seat sees only its own brief — then send one final integration brief to a single seat to marry the halves.
+NAMED SEATS: the user may configure domain seats (e.g. "backend", "frontend"), each a SEPARATE persistent worker on its own model — pass seat to route a brief to one; omit it for the default seat. Route by domain, and keep each domain's follow-ups on the same seat (that's where its context lives). Independent briefs to two different seats may be sent in the same turn to run concurrently. Set detach=true ONLY when sending 2+ independent briefs to DIFFERENT seats in the same turn; otherwise stay synchronous. A detached report arrives later as a wake/reminder. When you parallelize across seats, write the shared contract (endpoints, types, events) VERBATIM into both briefs — each seat sees only its own brief — then send one final integration brief to a single seat to marry the halves.
 
 Skip the sidekick when the task isn't separable: quick answers, single-line fixes, or serial debugging where your accumulated context IS the work.`
 
@@ -29,6 +29,13 @@ export const sidekickInputShape = {
       'Optional NAMED seat to hand this brief to (e.g. "backend", "frontend") when the user has configured domain ' +
         "seats — each seat is its own persistent worker. Omit for the default seat. An unknown name errors with the " +
         "configured list.",
+    ),
+  detach: z
+    .boolean()
+    .optional()
+    .describe(
+      "Run concurrently and return immediately with a run id; the report arrives later as a wake/reminder. " +
+        "Set true ONLY when sending 2+ independent briefs to DIFFERENT seats in the same turn; otherwise stay synchronous.",
     ),
   constraints: z
     .array(z.string())
@@ -50,6 +57,7 @@ export const sidekickInputShape = {
 export interface SidekickInput {
   task: string
   seat?: string
+  detach?: boolean
   constraints?: string[]
   done_when?: string
   pointers?: string
@@ -80,8 +88,8 @@ export const sidekick = tool(
       return "error: sidekick is only available inside an active session run."
     }
     const title = input.seat && input.seat !== "default" ? `Sidekick (${input.seat})` : "Sidekick"
-    const work = ctx.delegateToSidekick({ callerThreadId, brief: composeBrief(input), seat: input.seat })
-    const text = await (ctx.runSteerDetachable?.("sidekick", title, work) ?? work)
+    const startWork = () => ctx.delegateToSidekick({ callerThreadId, brief: composeBrief(input), seat: input.seat })
+    const text = await (ctx.runSteerDetachable?.("sidekick", title, startWork, { detach: input.detach, seat: input.seat }) ?? startWork())
     return text // ThreadManager appends the durable delegation marker.
   },
   {

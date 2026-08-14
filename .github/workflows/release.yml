@@ -3,7 +3,25 @@ on:
   push:
     tags: ["v*"]
 jobs:
+  gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+      - name: Install
+        run: bun install --frozen-lockfile
+      - name: Typecheck
+        run: bun run typecheck
+      - name: Test
+        # Full `bun test` is ~40s but currently flakes on TUI handover and
+        # mode-apply-selection event ordering. Gate releases on protocol plus
+        # a representative server set that includes the eval recorder.
+        run: bun test packages/protocol packages/server/src/eval-recorder.test.ts packages/server/src/settings.test.ts packages/server/src/store.test.ts packages/server/src/sidekick.test.ts packages/server/src/tools/rate-delegate.test.ts packages/server/src/shadow-git.test.ts packages/server/src/session-archive.test.ts packages/server/src/incognito-isolation.test.ts packages/server/src/cors.test.ts
+
   release:
+    needs: gate
     runs-on: ubuntu-latest
     permissions: { contents: write }
     steps:

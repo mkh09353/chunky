@@ -284,11 +284,88 @@ export interface SetCacheGuardRequest {
 
 /** GET/POST ROUTES.evals — sidekick eval recorder. Default mode is "record". */
 export type EvalsMode = "off" | "record"
+export type EvalPromoteBucket = "hard" | "regression" | "random"
+export interface EvalsStats {
+  candidates: number
+  promoted: number
+  /** Total size on disk of state/evals. */
+  bytes: number
+}
 export interface EvalsResponse {
   mode: EvalsMode
+  stats: EvalsStats
 }
 export interface SetEvalsRequest {
   mode: EvalsMode
+}
+export interface EvalBriefStruct {
+  task: string
+  constraints?: string[]
+  done_when?: string
+  pointers?: string
+  seat?: string
+}
+export interface EvalCandidateJson {
+  delegationId: string
+  sessionId: string
+  seat?: string
+  sidekickThreadId: string
+  provider: string
+  model: string
+  effort?: string
+  workspace: string
+  briefStruct?: EvalBriefStruct
+  briefComposed: string
+  snapshotRef: string
+  snapshot: string | null
+  startedAt: number
+  startSeq: number
+}
+export interface EvalReportJson {
+  ok: boolean
+  finalReport: string
+  completedAt: number
+  endSeq: number
+}
+export interface EvalRatingJson {
+  compliance: number
+  correctness: number
+  report: number
+  exceeded: number
+  rework: boolean
+  diagnosis?: string
+  reason: string
+  rating: number
+  judgeProvider: string
+  judgeModel: string
+  ts: number
+}
+export interface EvalCandidateSummary {
+  delegationId: string
+  sessionId: string
+  seat?: string
+  provider: string
+  model: string
+  /** briefStruct.task when present, otherwise the first 200 chars of briefComposed. */
+  task: string
+  startedAt: number
+  ok?: boolean
+  rating?: number
+  rework?: boolean
+  diagnosis?: string
+  promoted: boolean
+}
+export interface EvalCandidatesResponse {
+  candidates: EvalCandidateSummary[]
+}
+export interface EvalCandidateDetailResponse {
+  candidate: EvalCandidateJson
+  report?: EvalReportJson
+  rating?: EvalRatingJson
+  promoted: boolean
+}
+export interface PromoteEvalCandidateRequest {
+  bucket?: EvalPromoteBucket
 }
 /** One row in the resume picker: a persisted session the client can reattach to. */
 export interface SessionSummary {
@@ -675,6 +752,14 @@ export const ROUTES = {
   cacheGuard: `/api/cache-guard`,
   // GET -> EvalsResponse. POST SetEvalsRequest -> EvalsResponse.
   evals: `/api/evals`,
+  // GET -> EvalCandidatesResponse, newest-first.
+  evalsCandidates: `/api/evals/candidates`,
+  // GET -> EvalCandidateDetailResponse. DELETE prunes a non-promoted candidate.
+  evalsCandidate: (id: string) => `/api/evals/candidates/${encodeURIComponent(id)}`,
+  // GET -> gunzipped JSONL, text/plain.
+  evalsCandidateTranscript: (id: string) => `/api/evals/candidates/${encodeURIComponent(id)}/transcript`,
+  // POST PromoteEvalCandidateRequest -> EvalCandidateDetailResponse. 409 if already promoted.
+  evalsCandidatePromote: (id: string) => `/api/evals/candidates/${encodeURIComponent(id)}/promote`,
   // POST -> 202. Abort the session's in-flight turn (user interrupt / Esc).
   interrupt: (id: string) => `/api/sessions/${id}/interrupt`,
   // GET -> SSE stream of AgentEvent. Replays persisted history first, so opening

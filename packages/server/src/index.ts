@@ -50,6 +50,15 @@ import {
   type ProviderQuotasResponse,
   type EvalsResponse,
 } from "@chunky/protocol"
+import {
+  deleteEvalCandidate,
+  evalsResponse,
+  EvalRecorderError,
+  getEvalCandidateDetail,
+  listEvalCandidates,
+  promoteEvalCandidate,
+  readEvalTranscript,
+} from "./eval-recorder.ts"
 import { effectiveSessionSelection, runAgent, type InputImage, type InterjectionBoundary } from "./run.ts"
 import { createMessageCoalescer } from "./message-coalescer.ts"
 import { rehydrateSession, sweepArchives, sweepOrphanCheckpoints } from "./session-archive.ts"
@@ -1525,24 +1534,68 @@ const server = Bun.serve(withCors({
       }
     }
 
-    // GET/POST /api/evals -> { mode } — sidekick eval recorder. Default is "record".
+    // GET/POST /api/evals -> { mode, stats } — sidekick eval recorder. Default is "record".
     if (pathname === ROUTES.evals) {
       if (req.method === "GET") {
-        const body: EvalsResponse = { mode: getEvalsMode() }
-        return json(body)
+        const body: EvalsResponse = evalsResponse(getEvalsMode())
+        return json(body, 200, req)
       }
       if (req.method === "POST") {
         let body: { mode?: unknown }
         try {
           body = (await req.json()) as typeof body
         } catch {
-          return json({ error: "invalid JSON body" }, 400)
+          return json({ error: "invalid JSON body" }, 400, req)
         }
         if (body.mode !== "off" && body.mode !== "record") {
-          return json({ error: "mode must be off or record" }, 400)
+          return json({ error: "mode must be off or record" }, 400, req)
         }
-        const next: EvalsResponse = { mode: setEvalsMode(body.mode) }
-        return json(next)
+        const next: EvalsResponse = evalsResponse(setEvalsMode(body.mode))
+        return json(next, 200, req)
+      }
+    }
+
+    if (req.method === "GET" && pathname === ROUTES.evalsCandidates) {
+      return json({ candidates: listEvalCandidates() }, 200, req)
+    }
+
+    const evalCandidateMatch = pathname.match(/^\/api\/evals\/candidates\/([^/]+)(?:\/(transcript|promote))?$/)
+    if (evalCandidateMatch) {
+      const id = decodeURIComponent(evalCandidateMatch[1]!)
+      const action = evalCandidateMatch[2]
+      const evalError = (err: unknown): Response => {
+        if (err instanceof EvalRecorderError) return json({ error: err.message }, err.status, req)
+        throw err
+      }
+      try {
+        if (req.method === "GET" && action === "transcript") {
+          const transcript = readEvalTranscript(id)
+          return new Response(transcript, {
+            status: 200,
+            headers: { "Content-Type": "text/plain; charset=utf-8", ...corsHeaders(req) },
+          })
+        }
+        if (req.method === "POST" && action === "promote") {
+          let body: { bucket?: unknown } = {}
+          const raw = await req.text()
+          if (raw.trim()) {
+            try { body = JSON.parse(raw) as typeof body }
+            catch { return json({ error: "invalid JSON body" }, 400, req) }
+          }
+          if (body.bucket !== undefined && body.bucket !== "hard" && body.bucket !== "regression" && body.bucket !== "random") {
+            return json({ error: "bucket must be hard, regression, or random" }, 400, req)
+          }
+          return json(promoteEvalCandidate(id, body.bucket), 200, req)
+        }
+        if (req.method === "GET" && !action) {
+          return json(getEvalCandidateDetail(id), 200, req)
+        }
+        if (req.method === "DELETE" && !action) {
+          deleteEvalCandidate(id)
+          return json({ ok: true }, 200, req)
+        }
+      } catch (err) {
+        return evalError(err)
       }
     }
 

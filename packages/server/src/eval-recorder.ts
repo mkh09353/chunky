@@ -2,73 +2,51 @@
 // Failures are swallowed — recording must never affect a delegation.
 import {
   closeSync,
+  cpSync,
   createWriteStream,
   existsSync,
   fsyncSync,
   mkdirSync,
   openSync,
+  readdirSync,
   readFileSync,
   renameSync,
+  rmSync,
+  statSync,
   unlinkSync,
   writeFileSync,
 } from "node:fs"
 import { dirname, join } from "node:path"
-import { createGzip } from "node:zlib"
+import { createGzip, gunzipSync } from "node:zlib"
 import { once } from "node:events"
 import { randomBytes } from "node:crypto"
-import type { AgentEvent } from "@chunky/protocol"
+import type {
+  AgentEvent,
+  EvalBriefStruct,
+  EvalCandidateDetailResponse,
+  EvalCandidateJson,
+  EvalCandidateSummary,
+  EvalPromoteBucket,
+  EvalRatingJson,
+  EvalReportJson,
+  EvalsResponse,
+  EvalsStats,
+} from "@chunky/protocol"
 import { isIncognitoSession } from "./incognito.ts"
 import { stateDir } from "./repos.ts"
 import { snapshotWorkspaceAsync } from "./shadow-git.ts"
 import { getEvalsMode } from "./settings.ts"
 import { Store } from "./store.ts"
 
-export type EvalsMode = "off" | "record"
+export type { EvalBriefStruct, EvalCandidateJson, EvalRatingJson, EvalReportJson }
 
-export interface EvalBriefStruct {
-  task: string
-  constraints?: string[]
-  done_when?: string
-  pointers?: string
-  seat?: string
-}
-
-export interface EvalCandidateJson {
-  delegationId: string
-  sessionId: string
-  seat?: string
-  sidekickThreadId: string
-  provider: string
-  model: string
-  effort?: string
-  workspace: string
-  briefStruct?: EvalBriefStruct
-  briefComposed: string
-  snapshotRef: string
-  snapshot: string | null
-  startedAt: number
-  startSeq: number
-}
-
-export interface EvalReportJson {
-  ok: boolean
-  finalReport: string
-  completedAt: number
-  endSeq: number
-}
-
-export interface EvalRatingJson {
-  compliance: number
-  correctness: number
-  report: number
-  exceeded: number
-  rework: boolean
-  diagnosis?: string
-  reason: string
-  rating: number
-  judgeProvider: string
-  judgeModel: string
-  ts: number
+export class EvalRecorderError extends Error {
+  readonly status: 404 | 409
+  constructor(status: 404 | 409, message: string) {
+    super(message)
+    this.name = "EvalRecorderError"
+    this.status = status
+  }
 }
 
 export function evalCandidateDir(delegationId: string): string {
@@ -225,4 +203,164 @@ export function recordSidekickRating(delegationId: string, rating: EvalRatingJso
     if (!existsSync(join(dir, "candidate.json"))) return
     writeOnceJson(join(dir, "rating.json"), rating)
   })
+}
+
+export function evalsRoot(): string {
+  return join(stateDir(), "evals")
+}
+
+export function evalSuiteDir(delegationId: string): string {
+  return join(evalsRoot(), "suite", delegationId)
+}
+
+function assertSafeEvalId(id: string): string {
+  if (!id || id.includes("/") || id.includes("\\") || id.includes("..") || id.includes("\0")) {
+    throw new EvalRecorderError(404, "unknown candidate")
+  }
+  return id
+}
+
+function readJsonIfPresent<T>(path: string): T | undefined {
+  if (!existsSync(path)) return undefined
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as T
+  } catch {
+    return undefined
+  }
+}
+
+export function isEvalCandidatePromoted(delegationId: string): boolean {
+  return existsSync(evalSuiteDir(delegationId))
+}
+
+function summarizeCandidate(dir: string, id: string): EvalCandidateSummary | null {
+  const candidate = readJsonIfPresent<EvalCandidateJson>(join(dir, "candidate.json"))
+  if (!candidate || typeof candidate.delegationId !== "string" || typeof candidate.sessionId !== "string") {
+    return null
+  }
+  if (typeof candidate.provider !== "string" || typeof candidate.model !== "string") return null
+  if (typeof candidate.startedAt !== "number") return null
+  const report = readJsonIfPresent<EvalReportJson>(join(dir, "report.json"))
+  const rating = readJsonIfPresent<EvalRatingJson>(join(dir, "rating.json"))
+  const task = candidate.briefStruct?.task
+    ?? (typeof candidate.briefComposed === "string" ? candidate.briefComposed.slice(0, 200) : "")
+  return {
+    delegationId: candidate.delegationId,
+    sessionId: candidate.sessionId,
+    ...(candidate.seat ? { seat: candidate.seat } : {}),
+    provider: candidate.provider,
+    model: candidate.model,
+    task,
+    startedAt: candidate.startedAt,
+    ...(report && typeof report.ok === "boolean" ? { ok: report.ok } : {}),
+    ...(rating && typeof rating.rating === "number" ? { rating: rating.rating } : {}),
+    ...(rating && typeof rating.rework === "boolean" ? { rework: rating.rework } : {}),
+    ...(rating?.diagnosis ? { diagnosis: rating.diagnosis } : {}),
+    promoted: isEvalCandidatePromoted(id),
+  }
+}
+
+function directorySize(path: string): number {
+  let total = 0
+  let entries
+  try { entries = readdirSync(path, { withFileTypes: true }) } catch { return 0 }
+  for (const entry of entries) {
+    const full = join(path, entry.name)
+    try {
+      if (entry.isDirectory()) total += directorySize(full)
+      else total += statSync(full).size
+    } catch { /* skip unreadable entries */ }
+  }
+  return total
+}
+
+export function evalsStats(): EvalsStats {
+  const root = evalsRoot()
+  const candidatesRoot = join(root, "candidates")
+  const suiteRoot = join(root, "suite")
+  let candidates = 0
+  try {
+    for (const entry of readdirSync(candidatesRoot, { withFileTypes: true })) {
+      if (entry.isDirectory() && existsSync(join(candidatesRoot, entry.name, "candidate.json"))) candidates++
+    }
+  } catch { /* no candidates yet */ }
+  let promoted = 0
+  try {
+    for (const entry of readdirSync(suiteRoot, { withFileTypes: true })) {
+      if (entry.isDirectory()) promoted++
+    }
+  } catch { /* no suite yet */ }
+  return { candidates, promoted, bytes: directorySize(root) }
+}
+
+export function evalsResponse(mode: EvalsResponse["mode"]): EvalsResponse {
+  return { mode, stats: evalsStats() }
+}
+
+export function listEvalCandidates(): EvalCandidateSummary[] {
+  const root = join(evalsRoot(), "candidates")
+  let entries
+  try { entries = readdirSync(root, { withFileTypes: true }) } catch { return [] }
+  const rows: EvalCandidateSummary[] = []
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue
+    const row = summarizeCandidate(join(root, entry.name), entry.name)
+    if (row) rows.push(row)
+  }
+  rows.sort((a, b) => b.startedAt - a.startedAt || b.delegationId.localeCompare(a.delegationId))
+  return rows
+}
+
+export function getEvalCandidateDetail(id: string): EvalCandidateDetailResponse {
+  const safe = assertSafeEvalId(id)
+  const dir = evalCandidateDir(safe)
+  const candidate = readJsonIfPresent<EvalCandidateJson>(join(dir, "candidate.json"))
+  if (!candidate) throw new EvalRecorderError(404, "unknown candidate")
+  const report = readJsonIfPresent<EvalReportJson>(join(dir, "report.json"))
+  const rating = readJsonIfPresent<EvalRatingJson>(join(dir, "rating.json"))
+  return {
+    candidate,
+    ...(report ? { report } : {}),
+    ...(rating ? { rating } : {}),
+    promoted: isEvalCandidatePromoted(safe),
+  }
+}
+
+export function readEvalTranscript(id: string): string {
+  const safe = assertSafeEvalId(id)
+  const path = join(evalCandidateDir(safe), "transcript.jsonl.gz")
+  if (!existsSync(path)) throw new EvalRecorderError(404, "transcript not found")
+  return gunzipSync(readFileSync(path)).toString("utf8")
+}
+
+export function promoteEvalCandidate(id: string, bucket?: EvalPromoteBucket): EvalCandidateDetailResponse {
+  const safe = assertSafeEvalId(id)
+  const src = evalCandidateDir(safe)
+  if (!existsSync(join(src, "candidate.json"))) throw new EvalRecorderError(404, "unknown candidate")
+  const dest = evalSuiteDir(safe)
+  if (existsSync(dest)) throw new EvalRecorderError(409, "already promoted")
+  mkdirSync(dirname(dest), { recursive: true })
+  const temporary = `${dest}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`
+  try {
+    cpSync(src, temporary, { recursive: true })
+    const promoted = {
+      ...(bucket ? { bucket } : {}),
+      promotedAt: Date.now(),
+    }
+    writeFileSync(join(temporary, "promoted.json"), JSON.stringify(promoted, null, 2), { mode: 0o600 })
+    renameSync(temporary, dest)
+  } catch (err) {
+    try { rmSync(temporary, { recursive: true, force: true }) } catch { /* leftover tmp */ }
+    if (existsSync(dest)) throw new EvalRecorderError(409, "already promoted")
+    throw err
+  }
+  return getEvalCandidateDetail(safe)
+}
+
+export function deleteEvalCandidate(id: string): void {
+  const safe = assertSafeEvalId(id)
+  const dir = evalCandidateDir(safe)
+  if (!existsSync(dir)) throw new EvalRecorderError(404, "unknown candidate")
+  if (isEvalCandidatePromoted(safe)) throw new EvalRecorderError(409, "promoted")
+  rmSync(dir, { recursive: true, force: true })
 }

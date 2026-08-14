@@ -2,6 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
+import { gzipSync } from "node:zlib"
 import { createIsolatedTestState } from "./test-state.ts"
 
 const PREFIX = "chunky-eval-recorder-"
@@ -17,6 +18,14 @@ const {
   recordSidekickComplete,
   recordSidekickRating,
   evalCandidateDir,
+  evalSuiteDir,
+  evalsResponse,
+  listEvalCandidates,
+  getEvalCandidateDetail,
+  readEvalTranscript,
+  promoteEvalCandidate,
+  deleteEvalCandidate,
+  EvalRecorderError,
 } = await import("./eval-recorder.ts")
 const { computeRating } = await import("./tools/rate-delegate.ts")
 const { stateDir } = await import("./repos.ts")
@@ -198,5 +207,191 @@ describe("eval recorder", () => {
       })
     }).not.toThrow()
     rmSync(blocker, { force: true })
+  })
+
+  test("list/detail skip malformed dirs and sort newest-first", () => {
+    setEvalsMode("record")
+    const sessionId = `eval-list-${crypto.randomUUID()}`
+    Store.createSession(sessionId, "Eval list", workspace)
+    const older = crypto.randomUUID()
+    const newer = crypto.randomUUID()
+    recordSidekickStart({
+      delegationId: older,
+      sessionId,
+      seat: "backend",
+      sidekickThreadId: `${sessionId}:sidekick:backend`,
+      provider: "codex",
+      model: "gpt-5.5",
+      workspace,
+      briefStruct: { task: "older task" },
+      briefComposed: "older task",
+    })
+    recordSidekickStart({
+      delegationId: newer,
+      sessionId,
+      sidekickThreadId: `${sessionId}:sidekick`,
+      provider: "zen",
+      model: "glm-5.2",
+      workspace,
+      briefComposed: "x".repeat(250),
+    })
+    const olderPath = join(evalCandidateDir(older), "candidate.json")
+    const olderJson = JSON.parse(readFileSync(olderPath, "utf8"))
+    olderJson.startedAt = 1_000
+    writeFileSync(olderPath, JSON.stringify(olderJson, null, 2))
+    const newerPath = join(evalCandidateDir(newer), "candidate.json")
+    const newerJson = JSON.parse(readFileSync(newerPath, "utf8"))
+    newerJson.startedAt = 2_000
+    writeFileSync(newerPath, JSON.stringify(newerJson, null, 2))
+
+    const junk = join(stateDir(), "evals", "candidates", `junk-${crypto.randomUUID()}`)
+    mkdirSync(junk, { recursive: true })
+    writeFileSync(join(junk, "candidate.json"), "{not-json")
+
+    recordSidekickComplete({
+      delegationId: older,
+      sessionId,
+      sidekickThreadId: `${sessionId}:sidekick:backend`,
+      ok: true,
+      finalReport: "done",
+    })
+
+    const listed = listEvalCandidates()
+    const ours = listed.filter((row) => row.delegationId === older || row.delegationId === newer)
+    expect(ours.map((row) => row.delegationId)).toEqual([newer, older])
+    expect(listed.some((row) => row.delegationId.startsWith("junk-"))).toBe(false)
+    expect(ours[0]!.task).toBe("x".repeat(200))
+    expect(ours[1]!.task).toBe("older task")
+    expect(ours[1]!.ok).toBe(true)
+    expect(ours[1]!.seat).toBe("backend")
+    expect(ours[0]!.ok).toBeUndefined()
+
+    const detail = getEvalCandidateDetail(older)
+    expect(detail.candidate.delegationId).toBe(older)
+    expect(detail.report?.ok).toBe(true)
+    expect(detail.promoted).toBe(false)
+
+    expect(() => getEvalCandidateDetail("missing-id")).toThrow(EvalRecorderError)
+    try { getEvalCandidateDetail("missing-id") } catch (err) {
+      expect((err as InstanceType<typeof EvalRecorderError>).status).toBe(404)
+    }
+  })
+
+  test("promote copies into suite without mutating the candidate, delete is gated", () => {
+    setEvalsMode("record")
+    const sessionId = `eval-promote-${crypto.randomUUID()}`
+    const delegationId = crypto.randomUUID()
+    Store.createSession(sessionId, "Eval promote", workspace)
+    recordSidekickStart({
+      delegationId,
+      sessionId,
+      sidekickThreadId: `${sessionId}:sidekick`,
+      provider: "codex",
+      model: "gpt-5.5",
+      workspace,
+      briefStruct: { task: "promote me" },
+      briefComposed: "promote me",
+    })
+    recordSidekickComplete({
+      delegationId,
+      sessionId,
+      sidekickThreadId: `${sessionId}:sidekick`,
+      ok: false,
+      finalReport: "failed",
+    })
+    const rating = computeRating({ compliance: 1, correctness: 1, report: 1, exceeded: 0, rework: true })
+    recordSidekickRating(delegationId, {
+      compliance: 1,
+      correctness: 1,
+      report: 1,
+      exceeded: 0,
+      rework: true,
+      diagnosis: "missed the constraint",
+      reason: "follow-up",
+      rating,
+      judgeProvider: "zen",
+      judgeModel: "glm-5.2",
+      ts: 1_800_000_000_000,
+    })
+    const before = readFileSync(join(evalCandidateDir(delegationId), "candidate.json"), "utf8")
+    const detail = promoteEvalCandidate(delegationId, "hard")
+    expect(detail.promoted).toBe(true)
+    expect(detail.report?.ok).toBe(false)
+    expect(detail.rating?.diagnosis).toBe("missed the constraint")
+    expect(readFileSync(join(evalCandidateDir(delegationId), "candidate.json"), "utf8")).toBe(before)
+    expect(existsSync(join(evalCandidateDir(delegationId), "promoted.json"))).toBe(false)
+    const promoted = readJson(join(evalSuiteDir(delegationId), "promoted.json"))
+    expect(promoted.bucket).toBe("hard")
+    expect(typeof promoted.promotedAt).toBe("number")
+    expect(existsSync(join(evalSuiteDir(delegationId), "candidate.json"))).toBe(true)
+
+    const listed = listEvalCandidates().find((row) => row.delegationId === delegationId)
+    expect(listed?.promoted).toBe(true)
+    expect(listed?.rating).toBe(rating)
+    expect(listed?.rework).toBe(true)
+    expect(listed?.diagnosis).toBe("missed the constraint")
+
+    try {
+      promoteEvalCandidate(delegationId, "random")
+      throw new Error("expected already-promoted")
+    } catch (err) {
+      expect(err).toBeInstanceOf(EvalRecorderError)
+      expect((err as InstanceType<typeof EvalRecorderError>).status).toBe(409)
+    }
+    try {
+      deleteEvalCandidate(delegationId)
+      throw new Error("expected promoted delete to fail")
+    } catch (err) {
+      expect(err).toBeInstanceOf(EvalRecorderError)
+      expect((err as InstanceType<typeof EvalRecorderError>).status).toBe(409)
+    }
+    expect(existsSync(evalCandidateDir(delegationId))).toBe(true)
+  })
+
+  test("delete prunes a non-promoted candidate and transcript is gunzipped JSONL", () => {
+    setEvalsMode("record")
+    const sessionId = `eval-delete-${crypto.randomUUID()}`
+    const keepId = crypto.randomUUID()
+    const dropId = crypto.randomUUID()
+    Store.createSession(sessionId, "Eval delete", workspace)
+    recordSidekickStart({
+      delegationId: keepId,
+      sessionId,
+      sidekickThreadId: `${sessionId}:sidekick`,
+      provider: "codex",
+      model: "gpt-5.5",
+      workspace,
+      briefComposed: "keep",
+    })
+    recordSidekickStart({
+      delegationId: dropId,
+      sessionId,
+      sidekickThreadId: `${sessionId}:sidekick`,
+      provider: "codex",
+      model: "gpt-5.5",
+      workspace,
+      briefComposed: "drop",
+    })
+    const line = JSON.stringify({ seq: 1, json: JSON.stringify({ type: "message.delta", text: "hello" }) }) + "\n"
+    writeFileSync(join(evalCandidateDir(keepId), "transcript.jsonl.gz"), gzipSync(line))
+    expect(readEvalTranscript(keepId)).toBe(line)
+    try { readEvalTranscript(dropId) } catch (err) {
+      expect(err).toBeInstanceOf(EvalRecorderError)
+      expect((err as InstanceType<typeof EvalRecorderError>).status).toBe(404)
+    }
+
+    deleteEvalCandidate(dropId)
+    expect(existsSync(evalCandidateDir(dropId))).toBe(false)
+    try { deleteEvalCandidate(dropId) } catch (err) {
+      expect(err).toBeInstanceOf(EvalRecorderError)
+      expect((err as InstanceType<typeof EvalRecorderError>).status).toBe(404)
+    }
+    expect(listEvalCandidates().some((row) => row.delegationId === dropId)).toBe(false)
+
+    const stats = evalsResponse("record")
+    expect(stats.mode).toBe("record")
+    expect(stats.stats.candidates).toBeGreaterThanOrEqual(1)
+    expect(stats.stats.bytes).toBeGreaterThan(0)
+    expect(typeof stats.stats.promoted).toBe("number")
   })
 })

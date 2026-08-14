@@ -45,6 +45,9 @@ function defaultsFor(provider: string, model: string, name: string): { tags: str
   if (provider === "codex" && id.includes("luna")) {
     return { tags: ["worker", "general", "fast"], effort: "xhigh", priority: 100 }
   }
+  if (provider === "grok" && id.includes("grok-4.6")) {
+    return { tags: ["worker", "fast", "research"], effort: "high", priority: 96 }
+  }
   if (provider === "grok" && id.includes("grok-4.5")) {
     return { tags: ["worker", "fast", "research"], effort: "high", priority: 95 }
   }

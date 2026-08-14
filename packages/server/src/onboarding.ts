@@ -88,9 +88,9 @@ export async function suggestedModes(ready: Set<string>): Promise<OnboardingSugg
     result.push({ name: "tibo", description: "Sol leads with twin Luna sidekicks; Opus advises and owns frontend.", spec: { provider: "codex", model: "gpt-5.6-sol", effort: "high", advisor: { provider: "anthropic", model: opus }, sidekick: { provider: "codex", model: "gpt-5.6-luna", effort: "xhigh" }, sidekickSeats: { luna2: { provider: "codex", model: "gpt-5.6-luna", effort: "xhigh" }, frontend: { provider: "anthropic", model: opus } } } })
   }
   else if (ready.has("grok") && ready.has("anthropic")) {
-    let grok = "grok-4.5"
-    try { grok = (await listModelsFor("grok")).find((m) => /grok-4\.5/i.test(m.id))?.id ?? grok } catch {}
-    result.push({ name: "fire", description: "Anthropic Fable leads, with a Grok 4.5 worker and Opus advice (Opus on frontend).", spec: { provider: "anthropic", model, effort: "low", sidekick: { provider: "grok", model: grok, effort: "high" }, advisor: { provider: "anthropic", model: opus, effort: "medium" }, sidekickSeats: { frontend: { provider: "anthropic", model: opus } } } })
+    let grok = "grok-4.6"
+    try { grok = (await listModelsFor("grok")).find((m) => /grok-4\.6/i.test(m.id))?.id ?? grok } catch {}
+    result.push({ name: "fire", description: "Anthropic Fable leads, with a Grok 4.6 worker and Opus advice (Opus on frontend).", spec: { provider: "anthropic", model, effort: "low", sidekick: { provider: "grok", model: grok, effort: "high" }, advisor: { provider: "anthropic", model: opus, effort: "medium" }, sidekickSeats: { frontend: { provider: "anthropic", model: opus } } } })
   }
   else if (ready.has("codex")) result.push({ name: "default", description: "Codex Sol leads with Luna as a high-effort sidekick.", spec: { provider: "codex", model: "gpt-5.6-sol", sidekick: { provider: "codex", model: "gpt-5.6-luna", effort: "xhigh" }, advisor: null } })
   else if (ready.has("anthropic")) result.push({ name: "default", description: "Anthropic Fable leads your conversation.", spec: { provider: "anthropic", model, sidekick: null, advisor: null } })

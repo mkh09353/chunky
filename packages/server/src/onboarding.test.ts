@@ -103,7 +103,7 @@ describe("onboarding suggestions", () => {
   test("grok and anthropic suggest fire with a grok sidekick", async () => {
     const modes = await suggestedModes(new Set(["grok", "anthropic"]))
     expect(modes[0]?.name).toBe("fire")
-    expect(modes[0]?.spec).toMatchObject({ provider: "anthropic", effort: "low", sidekick: { provider: "grok", model: "grok-4.5", effort: "high" }, advisor: { provider: "anthropic", effort: "medium" } })
+    expect(modes[0]?.spec).toMatchObject({ provider: "anthropic", effort: "low", sidekick: { provider: "grok", model: "grok-4.6", effort: "high" }, advisor: { provider: "anthropic", effort: "medium" } })
     expect(modes[0]?.spec.advisor?.model).toMatch(/opus/i)
     expect(modes[0]?.spec.sidekickSeats?.frontend?.provider).toBe("anthropic")
   })

@@ -34,7 +34,7 @@ const DEFAULT_MODEL = process.env.GROK_MODEL || "grok-4"
 
 // Curated Grok chat models offered in the picker (reasoning grok-4.x family).
 // Enriched from models.dev's "xai" provider; unknown ids degrade gracefully.
-const GROK_MODELS = ["grok-4.5", "grok-4.3", "grok-4"]
+const GROK_MODELS = ["grok-4.6", "grok-4.5", "grok-4.3", "grok-4"]
 
 const DEVICE_CODE_DEFAULT_INTERVAL_MS = 5_000
 const DEVICE_CODE_MIN_INTERVAL_MS = 1_000

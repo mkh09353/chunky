@@ -59,6 +59,7 @@ import {
   promoteEvalCandidate,
   readEvalTranscript,
 } from "./eval-recorder.ts"
+import { listEvalReplays, startEvalReplay } from "./eval-replay.ts"
 import { effectiveSessionSelection, runAgent, type InputImage, type InterjectionBoundary } from "./run.ts"
 import { createMessageCoalescer } from "./message-coalescer.ts"
 import { rehydrateSession, sweepArchives, sweepOrphanCheckpoints } from "./session-archive.ts"
@@ -1559,7 +1560,7 @@ const server = Bun.serve(withCors({
       return json({ candidates: listEvalCandidates() }, 200, req)
     }
 
-    const evalCandidateMatch = pathname.match(/^\/api\/evals\/candidates\/([^/]+)(?:\/(transcript|promote))?$/)
+    const evalCandidateMatch = pathname.match(/^\/api\/evals\/candidates\/([^/]+)(?:\/(transcript|promote|replay|replays))?$/)
     if (evalCandidateMatch) {
       const id = decodeURIComponent(evalCandidateMatch[1]!)
       const action = evalCandidateMatch[2]
@@ -1574,6 +1575,31 @@ const server = Bun.serve(withCors({
             status: 200,
             headers: { "Content-Type": "text/plain; charset=utf-8", ...corsHeaders(req) },
           })
+        }
+        if (req.method === "POST" && action === "replay") {
+          let body: { provider?: unknown; model?: unknown; effort?: unknown } = {}
+          const raw = await req.text()
+          if (raw.trim()) {
+            try { body = JSON.parse(raw) as typeof body }
+            catch { return json({ error: "invalid JSON body" }, 400, req) }
+          }
+          if (body.provider !== undefined && typeof body.provider !== "string") {
+            return json({ error: "provider must be a string" }, 400, req)
+          }
+          if (body.model !== undefined && typeof body.model !== "string") {
+            return json({ error: "model must be a string" }, 400, req)
+          }
+          if (body.effort !== undefined && typeof body.effort !== "string") {
+            return json({ error: "effort must be a string" }, 400, req)
+          }
+          return json(startEvalReplay(id, {
+            ...(body.provider ? { provider: body.provider } : {}),
+            ...(body.model ? { model: body.model } : {}),
+            ...(body.effort ? { effort: body.effort } : {}),
+          }), 200, req)
+        }
+        if (req.method === "GET" && action === "replays") {
+          return json({ replays: listEvalReplays(id) }, 200, req)
         }
         if (req.method === "POST" && action === "promote") {
           let body: { bucket?: unknown } = {}

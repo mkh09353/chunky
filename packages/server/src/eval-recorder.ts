@@ -242,6 +242,7 @@ function summarizeCandidate(dir: string, id: string): EvalCandidateSummary | nul
   if (typeof candidate.startedAt !== "number") return null
   const report = readJsonIfPresent<EvalReportJson>(join(dir, "report.json"))
   const rating = readJsonIfPresent<EvalRatingJson>(join(dir, "rating.json"))
+  const promotion = readPromotionMeta(id)
   const task = candidate.briefStruct?.task
     ?? (typeof candidate.briefComposed === "string" ? candidate.briefComposed.slice(0, 200) : "")
   return {
@@ -256,8 +257,18 @@ function summarizeCandidate(dir: string, id: string): EvalCandidateSummary | nul
     ...(rating && typeof rating.rating === "number" ? { rating: rating.rating } : {}),
     ...(rating && typeof rating.rework === "boolean" ? { rework: rating.rework } : {}),
     ...(rating?.diagnosis ? { diagnosis: rating.diagnosis } : {}),
-    promoted: isEvalCandidatePromoted(id),
+    promoted: promotion !== undefined,
+    ...(promotion?.bucket ? { promotedBucket: promotion.bucket } : {}),
+    ...(promotion?.promotedAt !== undefined ? { promotedAt: promotion.promotedAt } : {}),
   }
+}
+
+function readPromotionMeta(id: string): { bucket?: EvalPromoteBucket; promotedAt?: number } | undefined {
+  if (!isEvalCandidatePromoted(id)) return undefined
+  const raw = readJsonIfPresent<{ bucket?: unknown; promotedAt?: unknown }>(join(evalSuiteDir(id), "promoted.json"))
+  const bucket = raw?.bucket === "hard" || raw?.bucket === "regression" || raw?.bucket === "random" ? raw.bucket : undefined
+  const promotedAt = typeof raw?.promotedAt === "number" ? raw.promotedAt : undefined
+  return { ...(bucket ? { bucket } : {}), ...(promotedAt !== undefined ? { promotedAt } : {}) }
 }
 
 function directorySize(path: string): number {
@@ -318,11 +329,14 @@ export function getEvalCandidateDetail(id: string): EvalCandidateDetailResponse 
   if (!candidate) throw new EvalRecorderError(404, "unknown candidate")
   const report = readJsonIfPresent<EvalReportJson>(join(dir, "report.json"))
   const rating = readJsonIfPresent<EvalRatingJson>(join(dir, "rating.json"))
+  const promotion = readPromotionMeta(safe)
   return {
     candidate,
     ...(report ? { report } : {}),
     ...(rating ? { rating } : {}),
-    promoted: isEvalCandidatePromoted(safe),
+    promoted: promotion !== undefined,
+    ...(promotion?.bucket ? { promotedBucket: promotion.bucket } : {}),
+    ...(promotion?.promotedAt !== undefined ? { promotedAt: promotion.promotedAt } : {}),
   }
 }
 

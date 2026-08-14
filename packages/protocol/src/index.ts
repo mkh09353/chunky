@@ -354,6 +354,8 @@ export interface EvalCandidateSummary {
   rework?: boolean
   diagnosis?: string
   promoted: boolean
+  promotedBucket?: EvalPromoteBucket
+  promotedAt?: number
 }
 export interface EvalCandidatesResponse {
   candidates: EvalCandidateSummary[]
@@ -363,9 +365,45 @@ export interface EvalCandidateDetailResponse {
   report?: EvalReportJson
   rating?: EvalRatingJson
   promoted: boolean
+  promotedBucket?: EvalPromoteBucket
+  promotedAt?: number
 }
 export interface PromoteEvalCandidateRequest {
   bucket?: EvalPromoteBucket
+}
+export interface EvalReplayRequest {
+  provider?: string
+  model?: string
+  effort?: string
+}
+export interface EvalReplayStartResponse {
+  replayId: string
+  status: "running"
+}
+export type EvalReplayStatus = "running" | "done" | "error"
+export interface EvalReplaySummary {
+  replayId: string
+  provider: string
+  model: string
+  effort?: string
+  status: EvalReplayStatus
+  ok?: boolean
+  startedAt: number
+  completedAt?: number
+}
+export interface EvalReplaysResponse {
+  replays: EvalReplaySummary[]
+}
+export interface EvalReplayResultJson {
+  replayId: string
+  provider: string
+  model: string
+  effort?: string
+  ok: boolean
+  finalReport: string
+  startedAt: number
+  completedAt: number
+  diff: string
 }
 /** One row in the resume picker: a persisted session the client can reattach to. */
 export interface SessionSummary {
@@ -760,6 +798,10 @@ export const ROUTES = {
   evalsCandidateTranscript: (id: string) => `/api/evals/candidates/${encodeURIComponent(id)}/transcript`,
   // POST PromoteEvalCandidateRequest -> EvalCandidateDetailResponse. 409 if already promoted.
   evalsCandidatePromote: (id: string) => `/api/evals/candidates/${encodeURIComponent(id)}/promote`,
+  // POST EvalReplayRequest -> EvalReplayStartResponse. 409 if a replay is already running.
+  evalsCandidateReplay: (id: string) => `/api/evals/candidates/${encodeURIComponent(id)}/replay`,
+  // GET -> EvalReplaysResponse.
+  evalsCandidateReplays: (id: string) => `/api/evals/candidates/${encodeURIComponent(id)}/replays`,
   // POST -> 202. Abort the session's in-flight turn (user interrupt / Esc).
   interrupt: (id: string) => `/api/sessions/${id}/interrupt`,
   // GET -> SSE stream of AgentEvent. Replays persisted history first, so opening

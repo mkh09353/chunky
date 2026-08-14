@@ -316,6 +316,8 @@ describe("eval recorder", () => {
     const before = readFileSync(join(evalCandidateDir(delegationId), "candidate.json"), "utf8")
     const detail = promoteEvalCandidate(delegationId, "hard")
     expect(detail.promoted).toBe(true)
+    expect(detail.promotedBucket).toBe("hard")
+    expect(typeof detail.promotedAt).toBe("number")
     expect(detail.report?.ok).toBe(false)
     expect(detail.rating?.diagnosis).toBe("missed the constraint")
     expect(readFileSync(join(evalCandidateDir(delegationId), "candidate.json"), "utf8")).toBe(before)
@@ -327,6 +329,8 @@ describe("eval recorder", () => {
 
     const listed = listEvalCandidates().find((row) => row.delegationId === delegationId)
     expect(listed?.promoted).toBe(true)
+    expect(listed?.promotedBucket).toBe("hard")
+    expect(typeof listed?.promotedAt).toBe("number")
     expect(listed?.rating).toBe(rating)
     expect(listed?.rework).toBe(true)
     expect(listed?.diagnosis).toBe("missed the constraint")

@@ -108,6 +108,74 @@ export function pricingFor(model: string): ModelPricing | undefined {
   return pricingForCatalog(model, cachedPricingCatalog())
 }
 
+/** Short picker aliases Anthropic (and similar catalogs) expose instead of a wire id. */
+const FAMILY_ALIASES = ["opus", "sonnet", "haiku", "fable"] as const
+const FAMILY_FALLBACK: Record<(typeof FAMILY_ALIASES)[number], string> = {
+  opus: "claude-opus-5",
+  sonnet: "claude-sonnet-5",
+  haiku: "claude-haiku-4-5",
+  fable: "claude-fable-5",
+}
+
+function splitModelVariant(model: string): { base: string; suffix: string } {
+  const match = model.match(/^(.*?)(\[[^\]]*\])$/)
+  return match ? { base: match[1]!, suffix: match[2]! } : { base: model, suffix: "" }
+}
+
+function knownCatalogIds(catalog?: DevCatalog): Set<string> {
+  const ids = new Set<string>()
+  for (const provider of Object.values(catalog ?? cachedPricingCatalog() ?? {})) {
+    for (const id of Object.keys(provider.models ?? {})) ids.add(id)
+  }
+  return ids
+}
+
+function versionKey(id: string): number[] {
+  return (id.replace(/-\d{8}$/, "").match(/\d+/g) ?? []).map(Number)
+}
+
+function newerModelId(a: string, b: string): string {
+  const av = versionKey(a), bv = versionKey(b)
+  const n = Math.max(av.length, bv.length)
+  for (let i = 0; i < n; i++) {
+    const d = (av[i] ?? 0) - (bv[i] ?? 0)
+    if (d) return d > 0 ? a : b
+  }
+  return a.length <= b.length ? a : b
+}
+
+function latestFamilyModel(family: string, ids: Iterable<string>): string | undefined {
+  const re = new RegExp(`^claude-${family}(?:-|$)`, "i")
+  let best: string | undefined
+  for (const id of ids) {
+    if (!re.test(id)) continue
+    best = best ? newerModelId(best, id) : id
+  }
+  return best
+}
+
+/** True when `model` (or its base without a trailing `[…]` variant) is a catalog id. */
+export function isCatalogModelId(model: string, catalog?: DevCatalog): boolean {
+  if (!model) return false
+  const ids = knownCatalogIds(catalog)
+  if (ids.has(model)) return true
+  return ids.has(splitModelVariant(model).base)
+}
+
+/** Resolve a user-facing model alias to the catalog id usage_log stores.
+ *  Preserves a trailing variant tag such as `[1m]`. Unknown names pass through. */
+export function resolveCatalogModelId(model: string, catalog?: DevCatalog): string {
+  if (!model) return model
+  const ids = knownCatalogIds(catalog)
+  if (ids.has(model)) return model
+  const { base, suffix } = splitModelVariant(model)
+  if (ids.has(base)) return `${base}${suffix}`
+  const family = FAMILY_ALIASES.find((name) => name === base.toLowerCase())
+  if (!family) return model
+  const resolved = latestFamilyModel(family, ids) ?? FAMILY_FALLBACK[family]
+  return resolved ? `${resolved}${suffix}` : model
+}
+
 // Process-lifetime memo of the in-flight/complete fetch so concurrent callers
 // (all three providers listing at once) share ONE network round-trip.
 let inFlight: Promise<DevCatalog> | undefined

@@ -128,6 +128,9 @@ export interface Settings {
   /** Cold-cache send guard threshold in tokens (see getCacheGuardTokens).
    *  Absent = default; null = guard off. */
   cacheGuardTokens?: number | null
+  /** Eval recorder: capture sidekick handoffs as immutable candidates.
+   *  Absent defaults to "record". */
+  evals?: { mode: "off" | "record" }
   /** Named executor+advisor pairings, applied as one unit via /mode. */
   modes?: Record<string, ModeSpec>
   /** Builtin modes already seeded; deletion of one is permanent. */
@@ -454,6 +457,21 @@ export function setCacheGuardTokens(tokens: number | null): number | null {
   const s = loadSettings()
   save({ ...s, cacheGuardTokens: typeof tokens === "number" && tokens > 0 ? Math.floor(tokens) : null })
   return getCacheGuardTokens()
+}
+
+export type EvalsMode = "off" | "record"
+
+/** Eval recorder mode. Never-set defaults to "record". */
+export function getEvalsMode(): EvalsMode {
+  return loadSettings().evals?.mode === "off" ? "off" : "record"
+}
+
+/** Persist the eval recorder mode. Unknown values fall back to "record". */
+export function setEvalsMode(mode: EvalsMode): EvalsMode {
+  const next: EvalsMode = mode === "off" ? "off" : "record"
+  const s = loadSettings()
+  save({ ...s, evals: { ...(s.evals ?? {}), mode: next } })
+  return getEvalsMode()
 }
 
 // ---- Server token: bearer auth for non-loopback clients ----

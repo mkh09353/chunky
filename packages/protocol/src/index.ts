@@ -281,6 +281,15 @@ export interface CacheGuardResponse {
 export interface SetCacheGuardRequest {
   tokens: number | null
 }
+
+/** GET/POST ROUTES.evals — sidekick eval recorder. Default mode is "record". */
+export type EvalsMode = "off" | "record"
+export interface EvalsResponse {
+  mode: EvalsMode
+}
+export interface SetEvalsRequest {
+  mode: EvalsMode
+}
 /** One row in the resume picker: a persisted session the client can reattach to. */
 export interface SessionSummary {
   sessionId: string
@@ -664,6 +673,8 @@ export const ROUTES = {
   cacheStatus: (id: string) => `/api/sessions/${id}/cache`,
   // GET -> CacheGuardResponse. POST SetCacheGuardRequest -> CacheGuardResponse.
   cacheGuard: `/api/cache-guard`,
+  // GET -> EvalsResponse. POST SetEvalsRequest -> EvalsResponse.
+  evals: `/api/evals`,
   // POST -> 202. Abort the session's in-flight turn (user interrupt / Esc).
   interrupt: (id: string) => `/api/sessions/${id}/interrupt`,
   // GET -> SSE stream of AgentEvent. Replays persisted history first, so opening

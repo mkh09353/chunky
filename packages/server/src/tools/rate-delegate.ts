@@ -3,6 +3,7 @@ import { z } from "zod"
 import { threadContextFor } from "../thread-context.ts"
 import { Store } from "../store.ts"
 import { activeSelection } from "../providers/registry.ts"
+import { recordSidekickRating } from "../eval-recorder.ts"
 
 /** Deterministic 1–10 rating from anchored sub-scores; rework caps at 7. */
 export function computeRating(s: { compliance: number; correctness: number; report: number; exceeded: number; rework: boolean }): number {
@@ -30,7 +31,21 @@ export const rateDelegate = tool(async (input, config?: unknown) => {
   const rework = input.rework ?? false
   const rating = computeRating({ compliance: input.compliance, correctness: input.correctness, report: input.report, exceeded: input.exceeded ?? 0, rework })
   const reason = `[c${input.compliance}/3 x${input.correctness}/3 r${input.report}/2 +${input.exceeded ?? 0}] ${input.reason}`
-  Store.rateDelegation(id, rating, rework, reason, activeSelection(), input.diagnosis)
+  const judge = activeSelection()
+  Store.rateDelegation(id, rating, rework, reason, judge, input.diagnosis)
+  recordSidekickRating(id, {
+    compliance: input.compliance,
+    correctness: input.correctness,
+    report: input.report,
+    exceeded: input.exceeded ?? 0,
+    rework,
+    ...(input.diagnosis ? { diagnosis: input.diagnosis } : {}),
+    reason: input.reason,
+    rating,
+    judgeProvider: judge.provider,
+    judgeModel: judge.model ?? "unknown",
+    ts: Date.now(),
+  })
   return `Rated delegation ${id}: ${rating}/10 (compliance ${input.compliance}/3, correctness ${input.correctness}/3, report ${input.report}/2, exceeded +${input.exceeded ?? 0}${rework ? ", capped at 7 for rework" : ""})`
 }, {
   name: "rate_delegate",

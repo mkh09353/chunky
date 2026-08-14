@@ -48,6 +48,7 @@ import {
   type UsageBreakdownResponse,
   type SessionCacheMetrics,
   type ProviderQuotasResponse,
+  type EvalsResponse,
 } from "@chunky/protocol"
 import { effectiveSessionSelection, runAgent, type InputImage, type InterjectionBoundary } from "./run.ts"
 import { createMessageCoalescer } from "./message-coalescer.ts"
@@ -99,6 +100,7 @@ import {
   getEffectiveReview,
   getReview,
   getCacheGuardTokens,
+  getEvalsMode,
   getMode,
   getOnboardedAt,
   loadSettings,
@@ -117,6 +119,7 @@ import {
   setSoloAdvisor,
   setReview,
   setCacheGuardTokens,
+  setEvalsMode,
   setSidekick,
   setSidekickSeat,
   setSidekickSeats,
@@ -1519,6 +1522,27 @@ const server = Bun.serve(withCors({
           return json({ error: "tokens must be a number or null" }, 400)
         }
         return json({ tokens: setCacheGuardTokens(body.tokens) })
+      }
+    }
+
+    // GET/POST /api/evals -> { mode } — sidekick eval recorder. Default is "record".
+    if (pathname === ROUTES.evals) {
+      if (req.method === "GET") {
+        const body: EvalsResponse = { mode: getEvalsMode() }
+        return json(body)
+      }
+      if (req.method === "POST") {
+        let body: { mode?: unknown }
+        try {
+          body = (await req.json()) as typeof body
+        } catch {
+          return json({ error: "invalid JSON body" }, 400)
+        }
+        if (body.mode !== "off" && body.mode !== "record") {
+          return json({ error: "mode must be off or record" }, 400)
+        }
+        const next: EvalsResponse = { mode: setEvalsMode(body.mode) }
+        return json(next)
       }
     }
 

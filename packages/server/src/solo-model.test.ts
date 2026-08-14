@@ -96,6 +96,40 @@ describe("solo model resolution", () => {
     expect(Store.pinnedSelectionOf(legacySession)?.solo).toBeUndefined()
     expect(registry.isSolo(legacySession)).toBe(false)
   })
+
+  test("a pinned mode stays non-solo even when its provider is unregistered", () => {
+    // Global solo is the fallthrough that used to leak into mode-backed sessions
+    // whose executor provider had been removed from the registry.
+    settings.setSolo(true)
+    const modeSession = `mode-unknown-${process.pid}`
+    const rawSession = `raw-${process.pid}`
+    Store.createSession(modeSession)
+    Store.createSession(rawSession)
+    Store.setAgentConfig(modeSession, {
+      activeMode: "fire",
+      selection: { provider: "not-a-real-provider", model: "claude-fable-5", effort: "low", solo: false },
+      advisor: { enabled: true, provider: "codex", model: "gpt-5.6-sol" },
+      review: { enabled: false },
+      sidekick: { enabled: true, provider: "codex", model: "gpt-5.6-terra" },
+      sidekickSeats: {},
+    })
+    Store.pinSelection(rawSession, { ...executor, solo: true })
+
+    expect(registry.isSolo(modeSession)).toBe(false)
+    expect(registry.isSolo(rawSession)).toBe(true)
+    expect(registry.isSolo()).toBe(true)
+
+    Store.setAgentConfig(modeSession, {
+      activeMode: "fire",
+      selection: { provider: "not-a-real-provider", model: "claude-fable-5", solo: true },
+      advisor: { enabled: false },
+      review: { enabled: false },
+      sidekick: { enabled: false },
+      sidekickSeats: {},
+    })
+    expect(registry.isSolo(modeSession)).toBe(true)
+    settings.setSolo(false)
+  })
 })
 
 // Route-level coverage runs in a child server because index.ts owns its Bun listener.

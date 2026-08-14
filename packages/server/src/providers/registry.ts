@@ -46,7 +46,10 @@ export type { Effort, ModelSelection, Speed } from "../settings.ts"
 export function isSolo(sessionId?: string): boolean {
   if (sessionId) {
     const mode = Store.agentConfigOf(sessionId)
-    if (mode && getProvider(mode.selection.provider)) return mode.selection.solo === true
+    // A pinned mode is a complete preset. Honor its own solo flag even when the
+    // executor provider is not registered — falling through to the global default
+    // would report a mode-backed session as solo and suppress its delegates.
+    if (mode) return mode.selection.solo === true
     const pinned = Store.pinnedSelectionOf(sessionId)
     if (pinned && getProvider(pinned.provider)) return pinned.solo === true
   }

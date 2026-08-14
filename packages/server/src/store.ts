@@ -2,7 +2,7 @@
 // Makes transcripts survive a server restart, so reconnecting to a sessionId
 // replays the full prior run — i.e. "resume". Kept deliberately tiny.
 import { openSqlite, retrySqliteTransaction } from "./sqlite.ts"
-import type { AgentEvent, RewindPoint, SessionSummary, UsageBreakdownResponse, UsageSeriesResponse } from "@chunky/protocol"
+import type { AgentEvent, RewindPoint, SessionSummary, UsageBreakdownResponse, UsageModelRow, UsageSeriesResponse } from "@chunky/protocol"
 import { notifySessionChanged } from "./session-changes.ts"
 import type { Goal } from "./goal.ts"
 import type { TodoSnapshot } from "./todos.ts"
@@ -268,6 +268,46 @@ function ratingAggregates(scope: UsageDashboardScope, from: string, to: string):
       ? { $start: localDateStart(from), $end: localDateStart(nextLocalDate(to)), $session: scope.sessionId! }
       : { $start: localDateStart(from), $end: localDateStart(nextLocalDate(to)) }) as any[]
 }
+type RatingSeatAggregate = {
+  provider: string; model: string; kind: string; seat: string | null
+  avgRating: number | null; ratedCount: number; reworkRate: number | null; samples: number
+}
+function ratingSeatAggregates(scope: UsageDashboardScope, from: string, to: string): RatingSeatAggregate[] {
+  const conn = usageConnection(scope)
+  const sessionWhere = scope.scope === "session" ? "AND d.session_id = $session" : ""
+  return conn.query(`SELECT d.provider,d.model,d.kind,NULLIF(d.seat,'default') seat,
+    AVG(r.rating) avgRating,COUNT(r.rating) ratedCount,AVG(r.rework) reworkRate,COUNT(*) samples
+    FROM delegations d LEFT JOIN ratings r ON r.delegation_id=d.id
+    WHERE EXISTS (SELECT 1 FROM usage_log u WHERE u.delegation_id=d.id AND u.ts >= $start AND u.ts < $end)
+    ${sessionWhere} GROUP BY d.provider,d.model,d.kind,NULLIF(d.seat,'default')`)
+    .all(scope.scope === "session"
+      ? { $start: localDateStart(from), $end: localDateStart(nextLocalDate(to)), $session: scope.sessionId! }
+      : { $start: localDateStart(from), $end: localDateStart(nextLocalDate(to)) }) as RatingSeatAggregate[]
+}
+function scoreSlicesFor(scope: UsageDashboardScope, from: string, to: string): Map<string, NonNullable<UsageModelRow["scoreBySeat"]>> {
+  const grouped = new Map<string, NonNullable<UsageModelRow["scoreBySeat"]>>()
+  for (const row of ratingSeatAggregates(scope, from, to)) {
+    const key = `${row.provider}\u0000${row.model}`
+    const list = grouped.get(key) ?? []
+    list.push({
+      kind: row.kind,
+      seat: row.seat ?? null,
+      avgRating: row.avgRating == null ? null : Number(row.avgRating),
+      ratedCount: row.ratedCount,
+      reworkRate: row.reworkRate == null ? null : Number(row.reworkRate),
+      samples: row.samples,
+    })
+    grouped.set(key, list)
+  }
+  for (const list of grouped.values()) {
+    list.sort((a, b) =>
+      b.ratedCount - a.ratedCount ||
+      b.samples - a.samples ||
+      a.kind.localeCompare(b.kind) ||
+      (a.seat ?? "").localeCompare(b.seat ?? ""))
+  }
+  return grouped
+}
 
 // Migration: goals gained `mode` ('direct' | 'workflows'). Older rows were all
 // hands-on direct goals.
@@ -430,6 +470,7 @@ export const Store = {
   },
   usageBreakdown(scope: UsageDashboardScope, from: string, to: string, billingFor: BillingLookup): UsageBreakdownResponse {
     const ratings = new Map(ratingAggregates(scope, from, to).map((row) => [`${row.provider}\u0000${row.model}`, row]))
+    const scores = scoreSlicesFor(scope, from, to)
     let estimatedApiCost = 0, totalTokens = 0, cacheSavings = 0, requests = 0, pricedRequests = 0
     const rows = usageAggregates(scope, from, to, false).map((row) => {
       const priced = whatIfCost(row), rating = ratings.get(`${row.provider}\u0000${row.model}`)
@@ -437,7 +478,8 @@ export const Store = {
       if (priced.priced) pricedRequests += row.requests
       return { ...row, billing: billingFor(row.provider), estimatedApiCost: priced.cost, priced: priced.priced,
         avgRating: rating?.avgRating == null ? null : Number(rating.avgRating), ratedCount: rating?.ratedCount ?? 0,
-        reworkRate: rating?.reworkRate == null ? null : Number(rating.reworkRate) }
+        reworkRate: rating?.reworkRate == null ? null : Number(rating.reworkRate),
+        scoreBySeat: scores.get(`${row.provider}\u0000${row.model}`) ?? [] }
     }).sort((a, b) => b.estimatedApiCost - a.estimatedApiCost || b.requests - a.requests || `${a.provider}/${a.model}`.localeCompare(`${b.provider}/${b.model}`))
     const rollups = new Map<string, { provider: string; billing: string | null; estimatedApiCost: number; tokens: number; share: number }>()
     for (const row of rows) {

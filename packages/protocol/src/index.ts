@@ -43,6 +43,16 @@ export interface UsageModelRow {
   cacheReadTokens: number; cacheWriteTokens: number
   estimatedApiCost: number; priced: boolean
   avgRating: number | null; ratedCount: number; reworkRate: number | null
+  /** Rating split by delegation kind + seat. Optional so older clients ignore it.
+   *  `seat` is null for the default/unnamed seat (`NULL` / `'default'`). */
+  scoreBySeat?: Array<{
+    kind: string
+    seat: string | null
+    avgRating: number | null
+    ratedCount: number
+    reworkRate: number | null
+    samples: number
+  }>
 }
 export interface UsageBreakdownResponse {
   rows: UsageModelRow[]

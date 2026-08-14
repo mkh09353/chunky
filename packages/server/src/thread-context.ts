@@ -73,6 +73,13 @@ export interface ThreadSpawner {
     callerThreadId: string
     brief: string
     seat?: string
+    briefStruct?: {
+      task: string
+      constraints?: string[]
+      done_when?: string
+      pointers?: string
+      seat?: string
+    }
   }): Promise<string>
 
   /** Starts a detached read-only review; it must outlive the invoking turn. */
@@ -88,6 +95,8 @@ export interface ThreadSpawner {
     callerThreadId: string
     script: string
     args?: unknown
+    resumeFromRunId?: string
+    workflowName?: string
   }): Promise<string>
 }
 

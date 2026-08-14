@@ -34,6 +34,7 @@ import { assertSelectionAllowed, isIncognitoSession } from "./incognito.ts"
 import { notifySessionChanged } from "./session-changes.ts"
 import { registerIncognitoThread } from "./bun-sqlite-saver.ts"
 import { runWorkflowScript, workflowConcurrency, type WorkflowHost, type WorkflowTier } from "./workflow/engine.ts"
+import { annotateWorkflowResult, prepareJournaledHost, WorkflowJournalError } from "./workflow/journal.ts"
 import { workflowRouteResolver } from "./workflow/router.ts"
 import { streamWithCheckpointRecovery } from "./checkpoint-recovery.ts"
 import { createDelegateWatchdog } from "./watchdog.ts"
@@ -41,6 +42,7 @@ import { Store } from "./store.ts"
 import { appendReminder } from "./tasks.ts"
 import { routeBackgroundNotice } from "./background-dispatch.ts"
 import { createDetachedSpawn, detachedSpawnLimit, finishDetachedSpawn, type DetachedSpawnRecord } from "./detached-spawns.ts"
+import { recordSidekickComplete, recordSidekickStart, type EvalBriefStruct } from "./eval-recorder.ts"
 
 /** Reasoning-effort cap for `big`-tier workflow agents: keep a lower configured
  *  effort, clamp anything at/above medium (or unset) to medium. */
@@ -126,6 +128,11 @@ export class ThreadManager implements ThreadSpawner {
    *  advisor/child consult hangs the whole turn un-interruptibly (the root signal
    *  never reaches the child's stream, so the awaited tool promise never settles). */
   private readonly abort?: AbortController
+  /** Session-scoped abort for a detached workflow run. Survives the originating
+   *  turn so agent() children keep working after dispose(); resetDetachedSpawns
+   *  (server shutdown) and the detached-spawn record abort this instead. */
+  private workflowAbort?: AbortController
+  private disposed = false
   private readonly runningChildren = new Map<string, { threadId: string; title: string }>()
   private readonly steerDetach = new Set<() => void>()
 
@@ -162,11 +169,14 @@ export class ThreadManager implements ThreadSpawner {
 
   /** Release the root registration when the session turn ends. */
   dispose(): void {
+    this.disposed = true
     unregisterThread(this.rootId)
     // Detached children remain registered until their own finally block. Keep
     // their captured selection so their full child toolset (including nested
     // spawn_thread) continues to work after the originating root turn ends.
-    this.selections.delete(this.rootId)
+    // A detached workflow may still spawn() after the turn ends; keep the root
+    // selection until that run restores workflowAbort so children inherit it.
+    if (!this.workflowAbort) this.selections.delete(this.rootId)
   }
 
   detachForSteer(): boolean {
@@ -228,11 +238,22 @@ export class ThreadManager implements ThreadSpawner {
     }
     const record = createDetachedSpawn(this.rootId, `${this.rootId}:${kind}:${randomUUID()}`, title, true)!
     const reasonText = reason === "steer" ? "detached by steer" : "detached"
+    // Detached workflow children must not die with the originating turn abort.
+    // Parent them to the detached-spawn record (same as launchDetachedSpawn).
+    // Server shutdown still cancels via resetDetachedSpawns → record.abort.
+    const previousWorkflowAbort = kind === "workflow" ? this.workflowAbort : undefined
+    if (kind === "workflow") this.workflowAbort = record.abort
     let work: Promise<string>
     try {
       work = typeof workOrStart === "function" ? workOrStart() : workOrStart
     } catch (err) {
       work = Promise.reject(err)
+    }
+    const restoreWorkflowAbort = () => {
+      if (kind === "workflow" && this.workflowAbort === record.abort) {
+        this.workflowAbort = previousWorkflowAbort
+        if (this.disposed && !this.workflowAbort) this.selections.delete(this.rootId)
+      }
     }
     void work.then((report) => {
       finishDetachedSpawn(record, report)
@@ -241,6 +262,7 @@ export class ThreadManager implements ThreadSpawner {
         const wakePrompt = `${reminder}\n\nAssess this detached delegate report and act on any valid findings before finalizing.`
         if (routeBackgroundNotice(this.rootId, wakePrompt, `${title} ${reasonText} finished.`, kind, { kind, detachedSpawnId: record.id }) === "reminder") appendReminder(this.rootId, reminder)
       } finally {
+        restoreWorkflowAbort()
         clearSeatGuard()
       }
     }, (err) => {
@@ -250,6 +272,7 @@ export class ThreadManager implements ThreadSpawner {
         const reminder = `${title} ${reasonText} (${record.id}) failed. Report:\n${record.result}`
         if (routeBackgroundNotice(this.rootId, reminder, `${title} ${reasonText} failed.`, kind, { kind, detachedSpawnId: record.id }) === "reminder") appendReminder(this.rootId, reminder)
       } finally {
+        restoreWorkflowAbort()
         clearSeatGuard()
       }
     })
@@ -282,7 +305,9 @@ export class ThreadManager implements ThreadSpawner {
     const childThreadId = `child-${randomUUID()}`
     if (isIncognitoSession(this.rootId)) registerIncognitoThread(childThreadId)
     const parentThreadId = opts.callerThreadId === this.rootId ? null : opts.callerThreadId
-    const parentSelection = this.selections.get(opts.callerThreadId)
+    // A detached workflow can keep spawning after dispose() drops the root
+    // selection. Fall back to the live /model choice so children still inherit.
+    const parentSelection = this.selections.get(opts.callerThreadId) ?? (opts.callerThreadId === this.rootId ? activeSelection() : undefined)
     if (!parentSelection) {
       throw new Error(`missing model selection for caller thread ${opts.callerThreadId}`)
     }
@@ -321,7 +346,7 @@ export class ThreadManager implements ThreadSpawner {
     // Inactivity watchdog: if the child's stream goes silent (stalled provider
     // connection), abort it and hand the lead a real error instead of hanging
     // the awaited tool promise forever. Every event the child emits resets it.
-    const dog = createDelegateWatchdog({ emit: this.emit, label: `child thread "${opts.title}"`, parent: this.abort })
+    const dog = createDelegateWatchdog({ emit: this.emit, label: `child thread "${opts.title}"`, parent: this.workflowAbort ?? this.abort })
     try {
       if (providerRuntime(selection.provider) === "anthropic-sdk") {
         const { runAnthropicAgent } = await import("./anthropic-runner.ts")
@@ -478,11 +503,11 @@ export class ThreadManager implements ThreadSpawner {
    * return value comes back to the calling model. The manager supplies the emitter,
    * the concurrency cap, and the small/medium/big → model-selection tier policy.
    */
-  async runWorkflow(opts: { callerThreadId: string; script: string; args?: unknown }): Promise<string> {
+  async runWorkflow(opts: { callerThreadId: string; script: string; args?: unknown; resumeFromRunId?: string; workflowName?: string }): Promise<string> {
     let routerPromise: ReturnType<typeof workflowRouteResolver> | undefined
     const router = () => (routerPromise ??= workflowRouteResolver())
-    const host: WorkflowHost = {
-      runId: randomUUID(),
+    const inner: WorkflowHost = {
+      runId: opts.resumeFromRunId ?? randomUUID(),
       // Owner tagging mirrors spawn()'s parent linkage: root → undefined (events
       // untagged = main thread); a descendant → its own id so workflow.* lines land
       // in that thread's transcript.
@@ -507,7 +532,26 @@ export class ThreadManager implements ThreadSpawner {
         return selection
       },
     }
-    return runWorkflowScript(host, opts.script, opts.args)
+    let host = inner
+    let journaled = false
+    let runId = inner.runId
+    try {
+      const prepared = prepareJournaledHost(inner, {
+        script: opts.script,
+        args: opts.args,
+        resumeFrom: opts.resumeFromRunId,
+        incognito: isIncognitoSession(this.rootId),
+        workflowName: opts.workflowName,
+      })
+      host = prepared.host
+      journaled = prepared.journaled
+      runId = prepared.runId
+    } catch (err) {
+      if (err instanceof WorkflowJournalError) return annotateWorkflowResult(opts.resumeFromRunId ?? inner.runId, `workflow error: ${err.message}`, true)
+      throw err
+    }
+    const result = await runWorkflowScript(host, opts.script, opts.args)
+    return annotateWorkflowResult(runId, result, journaled)
   }
 
   /**
@@ -708,7 +752,7 @@ export class ThreadManager implements ThreadSpawner {
    * registry and NOT in `selections` (it has no delegation tools, so nothing
    * inside it resolves a manager), and persists for the session.
    */
-  async delegateToSidekick(opts: { callerThreadId: string; brief: string; seat?: string }): Promise<string> {
+  async delegateToSidekick(opts: { callerThreadId: string; brief: string; seat?: string; briefStruct?: EvalBriefStruct }): Promise<string> {
     const seat = opts.seat?.trim() || "default"
     const key = `${this.rootId}\0${seat}`
     const previous = sidekickSeatTails.get(key) ?? Promise.resolve()
@@ -724,7 +768,7 @@ export class ThreadManager implements ThreadSpawner {
     }
   }
 
-  private async runSidekick(opts: { callerThreadId: string; brief: string; seat?: string }): Promise<string> {
+  private async runSidekick(opts: { callerThreadId: string; brief: string; seat?: string; briefStruct?: EvalBriefStruct }): Promise<string> {
     const rootSelection = this.selections.get(this.rootId) ?? activeSelection()
     const seat = opts.seat?.trim() || undefined
     const sidekickSel = seat && seat !== "default" ? resolveSidekickSeat(seat, this.rootId) : sidekickFor(rootSelection, this.rootId)
@@ -743,6 +787,21 @@ export class ThreadManager implements ThreadSpawner {
     const delegationId = randomUUID()
     Store.createDelegation({ id: delegationId, sessionId: this.rootId, kind: "sidekick", seat, provider: sidekickSel.provider, model: sidekickSel.model ?? "unknown", effort: sidekickSel.effort ?? undefined, briefSnippet: opts.brief })
 
+    const isNamedSeat = seat !== undefined && seat !== "default"
+    const sidekickThreadId = isNamedSeat ? `${this.rootId}:sidekick:${seat}` : `${this.rootId}:sidekick`
+    recordSidekickStart({
+      delegationId,
+      sessionId: this.rootId,
+      seat,
+      sidekickThreadId,
+      provider: sidekickSel.provider,
+      model: sidekickSel.model ?? "unknown",
+      effort: sidekickSel.effort ?? undefined,
+      workspace: this.workspace,
+      briefStruct: opts.briefStruct,
+      briefComposed: opts.brief,
+    })
+
     // Tally the handoff before running it — measures how often the lead
     // delegates, independent of whether the handoff itself succeeds.
     const handoffNo = (sidekickHandoffsBySession.get(this.rootId) ?? 0) + 1
@@ -757,12 +816,18 @@ export class ThreadManager implements ThreadSpawner {
         await getProvider(sidekickSel.provider)?.ensureAuth?.()
       } catch (err) {
         const detail = (err as Error)?.message ?? String(err)
-        return `error: sidekick provider "${sidekickSel.provider}" sign-in expired — run /login to re-authenticate. (${detail})`
+        const message = `error: sidekick provider "${sidekickSel.provider}" sign-in expired — run /login to re-authenticate. (${detail})`
+        recordSidekickComplete({
+          delegationId,
+          sessionId: this.rootId,
+          sidekickThreadId,
+          ok: false,
+          finalReport: message,
+        })
+        return message
       }
     }
 
-    const isNamedSeat = seat !== undefined && seat !== "default"
-    const sidekickThreadId = isNamedSeat ? `${this.rootId}:sidekick:${seat}` : `${this.rootId}:sidekick`
     if (isIncognitoSession(this.rootId)) registerIncognitoThread(this.rootId)
     const title = isNamedSeat ? `Sidekick (${seat})` : "Sidekick"
     const sidekickKey = isNamedSeat ? seat! : "default"
@@ -826,7 +891,15 @@ export class ThreadManager implements ThreadSpawner {
       this.emit({ type: "error", message, threadId: sidekickThreadId } as AgentEvent)
       finalText = `error: ${message}`
     } finally {
-      Store.completeDelegation(delegationId, !finalText.startsWith("error:"))
+      const ok = !finalText.startsWith("error:")
+      Store.completeDelegation(delegationId, ok)
+      recordSidekickComplete({
+        delegationId,
+        sessionId: this.rootId,
+        sidekickThreadId,
+        ok,
+        finalReport: ThreadManager.nonEmptyReport(finalText, "sidekick"),
+      })
       dog.dispose()
       this.emit({ type: "thread.status", threadId: sidekickThreadId, status: "idle", title })
       sessionSidekicks.delete(sidekickKey)

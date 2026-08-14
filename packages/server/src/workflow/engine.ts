@@ -34,6 +34,10 @@ export interface WorkflowHost {
   routeOverride?: (request: { tags?: string[]; tier?: WorkflowTier }) => AgentSelectionOverride | undefined | Promise<AgentSelectionOverride | undefined>
   /** Guard raw provider/model overrides so a model cannot silently select a metered route. */
   validateExplicit?: (selection: AgentSelectionOverride) => AgentSelectionOverride | Promise<AgentSelectionOverride>
+  /** Optional journal hook. When present, agent() records/replays through it
+   *  instead of calling spawn() directly. The live callback is the existing
+   *  spawn + schema-parse path so a replay never starts a child. */
+  journalAgent?(prompt: string, opts: AgentOpts, live: () => Promise<unknown>): Promise<unknown>
 }
 
 export type WorkflowTier = "small" | "medium" | "big"
@@ -182,28 +186,30 @@ function buildScope(host: WorkflowHost, args: unknown): Record<string, unknown> 
     if (++totalAgents > MAX_AGENTS_PER_RUN) {
       throw new Error(`workflow exceeded the ${MAX_AGENTS_PER_RUN}-agent per-run cap (likely a runaway loop).`)
     }
-    const selection = await selectionFor(opts)
-    const label = opts.label ?? deriveLabel(prompt)
-    const phase = opts.phase ?? currentPhase
-    const title = phase ? `${phase} · ${label}` : label
-
-    return sem.run(async () => {
-      const instructions = opts.schema ? prompt + schemaSuffix(opts.schema) : prompt
-      const text = await host.spawn({ title, instructions, selection })
-      if (!opts.schema) return text
-      const parsed = extractJson(text)
-      if (parsed !== undefined) return parsed
-      // One corrective retry, then give up (null → the script can .filter(Boolean)).
-      const retry = await host.spawn({
-        title: `${title} (retry)`,
-        instructions:
-          instructions +
-          "\n\nYour previous reply was NOT valid JSON. Return ONLY the JSON value, nothing else — no prose, no code fences.",
-        selection,
+    const runLive = async () => {
+      const selection = await selectionFor(opts)
+      const label = opts.label ?? deriveLabel(prompt)
+      const phase = opts.phase ?? currentPhase
+      const title = phase ? `${phase} · ${label}` : label
+      return sem.run(async () => {
+        const instructions = opts.schema ? prompt + schemaSuffix(opts.schema) : prompt
+        const text = await host.spawn({ title, instructions, selection })
+        if (!opts.schema) return text
+        const parsed = extractJson(text)
+        if (parsed !== undefined) return parsed
+        // One corrective retry, then give up (null → the script can .filter(Boolean)).
+        const retry = await host.spawn({
+          title: `${title} (retry)`,
+          instructions:
+            instructions +
+            "\n\nYour previous reply was NOT valid JSON. Return ONLY the JSON value, nothing else — no prose, no code fences.",
+          selection,
+        })
+        const reparsed = extractJson(retry)
+        return reparsed === undefined ? null : reparsed
       })
-      const reparsed = extractJson(retry)
-      return reparsed === undefined ? null : reparsed
-    })
+    }
+    return host.journalAgent ? host.journalAgent(prompt, opts, runLive) : runLive()
   }
 
   // parallel/pipeline deliberately do NOT take a semaphore slot themselves — only

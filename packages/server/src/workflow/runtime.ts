@@ -77,7 +77,7 @@ const SHADOWED = [
  * touch `export` immediately preceding a declaration keyword, so it can't corrupt
  * an `export` occurring inside a string.
  */
-function stripExports(script: string): string {
+export function stripExports(script: string): string {
   return script.replace(/\bexport\s+(?=(?:default\s+)?(?:const|let|var|function|class|async\s+function)\b)/g, "")
 }
 

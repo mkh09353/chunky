@@ -5,9 +5,9 @@
 // model id and its reasoning options {effort, speed}. Keeping the selection
 // per-provider means switching provider and back restores that provider's last
 // model + knobs. Missing/corrupt file → defaults (never throws).
-import { existsSync, readFileSync, renameSync, writeFileSync } from "node:fs"
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs"
 import { randomBytes } from "node:crypto"
-import { join } from "node:path"
+import { dirname, join } from "node:path"
 import type { SkillModelBinding } from "@chunky/protocol"
 
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max"
@@ -330,6 +330,7 @@ function save(next: Settings): void {
     // old complete JSON document or the new complete JSON document, never a
     // truncated write.
     const temporary = `${path}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`
+    mkdirSync(dirname(path), { recursive: true })
     writeFileSync(temporary, JSON.stringify(merged, null, 2), { mode: 0o600 })
     renameSync(temporary, path)
     cache = merged

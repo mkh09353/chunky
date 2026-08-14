@@ -14,6 +14,8 @@ Store.logUsage({ sessionId, role: "lead", provider: "mystery", model: "not-price
 const billing = (provider: string) => provider === "codex" ? "subscription" : null
 const series = Store.usageSeries({ scope: "session", sessionId }, from, to, billing)
 expect(series.buckets).toHaveLength(3)
+// Static MODEL_PRICING["gpt-4o"] = {input:2.5, output:10, cacheRead:1.25}:
+// (1e6*2.5 + 1e5*10 + 5e5*1.25) / 1e6 = 4.125. cacheSavings = 5e5*(2.5-1.25)/1e6 = 0.625.
 expect(series.buckets[0]).toMatchObject({ date: from, requests: 1, inputTokens: 1_000_000, estimatedApiCost: 4.125, unpricedRequests: 0 })
 expect(series.buckets[0]!.byProvider).toEqual([{ provider: "codex", billing: "subscription", estimatedApiCost: 4.125, tokens: 1_600_000 }])
 expect(series.buckets[1]).toMatchObject({ date: "2026-07-02", requests: 0, estimatedApiCost: 0, byProvider: [] })

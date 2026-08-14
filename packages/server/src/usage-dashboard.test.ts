@@ -7,7 +7,14 @@ test("usage dashboard store queries", async () => {
   const dir = await mkdtemp(join(tmpdir(), "chunky-usage-dashboard-test-"))
   const proc = Bun.spawn([process.execPath, "run", "packages/server/src/usage-dashboard-smoke-child.ts"], {
     cwd: process.cwd(),
-    env: { ...process.env, CHUNKY_DB: join(dir, "store.db") },
+    env: {
+      ...process.env,
+      CHUNKY_DB: join(dir, "store.db"),
+      // Pin an empty models.dev cache so gpt-4o uses the static MODEL_PRICING
+      // table (2.5/10/1.25). A live cache first-wins Cortecs' gpt-4o card and
+      // inflates estimatedApiCost (4.125 → 4.3875) without any alias rewrite.
+      CHUNKY_MODELS_CACHE: join(dir, "missing-models.json"),
+    },
     stdout: "pipe",
     stderr: "pipe",
   })

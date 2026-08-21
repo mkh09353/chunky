@@ -38,6 +38,12 @@ import { annotateWorkflowResult, prepareJournaledHost, WorkflowJournalError } fr
 import { workflowRouteResolver } from "./workflow/router.ts"
 import { streamWithCheckpointRecovery } from "./checkpoint-recovery.ts"
 import { createDelegateWatchdog } from "./watchdog.ts"
+import {
+  DELEGATE_TRANSPORT_RETRY_PROMPT,
+  isTransientDelegateFailure,
+  shouldRetryDelegate,
+  transientFailureReason,
+} from "./transient-failure.ts"
 import { Store } from "./store.ts"
 import { appendReminder } from "./tasks.ts"
 import { routeBackgroundNotice } from "./background-dispatch.ts"
@@ -346,50 +352,86 @@ export class ThreadManager implements ThreadSpawner {
     // Inactivity watchdog: if the child's stream goes silent (stalled provider
     // connection), abort it and hand the lead a real error instead of hanging
     // the awaited tool promise forever. Every event the child emits resets it.
-    const dog = createDelegateWatchdog({ emit: this.emit, label: `child thread "${opts.title}"`, parent: this.workflowAbort ?? this.abort })
+    // One in-place retry covers a classified transport drop (empty completion,
+    // socket close, watchdog stall) so the lead is not the retry loop.
+    const parentAbort = this.workflowAbort ?? this.abort
+    let dog = createDelegateWatchdog({ emit: this.emit, label: `child thread "${opts.title}"`, parent: parentAbort })
+    let result = ""
     try {
-      if (providerRuntime(selection.provider) === "anthropic-sdk") {
-        const { runAnthropicAgent } = await import("./anthropic-runner.ts")
-        return ThreadManager.nonEmptyReport(
-          await runAnthropicAgent({
-            selection,
-            threadId: childThreadId,
-            prompt: opts.instructions,
-            emit: dog.emit,
-            eventThreadId: childThreadId,
-            freshSession: true,
-            workspace: this.workspace,
-            repositoryLess: Store.repositoryScopeOf(this.rootId) === "none",
-            abort: dog.abort,
-            usageContext: { sessionId: this.rootId, role: "child", delegationId },
-          }),
-          "child thread",
+      const runChild = async (prompt: string, recover: boolean): Promise<string> => {
+        if (providerRuntime(selection.provider) === "anthropic-sdk") {
+          const { runAnthropicAgent } = await import("./anthropic-runner.ts")
+          return ThreadManager.nonEmptyReport(
+            await runAnthropicAgent({
+              selection,
+              threadId: childThreadId,
+              prompt,
+              emit: dog.emit,
+              eventThreadId: childThreadId,
+              freshSession: !recover,
+              workspace: this.workspace,
+              repositoryLess: Store.repositoryScopeOf(this.rootId) === "none",
+              abort: dog.abort,
+              usageContext: { sessionId: this.rootId, role: "child", delegationId },
+            }),
+            "child thread",
+          )
+        }
+
+        // A child spawned from inside the parent's tool node runs on the parent's
+        // ambient callback context, which would leak the child's LLM tokens into
+        // the PARENT's `messages` stream (duplicated, untagged). Create the child
+        // stream with a cleared async-local store so it is fully isolated: the
+        // child streams only through its OWN iterator, tagged with its threadId.
+        // Retry re-enters the same thread_id; checkpoint recovery strips a tool
+        // call that was persisted without its matching ToolMessage.
+        const agent = this.agentFor(selection, this.workspace, undefined, this.rootId)
+        const config = {
+          configurable: { thread_id: childThreadId, workspace: this.workspace },
+          streamMode: ["updates", "messages"],
+          recursionLimit: RECURSION_LIMIT,
+          signal: dog.abort.signal,
+        } as any
+        const stream = await AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () =>
+          recover
+            ? streamWithCheckpointRecovery(agent, { messages: [{ role: "user", content: prompt }] }, config)
+            : agent.stream({ messages: [{ role: "user", content: prompt }] }, config),
         )
+        return `${ThreadManager.nonEmptyReport(await translateStream(stream, childThreadId, dog.emit, undefined, undefined, { sessionId: this.rootId, selection, role: "child", delegationId }), "child thread")}\n\n[delegation: ${delegationId}]`
       }
 
-      // A child spawned from inside the parent's tool node runs on the parent's
-      // ambient callback context, which would leak the child's LLM tokens into
-      // the PARENT's `messages` stream (duplicated, untagged). Create the child
-      // stream with a cleared async-local store so it is fully isolated: the
-      // child streams only through its OWN iterator, tagged with its threadId.
-      const stream = await AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () =>
-        this.agentFor(selection, this.workspace, undefined, this.rootId).stream(
-          { messages: [{ role: "user", content: opts.instructions }] },
-          {
-            configurable: { thread_id: childThreadId, workspace: this.workspace },
-            streamMode: ["updates", "messages"],
-            recursionLimit: RECURSION_LIMIT,
-            signal: dog.abort.signal,
-          } as any,
-        ),
-      )
-      return `${ThreadManager.nonEmptyReport(await translateStream(stream, childThreadId, dog.emit, undefined, undefined, { sessionId: this.rootId, selection, role: "child", delegationId }), "child thread")}\n\n[delegation: ${delegationId}]`
-    } catch (err) {
-      const message = dog.timedOut() ? dog.timeoutMessage() : ((err as Error)?.message ?? String(err))
-      this.emit({ type: "error", message, threadId: childThreadId } as AgentEvent)
-      return `error: ${message}`
+      try {
+        result = await runChild(opts.instructions, false)
+      } catch (err) {
+        const userAborted = Boolean(parentAbort?.signal.aborted)
+        const message = dog.timedOut() ? dog.timeoutMessage() : ((err as Error)?.message ?? String(err))
+        if (!shouldRetryDelegate({
+          attempt: 0,
+          transient: isTransientDelegateFailure(err, dog, { userAborted }),
+          userAborted,
+        })) {
+          this.emit({ type: "error", message, threadId: childThreadId } as AgentEvent)
+          result = `error: ${message}`
+        } else {
+          this.emit({
+            type: "error",
+            message: `transport failure (${transientFailureReason(err, dog)}) — retrying once`,
+            threadId: childThreadId,
+          } as AgentEvent)
+          dog.dispose()
+          dog = createDelegateWatchdog({ emit: this.emit, label: `child thread "${opts.title}"`, parent: parentAbort })
+          try {
+            result = await runChild(DELEGATE_TRANSPORT_RETRY_PROMPT, true)
+          } catch (retryErr) {
+            const retryMessage = dog.timedOut() ? dog.timeoutMessage() : ((retryErr as Error)?.message ?? String(retryErr))
+            this.emit({ type: "error", message: retryMessage, threadId: childThreadId } as AgentEvent)
+            result = `error (after 1 retry): ${retryMessage}`
+          }
+        }
+      }
+      return result
     } finally {
-      Store.completeDelegation(delegationId, true)
+      Store.completeDelegation(delegationId, !/^error(?: \(after 1 retry\))?:/.test(result))
       dog.dispose()
       this.emit({ type: "thread.status", threadId: childThreadId, status: "idle", title: opts.title })
       unregisterThread(childThreadId)
@@ -840,42 +882,43 @@ export class ThreadManager implements ThreadSpawner {
     this.emit({ type: "thread.status", threadId: sidekickThreadId, status: "running", title })
 
     let finalText = ""
-    const dog = createDelegateWatchdog({ emit: this.emit, label: "sidekick", parent: this.abort })
+    let dog = createDelegateWatchdog({ emit: this.emit, label: "sidekick", parent: this.abort })
     try {
       const agentsMd = await distilledAgentsMd(this.workspace, rootSelection, this.rootId)
       const repoMemory = readRepoMemory(this.workspace, this.rootId)
-      if (providerRuntime(sidekickSel.provider) === "anthropic-sdk") {
-        // Anthropic sidekicks run via the SDK runtime with the worker prompt +
-        // the hands-on toolset (read/bash/search/write/edit — no delegation
-        // tools). The stable sidekickThreadId persists/resumes the session.
-        const { runAnthropicAgent } = await import("./anthropic-runner.ts")
-        finalText = await runAnthropicAgent({
-          selection: sidekickSel,
-          threadId: sidekickThreadId,
-          prompt: opts.brief,
-          emit: dog.emit,
-          eventThreadId: sidekickThreadId,
-          systemPrompt: sidekickSystemPrompt(agentsMd, "standard", repoMemory),
-          allowedTools: [
-            "mcp__chunky__read",
-            "mcp__chunky__bash",
-            "mcp__chunky__fffind",
-            "mcp__chunky__ffgrep",
-            "mcp__chunky__write",
-            "mcp__chunky__edit",
-          ],
-          workspace: this.workspace,
-          agentsMd,
-          abort: dog.abort,
-          usageContext: { sessionId: this.rootId, role: "sidekick", delegationId },
-        })
-      } else {
+      const runOnce = async (prompt: string): Promise<string> => {
+        if (providerRuntime(sidekickSel.provider) === "anthropic-sdk") {
+          // Anthropic sidekicks run via the SDK runtime with the worker prompt +
+          // the hands-on toolset (read/bash/search/write/edit — no delegation
+          // tools). The stable sidekickThreadId persists/resumes the session.
+          const { runAnthropicAgent } = await import("./anthropic-runner.ts")
+          return await runAnthropicAgent({
+            selection: sidekickSel,
+            threadId: sidekickThreadId,
+            prompt,
+            emit: dog.emit,
+            eventThreadId: sidekickThreadId,
+            systemPrompt: sidekickSystemPrompt(agentsMd, "standard", repoMemory),
+            allowedTools: [
+              "mcp__chunky__read",
+              "mcp__chunky__bash",
+              "mcp__chunky__fffind",
+              "mcp__chunky__ffgrep",
+              "mcp__chunky__write",
+              "mcp__chunky__edit",
+            ],
+            workspace: this.workspace,
+            agentsMd,
+            abort: dog.abort,
+            usageContext: { sessionId: this.rootId, role: "sidekick", delegationId },
+          })
+        }
         // Same async-local isolation as spawn(): a cleared store so the sidekick's
         // tokens stream only through its OWN iterator, tagged with its threadId.
         const stream = await AsyncLocalStorageProviderSingleton.getInstance().run(undefined, () =>
           streamWithCheckpointRecovery(
             this.sidekickAgentFor(sidekickSel, this.workspace, agentsMd, this.rootId, repoMemory),
-            { messages: [{ role: "user", content: opts.brief }] },
+            { messages: [{ role: "user", content: prompt }] },
             {
               configurable: { thread_id: sidekickThreadId, workspace: this.workspace },
               streamMode: ["updates", "messages"],
@@ -884,14 +927,40 @@ export class ThreadManager implements ThreadSpawner {
             } as any,
           ),
         )
-        finalText = await translateStream(stream, sidekickThreadId, dog.emit, undefined, undefined, { sessionId: this.rootId, selection: sidekickSel, role: "sidekick", delegationId })
+        return await translateStream(stream, sidekickThreadId, dog.emit, undefined, undefined, { sessionId: this.rootId, selection: sidekickSel, role: "sidekick", delegationId })
       }
-    } catch (err) {
-      const message = dog.timedOut() ? dog.timeoutMessage() : ((err as Error)?.message ?? String(err))
-      this.emit({ type: "error", message, threadId: sidekickThreadId } as AgentEvent)
-      finalText = `error: ${message}`
+
+      try {
+        finalText = await runOnce(opts.brief)
+      } catch (err) {
+        const userAborted = Boolean(this.abort?.signal.aborted)
+        const message = dog.timedOut() ? dog.timeoutMessage() : ((err as Error)?.message ?? String(err))
+        if (!shouldRetryDelegate({
+          attempt: 0,
+          transient: isTransientDelegateFailure(err, dog, { userAborted }),
+          userAborted,
+        })) {
+          this.emit({ type: "error", message, threadId: sidekickThreadId } as AgentEvent)
+          finalText = `error: ${message}`
+        } else {
+          this.emit({
+            type: "error",
+            message: `transport failure (${transientFailureReason(err, dog)}) — retrying once`,
+            threadId: sidekickThreadId,
+          } as AgentEvent)
+          dog.dispose()
+          dog = createDelegateWatchdog({ emit: this.emit, label: "sidekick", parent: this.abort })
+          try {
+            finalText = await runOnce(DELEGATE_TRANSPORT_RETRY_PROMPT)
+          } catch (retryErr) {
+            const retryMessage = dog.timedOut() ? dog.timeoutMessage() : ((retryErr as Error)?.message ?? String(retryErr))
+            this.emit({ type: "error", message: retryMessage, threadId: sidekickThreadId } as AgentEvent)
+            finalText = `error (after 1 retry): ${retryMessage}`
+          }
+        }
+      }
     } finally {
-      const ok = !finalText.startsWith("error:")
+      const ok = !/^error(?: \(after 1 retry\))?:/.test(finalText)
       Store.completeDelegation(delegationId, ok)
       recordSidekickComplete({
         delegationId,

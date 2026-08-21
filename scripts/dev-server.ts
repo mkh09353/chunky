@@ -46,30 +46,34 @@ process.env.CHUNKY_SETTINGS =
 // Make the server (imported below) and every child read the same port.
 process.env.CHUNKY_PORT = String(port)
 
-/** Kill any process LISTENing on `p` (best-effort; macOS/Linux via lsof). */
-function freePort(p: number): void {
+/** Kill any process LISTENing on `p` (best-effort; macOS/Linux via lsof).
+ *  Returns true if we terminated anything (caller then waits for the socket). */
+function freePort(p: number): boolean {
   let out = ""
   try {
     const res = Bun.spawnSync(["lsof", "-ti", `tcp:${p}`, "-sTCP:LISTEN"])
     out = new TextDecoder().decode(res.stdout)
   } catch {
-    return // no lsof (unlikely on macOS/Linux) — let Bun.serve surface EADDRINUSE
+    return false // no lsof (unlikely on macOS/Linux) — let Bun.serve surface EADDRINUSE
   }
+  let killed = false
   for (const line of out.split("\n")) {
     const pid = Number(line.trim())
     if (!pid || pid === process.pid) continue
     try {
       process.kill(pid, "SIGTERM")
+      killed = true
       console.log(`[dev] freed port ${p} — terminated stale server (pid ${pid})`)
     } catch {
       // already gone / not ours — ignore
     }
   }
+  return killed
 }
 
-freePort(port)
-// Give the OS a beat to release the socket before the server binds it.
-await new Promise((r) => setTimeout(r, 250))
+// Only settle when we actually killed a stale listener — the common case (clean
+// port) shouldn't pay a fixed 250ms tax on every start.
+if (freePort(port)) await new Promise((r) => setTimeout(r, 250))
 
 console.log(`[dev] starting server on http://localhost:${port} (dev port; DEFAULT_PORT=${DEFAULT_PORT})`)
 await import("../packages/server/src/index.ts")

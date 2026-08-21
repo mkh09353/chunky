@@ -10,7 +10,7 @@
   },
   "dependencies": {
     "@chunky/protocol": "workspace:*",
-    "@ff-labs/fff-bun": "0.9.6",
+    "@ff-labs/fff-bun": "0.10.5",
     "@opentui/core": "^0.4.3",
     "@opentui/react": "^0.4.3",
     "figures": "^6.1.0",

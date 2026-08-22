@@ -112,6 +112,7 @@ export function rehydrateSession(sessionId: string): Promise<boolean> {
 
 export async function sweepArchives(now = Date.now(), running = new Set<string>()): Promise<string[]> {
   const db = openSqlite(durableDbPath), cutoff = now - ARCHIVE_AFTER_DAYS * 86_400_000
+  try { db.query("DELETE FROM resource_samples WHERE ts < ?").run(cutoff) } catch {}
   const rows = db.query("SELECT id FROM sessions WHERE last_activity<? AND incognito=0 AND id NOT IN (SELECT session_id FROM goals WHERE status='active')").all(cutoff) as Array<{ id: string }>
   const archived: string[] = []
   for (const row of rows) if (!running.has(row.id) && await archiveSession(row.id)) archived.push(row.id)

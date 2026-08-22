@@ -73,6 +73,30 @@ export interface SessionCacheMetrics {
   coldDetachedWakeInputTokens: number
   coldDetachedWakeCacheWriteTokens: number
 }
+export type ResourcePercentiles = { p50: number; p95: number; p99: number; max: number }
+export interface ResourceUsageResponse {
+  status: "ok"
+  sampleCount: number
+  intervalMs: number
+  windowMs: number
+  server: {
+    rssBytes: ResourcePercentiles
+    cpuPercent: ResourcePercentiles
+    current: { rssBytes: number; heapUsedBytes: number; cpuPercent: number }
+  }
+  children: { rssBytes: ResourcePercentiles; cpuPercent: ResourcePercentiles }
+  total: { rssBytes: ResourcePercentiles; cpuPercent: ResourcePercentiles }
+  peaks: Array<{
+    ts: number
+    totalRssBytes: number
+    serverRssBytes: number
+    cpuPercent: number
+    activeSessions: number | null
+    liveTasks: number | null
+    liveDelegates: number | null
+    topTasks: Array<{ taskId: string; sessionId: string; command: string; rssBytes: number }>
+  }>
+}
 
 export type ProviderQuotaStatus = "available" | "stale" | "not-authenticated" | "unsupported" | "error"
 export type ProviderQuotaWindowKind = "five-hour" | "weekly" | "weekly-model" | "other"
@@ -745,6 +769,7 @@ export const ROUTES = {
   usageSeries: `/api/usage/series`,
   usageBreakdown: `/api/usage/breakdown`,
   usageCache: `/api/usage/cache`,
+  usageResources: `/api/usage/resources`,
   providerQuotas: `/api/provider-quotas`,
   // Local authenticated desktop pairing API. No unpair route: the hosted relay
   // protocol has no targeted revocation operation.

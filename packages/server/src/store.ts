@@ -39,6 +39,20 @@ export type UsageLedgerInput = {
   cacheCold?: boolean | null; cacheColdReason?: string | null; idleMs?: number | null; wakeSource?: string | null
   detachedSpawnId?: string | null; turnIndex?: number | null
 }
+export type ResourceSampleInput = {
+  ts: number
+  scope: "server" | "task"
+  sessionId?: string | null
+  taskId?: string | null
+  pid?: number | null
+  rssBytes: number
+  heapUsedBytes?: number | null
+  cpuPercent?: number | null
+  activeSessions?: number | null
+  liveTasks?: number | null
+  liveDelegates?: number | null
+  command?: string | null
+}
 export type DelegationInput = { id: string; sessionId: string; kind: "sidekick" | "review" | "child" | "workflow_agent"; seat?: string; provider: string; model: string; effort?: string; briefSnippet: string }
 
 /** The durable path is fixed when this module opens its connection. Exporting it
@@ -121,6 +135,16 @@ db.exec(`
     created_at INTEGER NOT NULL, last_activity INTEGER NOT NULL, archived_at INTEGER NOT NULL,
     byte_length INTEGER, sha256 TEXT
   );
+  CREATE TABLE IF NOT EXISTS resource_samples (
+    id INTEGER PRIMARY KEY,
+    ts INTEGER NOT NULL,
+    scope TEXT NOT NULL,
+    session_id TEXT, task_id TEXT, pid INTEGER,
+    rss_bytes INTEGER NOT NULL, heap_used_bytes INTEGER, cpu_percent REAL,
+    active_sessions INTEGER, live_tasks INTEGER, live_delegates INTEGER,
+    command TEXT
+  );
+  CREATE INDEX IF NOT EXISTS resource_samples_ts ON resource_samples(ts);
 `)
 
 // Migration: sessions gained a `workspace` column so each repo has its own
@@ -177,6 +201,32 @@ db.exec(`
   if (!cols.some((c) => c.name === "failure_diagnosis")) {
     db.exec("ALTER TABLE ratings ADD COLUMN failure_diagnosis TEXT")
   }
+}
+
+// Resource samples: older databases predate the table. CREATE IF NOT EXISTS is
+// already in the bootstrap block; ADD COLUMN keeps a partial table current.
+{
+  db.exec(`CREATE TABLE IF NOT EXISTS resource_samples (
+    id INTEGER PRIMARY KEY,
+    ts INTEGER NOT NULL,
+    scope TEXT NOT NULL,
+    session_id TEXT, task_id TEXT, pid INTEGER,
+    rss_bytes INTEGER NOT NULL, heap_used_bytes INTEGER, cpu_percent REAL,
+    active_sessions INTEGER, live_tasks INTEGER, live_delegates INTEGER,
+    command TEXT
+  )`)
+  db.exec("CREATE INDEX IF NOT EXISTS resource_samples_ts ON resource_samples(ts)")
+  const cols = db.query("PRAGMA table_info(resource_samples)").all() as { name: string }[]
+  const add = (name: string, sql: string) => { if (!cols.some((c) => c.name === name)) db.exec(sql) }
+  add("session_id", "ALTER TABLE resource_samples ADD COLUMN session_id TEXT")
+  add("task_id", "ALTER TABLE resource_samples ADD COLUMN task_id TEXT")
+  add("pid", "ALTER TABLE resource_samples ADD COLUMN pid INTEGER")
+  add("heap_used_bytes", "ALTER TABLE resource_samples ADD COLUMN heap_used_bytes INTEGER")
+  add("cpu_percent", "ALTER TABLE resource_samples ADD COLUMN cpu_percent REAL")
+  add("active_sessions", "ALTER TABLE resource_samples ADD COLUMN active_sessions INTEGER")
+  add("live_tasks", "ALTER TABLE resource_samples ADD COLUMN live_tasks INTEGER")
+  add("live_delegates", "ALTER TABLE resource_samples ADD COLUMN live_delegates INTEGER")
+  add("command", "ALTER TABLE resource_samples ADD COLUMN command TEXT")
 }
 
 // Migration: delegations historically stored the user-facing picker alias
@@ -427,6 +477,54 @@ export const Store = {
         u.ts ?? Date.now(), input, output, u.reasoningTokens ?? 0, read, write, cost, u.cacheCold == null ? null : u.cacheCold ? 1 : 0,
         u.cacheColdReason ?? null, u.idleMs ?? null, u.wakeSource ?? null, u.detachedSpawnId ?? null, u.turnIndex ?? null)
     } catch { /* intentionally swallowed */ }
+  },
+  /** Best effort: sampling must never affect the server loop. Durable db only. */
+  logResourceSamples(rows: ResourceSampleInput[]): void {
+    if (!rows.length) return
+    try {
+      const insert = db.query(`INSERT INTO resource_samples
+        (ts,scope,session_id,task_id,pid,rss_bytes,heap_used_bytes,cpu_percent,active_sessions,live_tasks,live_delegates,command)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?)`)
+      retrySqliteTransaction(db, () => {
+        for (const row of rows) {
+          insert.run(
+            row.ts, row.scope, row.sessionId ?? null, row.taskId ?? null, row.pid ?? null,
+            row.rssBytes, row.heapUsedBytes ?? null, row.cpuPercent ?? null,
+            row.activeSessions ?? null, row.liveTasks ?? null, row.liveDelegates ?? null,
+            row.command ?? null,
+          )
+        }
+      })
+    } catch { /* intentionally swallowed */ }
+  },
+  resourceUsage(fromTs: number, toTs: number): ResourceSampleInput[] {
+    try {
+      const rows = db.query(`SELECT ts,scope,session_id,task_id,pid,rss_bytes,heap_used_bytes,cpu_percent,active_sessions,live_tasks,live_delegates,command
+        FROM resource_samples WHERE ts >= ? AND ts < ? ORDER BY ts ASC, id ASC`).all(fromTs, toTs) as Array<{
+          ts: number; scope: string; session_id: string | null; task_id: string | null; pid: number | null
+          rss_bytes: number; heap_used_bytes: number | null; cpu_percent: number | null
+          active_sessions: number | null; live_tasks: number | null; live_delegates: number | null; command: string | null
+        }>
+      return rows.map((row) => ({
+        ts: row.ts,
+        scope: row.scope === "task" ? "task" : "server",
+        sessionId: row.session_id,
+        taskId: row.task_id,
+        pid: row.pid,
+        rssBytes: row.rss_bytes,
+        heapUsedBytes: row.heap_used_bytes,
+        cpuPercent: row.cpu_percent,
+        activeSessions: row.active_sessions,
+        liveTasks: row.live_tasks,
+        liveDelegates: row.live_delegates,
+        command: row.command,
+      }))
+    } catch { return [] }
+  },
+  pruneResourceSamples(now = Date.now(), retainMs = 14 * 86_400_000): number {
+    try {
+      return db.query("DELETE FROM resource_samples WHERE ts < ?").run(now - retainMs).changes
+    } catch { return 0 }
   },
   usageRows(sessionId: string) { return backend(sessionId).query("SELECT role,provider,model,effort,SUM(input_tokens) inputTokens,SUM(output_tokens) outputTokens,SUM(reasoning_tokens) reasoningTokens,SUM(cache_read_tokens) cacheReadTokens,SUM(cache_write_tokens) cacheWriteTokens,SUM(cost) cost,COUNT(*) requests FROM usage_log WHERE session_id = ? GROUP BY role,provider,model,effort").all(sessionId) as any[] },
   sessionCacheMetrics(sessionId: string) {

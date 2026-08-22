@@ -108,6 +108,14 @@ export function hasLiveThreadDelegates(sessionId: string): boolean {
     (activeSidekicks.get(sessionId)?.size ?? 0) > 0
 }
 
+/** Cheap cross-session live-delegate count for resource samples. */
+export function liveDelegateCount(): number {
+  let n = 0
+  for (const map of runningChildrenBySession.values()) n += map.size
+  for (const map of activeSidekicks.values()) n += map.size
+  return n
+}
+
 export class ThreadManager implements ThreadSpawner {
   private readonly rootId: string
   private readonly emit: Emit

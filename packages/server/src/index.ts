@@ -47,6 +47,7 @@ import {
   type UsageSeriesResponse,
   type UsageBreakdownResponse,
   type SessionCacheMetrics,
+  type ResourceUsageResponse,
   type ProviderQuotasResponse,
   type EvalsResponse,
 } from "@chunky/protocol"
@@ -166,9 +167,10 @@ import { startUplink } from "./relay/uplink.ts"
 import { getModelAvailability, manageModelCatalog, setModelAvailability, type ModelCatalogAction } from "./model-catalog.ts"
 import { assertSelectionAllowed, isIncognitoSession, incognitoAllowlistFor, providerScope } from "./incognito.ts"
 import { manageSkillRepos, seedDefaultSkillRepos, type SkillRepoMutationAction } from "./skill-repos.ts"
-import { resetTasks, liveTaskCounts } from "./tasks.ts"
+import { resetTasks, liveTaskCounts, liveTaskTotals } from "./tasks.ts"
 import { hasRunningDetachedSpawns, resetDetachedSpawns } from "./detached-spawns.ts"
-import { hasLiveThreadDelegates } from "./threads.ts"
+import { hasLiveThreadDelegates, liveDelegateCount } from "./threads.ts"
+import { startResourceWatch, stopResourceWatch, buildResourceUsageResponse, RESOURCE_SAMPLE_INTERVAL_MS } from "./resource-watch.ts"
 import { installBackgroundDispatcher, type DetachedWakeProvenance } from "./background-dispatch.ts"
 import { currentSessionPorts, installPortEmitter } from "./ports.ts"
 import { databaseErrorMessage } from "./sqlite.ts"
@@ -903,6 +905,20 @@ const server = Bun.serve(withCors({
 
     if (req.method === "GET" && pathname === ROUTES.providerQuotas) {
       return json(await providerQuotas() satisfies ProviderQuotasResponse)
+    }
+
+    if (req.method === "GET" && pathname === ROUTES.usageResources) {
+      const raw = new URL(req.url).searchParams.get("hours")
+      const parsed = raw == null || raw === "" ? 24 : Number(raw)
+      if (!Number.isFinite(parsed)) return json({ error: "hours must be a number" }, 400)
+      const hours = Math.min(720, Math.max(1, Math.round(parsed)))
+      const windowMs = hours * 3_600_000
+      const toTs = Date.now()
+      const body: ResourceUsageResponse = buildResourceUsageResponse(Store.resourceUsage(toTs - windowMs, toTs + 1), {
+        intervalMs: RESOURCE_SAMPLE_INTERVAL_MS,
+        windowMs,
+      })
+      return json(body)
     }
 
     if (req.method === "GET" && (pathname === ROUTES.usageSeries || pathname === ROUTES.usageBreakdown)) {
@@ -2314,7 +2330,18 @@ const runArchiveSweep = () => void sweepArchives(Date.now(), new Set(running.key
 runArchiveSweep()
 const archiveSweepTimer = setInterval(runArchiveSweep, ARCHIVE_SWEEP_MS)
 archiveSweepTimer.unref()
+startResourceWatch({
+  context: () => {
+    const tasks = liveTaskTotals()
+    return {
+      activeSessions: Store.list().length,
+      liveTasks: tasks.tasks + tasks.monitors,
+      liveDelegates: liveDelegateCount(),
+    }
+  },
+})
 const shutdown = () => {
+  stopResourceWatch()
   clearInterval(archiveSweepTimer)
   stopOwnershipPoller?.()
   stopVersionStalenessPoller?.()

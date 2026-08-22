@@ -81,6 +81,29 @@ export function liveTaskCounts(sessionId: string): { tasks: number; monitors: nu
   return { tasks: taskCount, monitors: monitorCount }
 }
 
+/** Running background bash/monitor trees with a live subprocess pid. */
+export function liveTrackedProcesses(): Array<{ sessionId: string; taskId: string; kind: "bash" | "monitor"; command: string; pid: number }> {
+  sweepTerminalTasks()
+  const found: Array<{ sessionId: string; taskId: string; kind: "bash" | "monitor"; command: string; pid: number }> = []
+  for (const map of tasks.values()) {
+    for (const record of map.values()) {
+      const pid = record.process?.pid
+      if (record.isTerminal || !pid || pid <= 0) continue
+      found.push({ sessionId: record.sessionId, taskId: record.taskId, kind: record.kind, command: record.command, pid })
+    }
+  }
+  return found
+}
+
+export function liveTaskTotals(): { tasks: number; monitors: number } {
+  sweepTerminalTasks()
+  let taskCount = 0, monitorCount = 0
+  for (const map of tasks.values()) for (const record of map.values()) if (!record.isTerminal) {
+    if (record.kind === "monitor") monitorCount++; else taskCount++
+  }
+  return { tasks: taskCount, monitors: monitorCount }
+}
+
 export function appendTaskOutput(record: TaskRecord, chunk: string): void {
   appendFileSync(record.spillPath, chunk, "utf8")
   record.rawOutputBytes += Buffer.byteLength(chunk)

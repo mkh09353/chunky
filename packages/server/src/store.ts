@@ -119,7 +119,7 @@ db.exec(`
   CREATE TABLE IF NOT EXISTS delegations (
     id TEXT PRIMARY KEY, session_id TEXT NOT NULL, kind TEXT NOT NULL, seat TEXT,
     provider TEXT NOT NULL, model TEXT NOT NULL, effort TEXT, brief_snippet TEXT NOT NULL,
-    started_at INTEGER NOT NULL, completed_at INTEGER, ok INTEGER
+    started_at INTEGER NOT NULL, completed_at INTEGER, ok INTEGER, cancelled INTEGER NOT NULL DEFAULT 0
   );
   CREATE TABLE IF NOT EXISTS ratings (
     delegation_id TEXT PRIMARY KEY, rating INTEGER NOT NULL, rework INTEGER NOT NULL DEFAULT 0,
@@ -203,6 +203,15 @@ db.exec(`
   }
 }
 
+// Cancelled delegations are completed (completed_at set) but are not quality
+// samples: ok stays NULL and cancelled=1 so scoreboards / rate_delegate skip them.
+{
+  const cols = db.query("PRAGMA table_info(delegations)").all() as { name: string }[]
+  if (!cols.some((c) => c.name === "cancelled")) {
+    db.exec("ALTER TABLE delegations ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0")
+  }
+}
+
 // Resource samples: older databases predate the table. CREATE IF NOT EXISTS is
 // already in the bootstrap block; ADD COLUMN keeps a partial table current.
 {
@@ -253,6 +262,12 @@ db.exec(`
 // Mirror the complete, migrated durable schema exactly. Incognito rows never
 // use the durable connection; this copy only defines the in-process database.
 for (const row of db.query("SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL").all() as Array<{ sql: string }>) memoryDb.exec(row.sql)
+{
+  const cols = memoryDb.query("PRAGMA table_info(delegations)").all() as { name: string }[]
+  if (cols.length && !cols.some((c) => c.name === "cancelled")) {
+    memoryDb.exec("ALTER TABLE delegations ADD COLUMN cancelled INTEGER NOT NULL DEFAULT 0")
+  }
+}
 function backend(sessionId: string) { return isIncognitoSession(sessionId) ? memoryDb : db }
 
 type UsageDashboardScope = { scope: "all" | "session"; sessionId?: string }
@@ -312,7 +327,7 @@ function ratingAggregates(scope: UsageDashboardScope, from: string, to: string):
   const sessionWhere = scope.scope === "session" ? "AND d.session_id = $session" : ""
   return conn.query(`SELECT d.provider,d.model,AVG(r.rating) avgRating,COUNT(r.rating) ratedCount,AVG(r.rework) reworkRate
     FROM delegations d LEFT JOIN ratings r ON r.delegation_id=d.id
-    WHERE EXISTS (SELECT 1 FROM usage_log u WHERE u.delegation_id=d.id AND u.ts >= $start AND u.ts < $end)
+    WHERE IFNULL(d.cancelled,0)=0 AND EXISTS (SELECT 1 FROM usage_log u WHERE u.delegation_id=d.id AND u.ts >= $start AND u.ts < $end)
     ${sessionWhere} GROUP BY d.provider,d.model`)
     .all(scope.scope === "session"
       ? { $start: localDateStart(from), $end: localDateStart(nextLocalDate(to)), $session: scope.sessionId! }
@@ -328,7 +343,7 @@ function ratingSeatAggregates(scope: UsageDashboardScope, from: string, to: stri
   return conn.query(`SELECT d.provider,d.model,d.kind,NULLIF(d.seat,'default') seat,
     AVG(r.rating) avgRating,COUNT(r.rating) ratedCount,AVG(r.rework) reworkRate,COUNT(*) samples
     FROM delegations d LEFT JOIN ratings r ON r.delegation_id=d.id
-    WHERE EXISTS (SELECT 1 FROM usage_log u WHERE u.delegation_id=d.id AND u.ts >= $start AND u.ts < $end)
+    WHERE IFNULL(d.cancelled,0)=0 AND EXISTS (SELECT 1 FROM usage_log u WHERE u.delegation_id=d.id AND u.ts >= $start AND u.ts < $end)
     ${sessionWhere} GROUP BY d.provider,d.model,d.kind,NULLIF(d.seat,'default')`)
     .all(scope.scope === "session"
       ? { $start: localDateStart(from), $end: localDateStart(nextLocalDate(to)), $session: scope.sessionId! }
@@ -463,9 +478,35 @@ function rowToGoal(row: GoalRow): Goal {
 
 export const Store = {
   createDelegation(d: DelegationInput): void { try { backend(d.sessionId).query("INSERT INTO delegations (id,session_id,kind,seat,provider,model,effort,brief_snippet,started_at) VALUES (?,?,?,?,?,?,?,?,?)").run(d.id,d.sessionId,d.kind,d.seat??null,d.provider,resolveCatalogModelId(d.model),d.effort ?? null,d.briefSnippet.slice(0,200),Date.now()) } catch {} },
-  completeDelegation(id: string, ok: boolean): void { try { for (const conn of [db, memoryDb]) conn.query("UPDATE delegations SET completed_at=?,ok=? WHERE id=?").run(Date.now(),ok?1:0,id) } catch {} },
+  completeDelegation(id: string, ok: boolean | "cancelled"): void {
+    try {
+      const now = Date.now()
+      for (const conn of [db, memoryDb]) {
+        if (ok === "cancelled") conn.query("UPDATE delegations SET completed_at=?,ok=NULL,cancelled=1 WHERE id=?").run(now, id)
+        else conn.query("UPDATE delegations SET completed_at=?,ok=?,cancelled=0 WHERE id=?").run(now, ok ? 1 : 0, id)
+      }
+    } catch { /* best effort */ }
+  },
   rateDelegation(id: string, rating: number, rework: boolean, reason: string, judge: AgentSelection, diagnosis?: string): void { for (const conn of [db, memoryDb]) conn.query("INSERT INTO ratings (delegation_id,rating,rework,reason,failure_diagnosis,judge_provider,judge_model,ts) VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(delegation_id) DO UPDATE SET rating=excluded.rating,rework=excluded.rework,reason=excluded.reason,failure_diagnosis=excluded.failure_diagnosis,judge_provider=excluded.judge_provider,judge_model=excluded.judge_model,ts=excluded.ts").run(...([id,rating,rework?1:0,reason,diagnosis ?? null,judge.provider,judge.model,Date.now()] as any)) },
-  resolveDelegation(sessionId: string, ref: string): string | null { const conn=backend(sessionId); const seat = ref.startsWith("last:") ? ref.slice(5) : null; const row = conn.query(`SELECT id FROM delegations WHERE session_id=? AND completed_at IS NOT NULL ${seat ? "AND seat=?" : ""} ORDER BY completed_at DESC LIMIT 1`).get(...(seat ? [sessionId,seat] : [sessionId])) as {id:string}|null; return ref !== "last" && !ref.startsWith("last:") ? (conn.query("SELECT id FROM delegations WHERE session_id=? AND id=?").get(sessionId,ref) as {id:string}|null)?.id ?? null : row?.id ?? null },
+  resolveDelegation(sessionId: string, ref: string): string | null {
+    const conn = backend(sessionId)
+    if (ref !== "last" && !ref.startsWith("last:")) {
+      return (conn.query("SELECT id FROM delegations WHERE session_id=? AND id=?").get(sessionId, ref) as { id: string } | null)?.id ?? null
+    }
+    const seat = ref.startsWith("last:") ? ref.slice(5) : null
+    const row = conn.query(`SELECT id FROM delegations WHERE session_id=? AND completed_at IS NOT NULL AND IFNULL(cancelled,0)=0 ${seat ? "AND seat=?" : ""} ORDER BY completed_at DESC LIMIT 1`).get(...(seat ? [sessionId, seat] : [sessionId])) as { id: string } | null
+    return row?.id ?? null
+  },
+  delegationCancelled(id: string): boolean {
+    for (const conn of [db, memoryDb]) {
+      const row = conn.query("SELECT cancelled FROM delegations WHERE id=?").get(id) as { cancelled: number | null } | null
+      if (row) return row.cancelled === 1
+    }
+    return false
+  },
+  delegationsForSession(sessionId: string): Array<{ id: string; kind: string; seat: string | null; ok: number | null; cancelled: number; completed_at: number | null }> {
+    return backend(sessionId).query("SELECT id,kind,seat,ok,cancelled,completed_at FROM delegations WHERE session_id=?").all(sessionId) as Array<{ id: string; kind: string; seat: string | null; ok: number | null; cancelled: number; completed_at: number | null }>
+  },
   /** Best effort by design: accounting must never affect an agent run. */
   logUsage(u: UsageLedgerInput): void {
     try {
@@ -597,7 +638,7 @@ export const Store = {
   ) SELECT d.provider,d.model,d.effort,d.kind,d.seat,COUNT(*) samples,AVG(r.rating) avgRating,COUNT(r.rating) ratedCount,
     AVG(r.rework) reworkRate,SUM(u.totalCost) totalCost,SUM(COALESCE(u.totalTokens,0)) totalTokens
     FROM delegations d LEFT JOIN ratings r ON r.delegation_id=d.id LEFT JOIN usage_by_delegation u ON u.delegation_id=d.id
-    ${sessionId ? "WHERE d.session_id = ?" : ""} GROUP BY d.provider,d.model,d.effort,d.kind,d.seat`).all(...(sessionId ? [sessionId] : [])) as any[] },
+    WHERE IFNULL(d.cancelled,0)=0${sessionId ? " AND d.session_id = ?" : ""} GROUP BY d.provider,d.model,d.effort,d.kind,d.seat`).all(...(sessionId ? [sessionId] : [])) as any[] },
   getTodos(sessionId: string): TodoSnapshot[] {
     const row = backend(sessionId).query("SELECT json FROM todos WHERE session_id=?").get(sessionId) as { json: string } | null
     return row ? JSON.parse(row.json) as TodoSnapshot[] : []

@@ -44,6 +44,8 @@ import {
   type UpdatePrReviewsConfigRequest,
   type PrReviewsConfig,
   type SessionAgentConfigResponse,
+  type StopDelegateRequest,
+  type StopDelegateResponse,
   type UsageSeriesResponse,
   type UsageBreakdownResponse,
   type SessionCacheMetrics,
@@ -169,7 +171,7 @@ import { assertSelectionAllowed, isIncognitoSession, incognitoAllowlistFor, prov
 import { manageSkillRepos, seedDefaultSkillRepos, type SkillRepoMutationAction } from "./skill-repos.ts"
 import { resetTasks, liveTaskCounts, liveTaskTotals } from "./tasks.ts"
 import { hasRunningDetachedSpawns, resetDetachedSpawns } from "./detached-spawns.ts"
-import { hasLiveThreadDelegates, liveDelegateCount } from "./threads.ts"
+import { hasLiveThreadDelegates, liveDelegateCount, stopDelegate } from "./threads.ts"
 import { startResourceWatch, stopResourceWatch, buildResourceUsageResponse, RESOURCE_SAMPLE_INTERVAL_MS } from "./resource-watch.ts"
 import { installBackgroundDispatcher, type DetachedWakeProvenance } from "./background-dispatch.ts"
 import { currentSessionPorts, installPortEmitter } from "./ports.ts"
@@ -395,7 +397,7 @@ function reconcileStaleRun(sessionId: string): void {
   if (running.has(sessionId)) return
 
   let rootStatus: "idle" | "running" | undefined
-  const threadStatus = new Map<string, { status: "idle" | "running"; title?: string }>()
+  const threadStatus = new Map<string, { status: "idle" | "running" | "cancelled"; title?: string }>()
   for (const ev of Store.statusEvents(sessionId)) {
     if (ev.type === "session.status") {
       rootStatus = ev.status
@@ -1943,7 +1945,7 @@ const server = Bun.serve(withCors({
     }
 
     // Match /api/sessions/:id/(events|messages|interrupt|goal|ship|cache)
-    const m = pathname.match(/^\/api\/sessions\/([^/]+)\/(events|messages|interrupt|compact|goal|todos|ship|cache|rewind-points|rewind|fork|agent-config)$/)
+    const m = pathname.match(/^\/api\/sessions\/([^/]+)\/(events|messages|interrupt|stop-delegate|compact|goal|todos|ship|cache|rewind-points|rewind|fork|agent-config)$/)
     if (m) {
       const [, sessionId, kind] = m
       // An interrupted restore may already have recreated the session row while
@@ -2154,6 +2156,18 @@ const server = Bun.serve(withCors({
         else reconcileStaleRun(sessionId)
         interjections.delete(sessionId)
         return new Response(null, { status: 202, headers: corsHeaders(req) })
+      }
+
+      // POST .../stop-delegate -> cancel a live sidekick or detached spawn.
+      // Does NOT abort the lead turn.
+      if (kind === "stop-delegate" && req.method === "POST") {
+        let body: StopDelegateRequest = {}
+        try { body = await req.json().catch(() => ({})) as StopDelegateRequest } catch { return json({ error: "invalid JSON body" }, 400) }
+        if (body.runId != null && typeof body.runId !== "string") return json({ error: "invalid runId" }, 400)
+        if (body.seat != null && typeof body.seat !== "string") return json({ error: "invalid seat" }, 400)
+        const result: StopDelegateResponse = await stopDelegate(sessionId, { runId: body.runId, seat: body.seat }, "user")
+        const status = result.outcome === "not-found" ? 404 : result.outcome === "ambiguous" ? 409 : 200
+        return json(result, status)
       }
 
       // POST .../ship -> 202. Inject the handoff prompt into THIS session: its

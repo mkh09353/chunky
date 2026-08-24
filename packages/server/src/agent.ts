@@ -74,6 +74,7 @@ import { appBrowserTier, onAppBrowserTierChange } from "./app-browser.ts"
 import { hasAppZoo, onAppZooChange } from "./app-zoo.ts"
 import { zooTools } from "./tools/zoo.ts"
 import { rateDelegate } from "./tools/rate-delegate.ts"
+import { stopDelegateTool } from "./tools/stop-delegate.ts"
 import { remember } from "./tools/remember.ts"
 import { papercut } from "./tools/papercut.ts"
 import { review } from "./tools/review.ts"
@@ -332,6 +333,7 @@ export function executorToolsFor(selection: AgentSelection, sessionId?: string) 
     ...(sidekickSel ? [sidekick] : []),
     spawnThread,
     rateDelegate,
+    stopDelegateTool,
     ...goalTools,
     // DeepAgents' write_todos was deliberately removed; this is its intentional lead-only replacement.
     updateTodos,

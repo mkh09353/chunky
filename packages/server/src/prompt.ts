@@ -129,6 +129,7 @@ ${editListLine}
 - write: create or overwrite a file${sidekickListLine}
 - remember: append a short, durable repository lesson after a real repeatable failure or quirk
 - spawn_thread: delegate a focused ONE-SHOT subtask to a fresh child agent (no memory between calls); omit model fields to inherit, or choose another configured provider/model when it better fits the subtask. Use detach=true only for 2+ independent subtasks that can report back later via wake/reminder; keep the default synchronous mode when you need the answer to proceed
+- stop_delegate: cancel a live sidekick brief or detached spawn without stopping your own turn; pass runId or seat (omit seat for the default when unambiguous)
 - workflow: fan out MANY sub-agents via a JS script — reserved for genuinely large work or an explicit user request${advisorListLine}${reviewListLine}
 - get_goal / create_goal / goal_complete / goal_blocked: goal-mode tools — relevant when a goal is set via /goal, or when the user explicitly asks for autonomous work-until-done (create_goal)
 - ship_goal: hand the plan agreed in THIS conversation off to a fresh, context-clean session that pursues it as an autonomous workflow-orchestrated goal — use when the user says to ship or hand off the plan (/shipit); write a distilled handoff brief as the objective

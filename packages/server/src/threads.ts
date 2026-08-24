@@ -2,13 +2,13 @@
 // FULL, independent agent turn: it mints a childThreadId, runs `agent.stream`
 // on its OWN LangGraph `thread_id = childThreadId` (its own checkpointer entry),
 // pipes that stream through the shared `translateStream` tagged with the child's
-// id, and brackets it with `thread.spawn` + `thread.status running/idle`. Because
+// id, and brackets it with `thread.spawn` + `thread.status running/idle/cancelled`. Because
 // each spawn is a real independent agent run whose model also has `spawn_thread`,
 // children can spawn children (recursion). All events flow over the existing
 // session SSE — no new routes.
 import { randomUUID } from "node:crypto"
 import { AsyncLocalStorageProviderSingleton } from "@langchain/core/singletons"
-import type { AgentEvent } from "@chunky/protocol"
+import type { AgentEvent, StopDelegateRequest, StopDelegateResponse } from "@chunky/protocol"
 import type { Emit } from "./event-emitter.ts"
 import { translateStream } from "./run.ts"
 import { getAdvisorAgent, getAgent, getReviewAgent, getSidekickAgent, RECURSION_LIMIT } from "./agent.ts"
@@ -47,8 +47,17 @@ import {
 import { Store } from "./store.ts"
 import { appendReminder } from "./tasks.ts"
 import { routeBackgroundNotice } from "./background-dispatch.ts"
-import { createDetachedSpawn, detachedSpawnLimit, finishDetachedSpawn, type DetachedSpawnRecord } from "./detached-spawns.ts"
-import { recordSidekickComplete, recordSidekickStart, type EvalBriefStruct } from "./eval-recorder.ts"
+import {
+  abortDetachedSpawn,
+  createDetachedSpawn,
+  detachedSpawnLimit,
+  finishDetachedSpawn,
+  getDetachedSpawn,
+  isCancelledDelegateReport,
+  listDetachedSpawns,
+  type DetachedSpawnRecord,
+} from "./detached-spawns.ts"
+import { discardSidekickCandidate, recordSidekickComplete, recordSidekickStart, type EvalBriefStruct } from "./eval-recorder.ts"
 
 /** Reasoning-effort cap for `big`-tier workflow agents: keep a lower configured
  *  effort, clamp anything at/above medium (or unset) to medium. */
@@ -90,6 +99,250 @@ const sidekickSeatTails = new Map<string, Promise<void>>()
 /** Seats with a detached sidekick brief still in flight. Keyed by root session
  * because detached work can outlive the originating ThreadManager registration. */
 const detachedSidekickSeats = new Map<string, Set<string>>()
+
+export const CANCELLED_BY_USER = "cancelled by user"
+export const CANCELLED_BY_LEAD = "cancelled by lead"
+
+function cancelledReason(source: "user" | "lead"): string {
+  return source === "lead" ? CANCELLED_BY_LEAD : CANCELLED_BY_USER
+}
+
+function isCancelledReason(text: string): boolean {
+  return isCancelledDelegateReport(text)
+}
+
+interface LiveDelegateHandle {
+  kind: "sidekick" | "child" | "advisor"
+  sessionId: string
+  threadId: string
+  seat?: string
+  abort: (reason: string) => void
+  done: Promise<void>
+}
+
+const liveDelegates = new Map<string, LiveDelegateHandle>()
+const lastTerminalSidekick = new Map<string, { seat: string; threadId: string; status: "cancelled" | "completed" | "failed"; at: number }>()
+const TERMINAL_SIDEKICK_TTL_MS = 30 * 60_000
+
+function liveSidekickKey(sessionId: string, seat: string): string {
+  return `${sessionId}\0sidekick\0${seat}`
+}
+
+function liveChildKey(sessionId: string, threadId: string): string {
+  return `${sessionId}\0child\0${threadId}`
+}
+
+function liveAdvisorKey(sessionId: string): string {
+  return `${sessionId}\0advisor`
+}
+
+function registerLiveDelegate(handle: LiveDelegateHandle): void {
+  const key = handle.kind === "sidekick"
+    ? liveSidekickKey(handle.sessionId, handle.seat ?? "default")
+    : handle.kind === "advisor"
+      ? liveAdvisorKey(handle.sessionId)
+      : liveChildKey(handle.sessionId, handle.threadId)
+  liveDelegates.set(key, handle)
+  // A detach=true / STEER-detach record may already exist (created before the
+  // worker's first await). Bind its abort to THIS handle only when the record
+  // names this exact worker — never every other child in the session.
+  for (const record of listDetachedSpawns(handle.sessionId)) {
+    if (record.status !== "running") continue
+    if (!recordMatchesHandle(record, handle)) continue
+    attachRecordAbortToHandle(record, handle)
+  }
+}
+
+function unregisterLiveDelegate(handle: LiveDelegateHandle): void {
+  const key = handle.kind === "sidekick"
+    ? liveSidekickKey(handle.sessionId, handle.seat ?? "default")
+    : handle.kind === "advisor"
+      ? liveAdvisorKey(handle.sessionId)
+      : liveChildKey(handle.sessionId, handle.threadId)
+  if (liveDelegates.get(key) === handle) liveDelegates.delete(key)
+}
+
+function terminalThreadStatus(text: string): "idle" | "cancelled" {
+  return isCancelledReason(text) ? "cancelled" : "idle"
+}
+
+function reportIsOk(text: string): boolean {
+  return !isCancelledReason(text) && !/^error(?: \(after 1 retry\))?:/.test(text)
+}
+
+function completeDelegationFromReport(id: string, text: string): void {
+  if (isCancelledReason(text)) Store.completeDelegation(id, "cancelled")
+  else Store.completeDelegation(id, reportIsOk(text))
+}
+
+function emitDelegateFailure(emit: Emit, threadId: string, message: string, cancelled: boolean): void {
+  if (cancelled) return
+  emit({ type: "error", message, threadId } as AgentEvent)
+}
+
+function abortReasonText(signal: AbortSignal, fallback: string): string {
+  if (signal.reason instanceof Error && signal.reason.message) return signal.reason.message
+  if (typeof signal.reason === "string" && signal.reason.trim()) return signal.reason
+  return fallback
+}
+
+function attachRecordAbortToHandle(record: DetachedSpawnRecord, handle: LiveDelegateHandle): void {
+  const fanIn = () => {
+    handle.abort(abortReasonText(record.abort.signal, "cancelled by user"))
+  }
+  record.abort.signal.addEventListener("abort", fanIn, { once: true })
+  if (record.abort.signal.aborted) fanIn()
+}
+
+/** The live worker this detached record is allowed to abort. Sidekicks match
+ *  by seat (their detached childThreadId is bookkeeping). Children match by
+ *  exact thread id. Advisors and every other sibling stay untouched. */
+function recordMatchesHandle(record: DetachedSpawnRecord, handle: LiveDelegateHandle): boolean {
+  if (handle.sessionId !== record.sessionId) return false
+  if (record.kind === "sidekick" || handle.kind === "sidekick") {
+    return handle.kind === "sidekick"
+      && record.kind === "sidekick"
+      && (handle.seat ?? "default") === (record.seat ?? "default")
+  }
+  if (handle.kind !== "child") return false
+  return handle.threadId === record.childThreadId
+}
+
+function fanDetachedAbortIntoLiveDogs(record: DetachedSpawnRecord): void {
+  for (const handle of liveDelegates.values()) {
+    if (!recordMatchesHandle(record, handle)) continue
+    attachRecordAbortToHandle(record, handle)
+  }
+}
+
+/** spawn() promises carry the child thread id so a later STEER-detach record
+ *  can name that exact worker instead of every live child in the session. */
+const workThreadIds = new WeakMap<Promise<string>, string>()
+
+function bindWorkThread(work: Promise<string>, threadId: string): void {
+  workThreadIds.set(work, threadId)
+}
+
+function threadIdOfWork(work: Promise<string> | (() => Promise<string>)): string | undefined {
+  return typeof work === "function" ? undefined : workThreadIds.get(work)
+}
+
+function rememberTerminalSidekick(sessionId: string, seat: string, threadId: string, status: "cancelled" | "completed" | "failed"): void {
+  lastTerminalSidekick.set(liveSidekickKey(sessionId, seat), { seat, threadId, status, at: Date.now() })
+}
+
+function rememberedTerminalSidekick(sessionId: string, seat: string): { seat: string; threadId: string; status: "cancelled" | "completed" | "failed" } | undefined {
+  const key = liveSidekickKey(sessionId, seat)
+  const remembered = lastTerminalSidekick.get(key)
+  if (!remembered) return undefined
+  if (Date.now() - remembered.at >= TERMINAL_SIDEKICK_TTL_MS) {
+    lastTerminalSidekick.delete(key)
+    return undefined
+  }
+  return remembered
+}
+
+function abortLiveAndDetached(live: LiveDelegateHandle | undefined, records: DetachedSpawnRecord[], reason: string): void {
+  for (const record of records) abortDetachedSpawn(record, reason)
+  live?.abort(reason)
+}
+
+export function resetLiveDelegatesForTests(): void {
+  liveDelegates.clear()
+  lastTerminalSidekick.clear()
+}
+
+/** Cancel a live sync delegate (watchdog only) or a detached spawn. Never
+ *  touches the lead-turn / ThreadManager abort controller. */
+export async function stopDelegate(
+  sessionId: string,
+  target: StopDelegateRequest = {},
+  source: "user" | "lead" = "user",
+): Promise<StopDelegateResponse> {
+  const reason = cancelledReason(source)
+  const runId = target.runId?.trim()
+  if (runId) {
+    const record = getDetachedSpawn(sessionId, runId)
+    if (!record) return { outcome: "not-found", runId, message: `error: no detached run "${runId}" in this session.` }
+    if (record.status !== "running") {
+      return {
+        outcome: "already-finished",
+        status: record.status === "cancelled" || record.status === "completed" || record.status === "failed" ? record.status : "failed",
+        runId: record.id,
+        seat: record.seat,
+        threadId: record.childThreadId,
+        message: `${record.title} already finished (${record.status}).`,
+      }
+    }
+    abortDetachedSpawn(record, reason)
+    return {
+      outcome: "cancelled",
+      status: "cancelled",
+      runId: record.id,
+      seat: record.seat,
+      threadId: record.childThreadId,
+      message: `${record.title} ${reason}.`,
+    }
+  }
+
+  const seat = target.seat?.trim() || "default"
+  const live = liveDelegates.get(liveSidekickKey(sessionId, seat))
+  const detached = listDetachedSpawns(sessionId).filter((record) =>
+    record.status === "running"
+    && record.kind === "sidekick"
+    && (record.seat ?? "default") === seat)
+  const sameWorker = Boolean(live && detached.length === 1)
+  const runningCount = (live ? 1 : 0) + detached.length
+  if (runningCount > 1 && !sameWorker) {
+    return { outcome: "ambiguous", seat, message: `error: multiple live delegates on seat "${seat}" — pass runId.` }
+  }
+  if (live || detached.length === 1) {
+    const record = detached[0]
+    abortLiveAndDetached(live, detached, reason)
+    return {
+      outcome: "cancelled",
+      status: "cancelled",
+      runId: record?.id,
+      seat,
+      threadId: live?.threadId ?? record?.childThreadId,
+      message: live
+        ? `Sidekick${seat === "default" ? "" : ` (${seat})`} ${reason}.`
+        : `${record!.title} ${reason}.`,
+    }
+  }
+  const finishedDetached = listDetachedSpawns(sessionId).filter((record) =>
+    record.status !== "running"
+    && record.kind === "sidekick"
+    && (record.seat ?? "default") === seat)
+  if (finishedDetached.length === 1) {
+    const record = finishedDetached[0]!
+    return {
+      outcome: "already-finished",
+      status: record.status === "cancelled" || record.status === "completed" || record.status === "failed" ? record.status : "failed",
+      runId: record.id,
+      seat,
+      threadId: record.childThreadId,
+      message: `${record.title} already finished (${record.status}).`,
+    }
+  }
+  const remembered = rememberedTerminalSidekick(sessionId, seat)
+  if (remembered) {
+    return {
+      outcome: "already-finished",
+      status: remembered.status,
+      seat,
+      threadId: remembered.threadId,
+      message: `Sidekick${seat === "default" ? "" : ` (${seat})`} already finished (${remembered.status}).`,
+    }
+  }
+  return {
+    outcome: "not-found",
+    seat,
+    message: seat === "default"
+      ? "error: no live default-seat sidekick to stop (pass runId for a detached child, or a named seat)."
+      : `error: no live sidekick on seat "${seat}".`,
+  }
+}
 
 /** How many briefs the sidekick has been handed in this session so far. */
 export function sidekickHandoffCount(sessionId: string): number {
@@ -250,7 +503,12 @@ export class ThreadManager implements ThreadSpawner {
       seats?.delete(seat)
       if (seats?.size === 0) detachedSidekickSeats.delete(this.rootId)
     }
-    const record = createDetachedSpawn(this.rootId, `${this.rootId}:${kind}:${randomUUID()}`, title, true)!
+    const boundThreadId = threadIdOfWork(workOrStart)
+    const childThreadId = boundThreadId
+      ?? (kind === "sidekick"
+        ? `${this.rootId}:sidekick${seat === "default" ? "" : `:${seat}`}`
+        : `${this.rootId}:${kind}:${randomUUID()}`)
+    const record = createDetachedSpawn(this.rootId, childThreadId, title, true, { kind, seat })!
     const reasonText = reason === "steer" ? "detached by steer" : "detached"
     // Detached workflow children must not die with the originating turn abort.
     // Parent them to the detached-spawn record (same as launchDetachedSpawn).
@@ -263,6 +521,10 @@ export class ThreadManager implements ThreadSpawner {
     } catch (err) {
       work = Promise.reject(err)
     }
+    // Explicit detach / STEER-detach start the worker against the lead abort.
+    // Bind record.abort to the one matching live dog so stop_delegate(runId)
+    // reaches that worker without touching the lead or a sibling.
+    fanDetachedAbortIntoLiveDogs(record)
     const restoreWorkflowAbort = () => {
       if (kind === "workflow" && this.workflowAbort === record.abort) {
         this.workflowAbort = previousWorkflowAbort
@@ -280,11 +542,14 @@ export class ThreadManager implements ThreadSpawner {
         clearSeatGuard()
       }
     }, (err) => {
-      const report = `error: ${(err as Error)?.message ?? String(err)}`
+      const raw = (err as Error)?.message ?? String(err)
+      const cancelled = record.abort.signal.aborted || isCancelledDelegateReport(raw)
+      const report = cancelled ? (isCancelledDelegateReport(raw) ? raw.replace(/^error:\s*/i, "") : raw) : `error: ${raw}`
       finishDetachedSpawn(record, report)
       try {
-        const reminder = `${title} ${reasonText} (${record.id}) failed. Report:\n${record.result}`
-        if (routeBackgroundNotice(this.rootId, reminder, `${title} ${reasonText} failed.`, kind, { kind, detachedSpawnId: record.id }) === "reminder") appendReminder(this.rootId, reminder)
+        const verb = cancelled ? "cancelled" : "failed"
+        const reminder = `${title} ${reasonText} (${record.id}) ${verb}. Report:\n${record.result}`
+        if (routeBackgroundNotice(this.rootId, reminder, `${title} ${reasonText} ${verb}.`, kind, { kind, detachedSpawnId: record.id }) === "reminder") appendReminder(this.rootId, reminder)
       } finally {
         restoreWorkflowAbort()
         clearSeatGuard()
@@ -309,7 +574,7 @@ export class ThreadManager implements ThreadSpawner {
     return `error: ${who} finished without producing any output — its run likely failed or was cut off mid-stream. Check the ${who} thread for errors and re-send the brief (or split it smaller).`
   }
 
-  async spawn(opts: {
+  spawn(opts: {
     callerThreadId: string
     title: string
     instructions: string
@@ -317,6 +582,18 @@ export class ThreadManager implements ThreadSpawner {
     kind?: "child" | "workflow_agent"
   }): Promise<string> {
     const childThreadId = `child-${randomUUID()}`
+    const running = this.spawnOnThread(childThreadId, opts)
+    bindWorkThread(running, childThreadId)
+    return running
+  }
+
+  private async spawnOnThread(childThreadId: string, opts: {
+    callerThreadId: string
+    title: string
+    instructions: string
+    selection?: AgentSelectionOverride
+    kind?: "child" | "workflow_agent"
+  }): Promise<string> {
     if (isIncognitoSession(this.rootId)) registerIncognitoThread(childThreadId)
     const parentThreadId = opts.callerThreadId === this.rootId ? null : opts.callerThreadId
     // A detached workflow can keep spawning after dispose() drops the root
@@ -365,6 +642,15 @@ export class ThreadManager implements ThreadSpawner {
     const parentAbort = this.workflowAbort ?? this.abort
     let dog = createDelegateWatchdog({ emit: this.emit, label: `child thread "${opts.title}"`, parent: parentAbort })
     let result = ""
+    let resolveLive!: () => void
+    const live: LiveDelegateHandle = {
+      kind: "child",
+      sessionId: this.rootId,
+      threadId: childThreadId,
+      abort: (reason) => dog.abort.abort(new Error(reason)),
+      done: new Promise<void>((resolve) => { resolveLive = resolve }),
+    }
+    registerLiveDelegate(live)
     try {
       const runChild = async (prompt: string, recover: boolean): Promise<string> => {
         if (providerRuntime(selection.provider) === "anthropic-sdk") {
@@ -412,14 +698,15 @@ export class ThreadManager implements ThreadSpawner {
         result = await runChild(opts.instructions, false)
       } catch (err) {
         const userAborted = Boolean(parentAbort?.signal.aborted)
-        const message = dog.timedOut() ? dog.timeoutMessage() : ((err as Error)?.message ?? String(err))
+        const cancelled = !userAborted && dog.abort.signal.aborted && !dog.timedOut()
+        const message = dog.timedOut() ? dog.timeoutMessage() : cancelled ? (dog.abort.signal.reason instanceof Error ? dog.abort.signal.reason.message : String(dog.abort.signal.reason ?? "cancelled by user")) : ((err as Error)?.message ?? String(err))
         if (!shouldRetryDelegate({
           attempt: 0,
           transient: isTransientDelegateFailure(err, dog, { userAborted }),
           userAborted,
         })) {
-          this.emit({ type: "error", message, threadId: childThreadId } as AgentEvent)
-          result = `error: ${message}`
+          emitDelegateFailure(this.emit, childThreadId, message, cancelled)
+          result = cancelled ? message : `error: ${message}`
         } else {
           this.emit({
             type: "error",
@@ -428,6 +715,7 @@ export class ThreadManager implements ThreadSpawner {
           } as AgentEvent)
           dog.dispose()
           dog = createDelegateWatchdog({ emit: this.emit, label: `child thread "${opts.title}"`, parent: parentAbort })
+          live.abort = (reason) => dog.abort.abort(new Error(reason))
           try {
             result = await runChild(DELEGATE_TRANSPORT_RETRY_PROMPT, true)
           } catch (retryErr) {
@@ -439,9 +727,11 @@ export class ThreadManager implements ThreadSpawner {
       }
       return result
     } finally {
-      Store.completeDelegation(delegationId, !/^error(?: \(after 1 retry\))?:/.test(result))
+      completeDelegationFromReport(delegationId, result)
       dog.dispose()
-      this.emit({ type: "thread.status", threadId: childThreadId, status: "idle", title: opts.title })
+      unregisterLiveDelegate(live)
+      resolveLive()
+      this.emit({ type: "thread.status", threadId: childThreadId, status: terminalThreadStatus(result), title: opts.title })
       unregisterThread(childThreadId)
       this.selections.delete(childThreadId)
       this.runningChildren.delete(childThreadId)
@@ -472,7 +762,7 @@ export class ThreadManager implements ThreadSpawner {
       return `error: ${(err as Error).message}`
     }
     const childThreadId = `child-${randomUUID()}`
-    const record = createDetachedSpawn(this.rootId, childThreadId, opts.title)
+    const record = createDetachedSpawn(this.rootId, childThreadId, opts.title, false, { kind: "spawn_thread" })
     if (!record) return `error: detached spawn limit reached (${detachedSpawnLimit()} running children in this session). Wait for one to finish or use workflow.`
 
     // Capture every per-run value now. In particular, do not resolve selection
@@ -527,14 +817,17 @@ export class ThreadManager implements ThreadSpawner {
       }
       report = `${ThreadManager.nonEmptyReport(report, "detached child thread")}\n\n[delegation: ${delegationId}]`
     } catch (err) {
-      const message = dog.timedOut() ? dog.timeoutMessage() : ((err as Error)?.message ?? String(err))
-      emit({ type: "error", message, threadId: record.childThreadId } as AgentEvent)
-      report = `error: ${message}`
+      const cancelled = record.abort.signal.aborted && !dog.timedOut()
+      const message = dog.timedOut() ? dog.timeoutMessage() : cancelled
+        ? (record.abort.signal.reason instanceof Error ? record.abort.signal.reason.message : String(record.abort.signal.reason ?? "cancelled by user"))
+        : ((err as Error)?.message ?? String(err))
+      emitDelegateFailure(emit, record.childThreadId, message, cancelled)
+      report = cancelled ? message : `error: ${message}`
     } finally {
       dog.dispose()
       finishDetachedSpawn(record, report || "error: detached child thread finished without producing a report")
-      Store.completeDelegation(delegationId, !record.result!.startsWith("error:"))
-      emit({ type: "thread.status", threadId: record.childThreadId, status: "idle", title: record.title })
+      completeDelegationFromReport(delegationId, record.result ?? report)
+      emit({ type: "thread.status", threadId: record.childThreadId, status: record.status === "cancelled" ? "cancelled" : "idle", title: record.title })
       unregisterThread(record.childThreadId)
       this.selections.delete(record.childThreadId)
       const reminder = `Detached child "${record.title}" (${record.id}) finished. Report:\n${record.result}`
@@ -678,6 +971,15 @@ export class ThreadManager implements ThreadSpawner {
 
     let finalText = ""
     const dog = createDelegateWatchdog({ emit: this.emit, label: "advisor", parent: this.abort })
+    let resolveLive!: () => void
+    const live: LiveDelegateHandle = {
+      kind: "advisor",
+      sessionId: this.rootId,
+      threadId: advisorThreadId,
+      abort: (reason) => dog.abort.abort(new Error(reason)),
+      done: new Promise<void>((resolve) => { resolveLive = resolve }),
+    }
+    registerLiveDelegate(live)
     try {
       if (providerRuntime(advisorSel.provider) === "anthropic-sdk") {
         // Anthropic advisors (Claude) run via the SDK runtime, not LangChain —
@@ -714,12 +1016,17 @@ export class ThreadManager implements ThreadSpawner {
         finalText = await translateStream(stream, advisorThreadId, dog.emit, undefined, undefined, { sessionId: this.rootId, selection: advisorSel, role: "advisor" })
       }
     } catch (err) {
-      const message = dog.timedOut() ? dog.timeoutMessage() : ((err as Error)?.message ?? String(err))
-      this.emit({ type: "error", message, threadId: advisorThreadId } as AgentEvent)
-      finalText = `error: ${message}`
+      const cancelled = Boolean(dog.abort.signal.aborted) && !dog.timedOut() && !this.abort?.signal.aborted
+      const message = dog.timedOut() ? dog.timeoutMessage() : cancelled
+        ? (dog.abort.signal.reason instanceof Error ? dog.abort.signal.reason.message : String(dog.abort.signal.reason ?? "cancelled by user"))
+        : ((err as Error)?.message ?? String(err))
+      emitDelegateFailure(this.emit, advisorThreadId, message, cancelled)
+      finalText = cancelled ? message : `error: ${message}`
     } finally {
       dog.dispose()
-      this.emit({ type: "thread.status", threadId: advisorThreadId, status: "idle", title: "Advisor" })
+      unregisterLiveDelegate(live)
+      resolveLive()
+      this.emit({ type: "thread.status", threadId: advisorThreadId, status: terminalThreadStatus(finalText), title: "Advisor" })
     }
 
     return ThreadManager.nonEmptyReport(finalText, "advisor")
@@ -891,6 +1198,16 @@ export class ThreadManager implements ThreadSpawner {
 
     let finalText = ""
     let dog = createDelegateWatchdog({ emit: this.emit, label: "sidekick", parent: this.abort })
+    let resolveLive!: () => void
+    const live: LiveDelegateHandle = {
+      kind: "sidekick",
+      sessionId: this.rootId,
+      threadId: sidekickThreadId,
+      seat: sidekickKey,
+      abort: (reason) => dog.abort.abort(new Error(reason)),
+      done: new Promise<void>((resolve) => { resolveLive = resolve }),
+    }
+    registerLiveDelegate(live)
     try {
       const agentsMd = await distilledAgentsMd(this.workspace, rootSelection, this.rootId)
       const repoMemory = readRepoMemory(this.workspace, this.rootId)
@@ -942,14 +1259,17 @@ export class ThreadManager implements ThreadSpawner {
         finalText = await runOnce(opts.brief)
       } catch (err) {
         const userAborted = Boolean(this.abort?.signal.aborted)
-        const message = dog.timedOut() ? dog.timeoutMessage() : ((err as Error)?.message ?? String(err))
+        const cancelled = !userAborted && dog.abort.signal.aborted && !dog.timedOut()
+        const message = dog.timedOut() ? dog.timeoutMessage() : cancelled
+          ? (dog.abort.signal.reason instanceof Error ? dog.abort.signal.reason.message : String(dog.abort.signal.reason ?? "cancelled by user"))
+          : ((err as Error)?.message ?? String(err))
         if (!shouldRetryDelegate({
           attempt: 0,
           transient: isTransientDelegateFailure(err, dog, { userAborted }),
           userAborted,
         })) {
-          this.emit({ type: "error", message, threadId: sidekickThreadId } as AgentEvent)
-          finalText = `error: ${message}`
+          emitDelegateFailure(this.emit, sidekickThreadId, message, cancelled)
+          finalText = cancelled ? message : `error: ${message}`
         } else {
           this.emit({
             type: "error",
@@ -958,6 +1278,7 @@ export class ThreadManager implements ThreadSpawner {
           } as AgentEvent)
           dog.dispose()
           dog = createDelegateWatchdog({ emit: this.emit, label: "sidekick", parent: this.abort })
+          live.abort = (reason) => dog.abort.abort(new Error(reason))
           try {
             finalText = await runOnce(DELEGATE_TRANSPORT_RETRY_PROMPT)
           } catch (retryErr) {
@@ -968,9 +1289,11 @@ export class ThreadManager implements ThreadSpawner {
         }
       }
     } finally {
-      const ok = !/^error(?: \(after 1 retry\))?:/.test(finalText)
-      Store.completeDelegation(delegationId, ok)
-      recordSidekickComplete({
+      const cancelled = isCancelledReason(finalText)
+      const ok = reportIsOk(finalText)
+      completeDelegationFromReport(delegationId, finalText)
+      if (cancelled) discardSidekickCandidate(delegationId)
+      else recordSidekickComplete({
         delegationId,
         sessionId: this.rootId,
         sidekickThreadId,
@@ -978,12 +1301,17 @@ export class ThreadManager implements ThreadSpawner {
         finalReport: ThreadManager.nonEmptyReport(finalText, "sidekick"),
       })
       dog.dispose()
-      this.emit({ type: "thread.status", threadId: sidekickThreadId, status: "idle", title })
+      rememberTerminalSidekick(this.rootId, sidekickKey, sidekickThreadId, cancelled ? "cancelled" : ok ? "completed" : "failed")
+      unregisterLiveDelegate(live)
+      resolveLive()
+      this.emit({ type: "thread.status", threadId: sidekickThreadId, status: terminalThreadStatus(finalText), title })
       sessionSidekicks.delete(sidekickKey)
       if (sessionSidekicks.size === 0) activeSidekicks.delete(this.rootId)
       notifySessionChanged(this.rootId)
     }
 
-    return `${ThreadManager.nonEmptyReport(finalText, "sidekick")}\n\n[delegation: ${delegationId}]`
+    return isCancelledReason(finalText)
+      ? finalText
+      : `${ThreadManager.nonEmptyReport(finalText, "sidekick")}\n\n[delegation: ${delegationId}]`
   }
 }

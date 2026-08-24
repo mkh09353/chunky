@@ -205,7 +205,7 @@ export type AgentEvent =
   /** `model` is the child's EFFECTIVE model id (inherited or overridden) so the
    *  TUI can label each thread with the model running it — omitted if unknown. */
   | { type: "thread.spawn"; threadId: string; parentThreadId: string | null; title: string; model?: string }
-  | { type: "thread.status"; threadId: string; status: "running" | "idle"; title?: string }
+  | { type: "thread.status"; threadId: string; status: "running" | "idle" | "cancelled"; title?: string }
   /** Goal-mode lifecycle: emitted when a goal is set, auto-continues, completes,
    * blocks, or pauses. `goal` is the current snapshot (null once cleared) and
    * `message` is a short human line the TUI renders as a transcript marker. */
@@ -839,6 +839,9 @@ export const ROUTES = {
   evalsCandidateReplays: (id: string) => `/api/evals/candidates/${encodeURIComponent(id)}/replays`,
   // POST -> 202. Abort the session's in-flight turn (user interrupt / Esc).
   interrupt: (id: string) => `/api/sessions/${id}/interrupt`,
+  // POST StopDelegateRequest -> StopDelegateResponse. Cancel a live sidekick
+  // brief or detached spawn without aborting the lead turn.
+  stopDelegate: (id: string) => `/api/sessions/${id}/stop-delegate`,
   // GET -> SSE stream of AgentEvent. Replays persisted history first, so opening
   // this on an existing id IS "resume": the full prior transcript streams, then live.
   events: (id: string) => `/api/sessions/${id}/events`,
@@ -917,6 +920,24 @@ export interface AppZooAnnounce {
 
 export interface AppZooResponse {
   connected: boolean
+}
+
+/** Body for POST ROUTES.stopDelegate. Target a detached run by id, or a live
+ *  sidekick by seat. Omitting both (or omitting seat) means the default seat
+ *  only when that is unambiguous. */
+export interface StopDelegateRequest {
+  runId?: string
+  seat?: string
+}
+/** Result of POST ROUTES.stopDelegate / the stop_delegate tool. */
+export type StopDelegateOutcome = "cancelled" | "already-finished" | "not-found" | "ambiguous"
+export interface StopDelegateResponse {
+  outcome: StopDelegateOutcome
+  status?: "cancelled" | "completed" | "failed"
+  runId?: string
+  seat?: string
+  threadId?: string
+  message: string
 }
 
 /** Body for POST ROUTES.goal. Exactly one of `objective` (set + start the goal)

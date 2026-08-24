@@ -47,3 +47,10 @@ describe("queue and interjection protocol events", () => {
     expect([accepted.injected, injected.injected]).toEqual([false, true])
   })
 })
+
+describe("delegate stop protocol events", () => {
+  test("thread.status accepts cancelled as a terminal lifecycle", () => {
+    const event: AgentEvent = { type: "thread.status", threadId: "s-1:sidekick", status: "cancelled", title: "Sidekick" }
+    expect(event.status).toBe("cancelled")
+  })
+})

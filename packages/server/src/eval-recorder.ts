@@ -233,6 +233,16 @@ export function isEvalCandidatePromoted(delegationId: string): boolean {
   return existsSync(evalSuiteDir(delegationId))
 }
 
+export function discardSidekickCandidate(delegationId: string): void {
+  safe(() => {
+    const dir = evalCandidateDir(delegationId)
+    if (!existsSync(dir)) return
+    if (isEvalCandidatePromoted(delegationId)) return
+    rmSync(dir, { recursive: true, force: true })
+  })
+}
+
+
 function summarizeCandidate(dir: string, id: string): EvalCandidateSummary | null {
   const candidate = readJsonIfPresent<EvalCandidateJson>(join(dir, "candidate.json"))
   if (!candidate || typeof candidate.delegationId !== "string" || typeof candidate.sessionId !== "string") {

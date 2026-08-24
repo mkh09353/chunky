@@ -28,6 +28,7 @@ export const rateDelegate = tool(async (input, config?: unknown) => {
   if (!ctx || !thread) return "error: rate_delegate is only available to the lead."
   const id = Store.resolveDelegation(ctx.sessionId, input.delegation)
   if (!id) return "error: delegation not found"
+  if (Store.delegationCancelled(id)) return "error: that delegation was cancelled — do not rate cancelled work."
   const rework = input.rework ?? false
   const rating = computeRating({ compliance: input.compliance, correctness: input.correctness, report: input.report, exceeded: input.exceeded ?? 0, rework })
   const reason = `[c${input.compliance}/3 x${input.correctness}/3 r${input.report}/2 +${input.exceeded ?? 0}] ${input.reason}`

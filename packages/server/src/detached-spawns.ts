@@ -15,9 +15,16 @@ export interface DetachedSpawnRecord {
   startedAt: number
   endedAt?: number
   result?: string
+  kind?: "sidekick" | "spawn_thread" | "workflow"
+  seat?: string
   abort: AbortController
   done: Promise<void>
   resolveDone: () => void
+}
+
+export interface DetachedSpawnMeta {
+  kind?: "sidekick" | "spawn_thread" | "workflow"
+  seat?: string
 }
 
 const recordsBySession = new Map<string, Map<string, DetachedSpawnRecord>>()
@@ -62,7 +69,7 @@ export function hasRunningDetachedSpawns(sessionId: string): boolean {
   return runningDetachedSpawnCount(sessionId) > 0
 }
 
-export function createDetachedSpawn(sessionId: string, childThreadId: string, title: string, force = false): DetachedSpawnRecord | undefined {
+export function createDetachedSpawn(sessionId: string, childThreadId: string, title: string, force = false, meta?: DetachedSpawnMeta): DetachedSpawnRecord | undefined {
   sweepFinished()
   if (!force && runningDetachedSpawnCount(sessionId) >= MAX_RUNNING_PER_SESSION) return undefined
   let resolveDone!: () => void
@@ -70,6 +77,8 @@ export function createDetachedSpawn(sessionId: string, childThreadId: string, ti
   const record: DetachedSpawnRecord = {
     id: randomUUID(), sessionId, childThreadId, title, status: "running", startedAt: Date.now(),
     abort: new AbortController(), done, resolveDone,
+    ...(meta?.kind ? { kind: meta.kind } : {}),
+    ...(meta?.seat ? { seat: meta.seat } : {}),
   }
   sessionRecords(sessionId).set(record.id, record)
   // A detached spawn counts toward the session's `busy`, which the compact
@@ -78,13 +87,37 @@ export function createDetachedSpawn(sessionId: string, childThreadId: string, ti
   return record
 }
 
+export function isCancelledDelegateReport(text: string): boolean {
+  return /^(?:error:\s*)?cancelled by (?:user|lead)\b/i.test(text.trim())
+}
+
 export function finishDetachedSpawn(record: DetachedSpawnRecord, result: string): void {
   if (record.status !== "running") return
   record.result = capResult(result)
   record.endedAt = Date.now()
-  record.status = result.startsWith("error:") ? "failed" : record.abort.signal.aborted ? "cancelled" : "completed"
+  // Abort wins over an error: prefix so a user/lead stop is cancelled, not failed.
+  record.status = record.abort.signal.aborted || isCancelledDelegateReport(result)
+    ? "cancelled"
+    : result.startsWith("error:") ? "failed" : "completed"
   record.resolveDone()
   notifySessionChanged(record.sessionId)
+}
+
+export function getDetachedSpawn(sessionId: string, id: string): DetachedSpawnRecord | undefined {
+  sweepFinished()
+  return recordsBySession.get(sessionId)?.get(id)
+}
+
+export function listDetachedSpawns(sessionId: string): DetachedSpawnRecord[] {
+  sweepFinished()
+  return [...(recordsBySession.get(sessionId)?.values() ?? [])]
+}
+
+/** Abort a running detached record. Idempotent: a settled record is already-finished. */
+export function abortDetachedSpawn(record: DetachedSpawnRecord, reason = "cancelled by user"): "cancelled" | "already-finished" {
+  if (record.status !== "running") return "already-finished"
+  record.abort.abort(new Error(reason))
+  return "cancelled"
 }
 
 export function runningDetachedSpawnSummaries(sessionId: string): Array<{ id: string; title: string; status: DetachedSpawnStatus }> {

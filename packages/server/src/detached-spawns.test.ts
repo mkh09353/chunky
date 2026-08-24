@@ -3,7 +3,7 @@ import { ThreadManager, type AgentForSelection } from "./threads.ts"
 import { runSpawnThread } from "./tools/spawn-thread.ts"
 import { peekTaskReminders, resetTasks } from "./tasks.ts"
 import { installBackgroundDispatcher, resetBackgroundDispatcher } from "./background-dispatch.ts"
-import { createDetachedSpawn, detachedSpawnResultCap, finishDetachedSpawn, resetDetachedSpawns, sweepDetachedSpawnsForTests } from "./detached-spawns.ts"
+import { abortDetachedSpawn, createDetachedSpawn, detachedSpawnResultCap, finishDetachedSpawn, resetDetachedSpawns, sweepDetachedSpawnsForTests } from "./detached-spawns.ts"
 
 const selection = { provider: "zen", model: "test-model" }
 
@@ -74,6 +74,14 @@ describe("detached spawn_thread", () => {
     expect(manager.launchDetachedSpawn({ callerThreadId: "detached-cap", title: "Too many", instructions: "wait" })).toContain("error: detached spawn limit reached (8 running children")
     release()
     manager.dispose()
+  })
+
+  test("abort then finish records cancelled instead of failed", () => {
+    const record = createDetachedSpawn("cancel-status", "child", "Child")!
+    expect(abortDetachedSpawn(record)).toBe("cancelled")
+    finishDetachedSpawn(record, "error: cancelled by user")
+    expect(record.status).toBe("cancelled")
+    expect(abortDetachedSpawn(record)).toBe("already-finished")
   })
 
   test("keeps non-detached spawn synchronous and returns its final answer", async () => {

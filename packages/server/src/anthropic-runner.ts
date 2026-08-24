@@ -46,6 +46,7 @@ import { read, readInputShape } from "./tools/read.ts"
 import { shipGoal, shipGoalInputShape } from "./tools/ship.ts"
 import { sidekick, sidekickInputShape } from "./tools/sidekick.ts"
 import { rateDelegate, rateDelegateInputShape } from "./tools/rate-delegate.ts"
+import { stopDelegateTool, stopDelegateInputShape } from "./tools/stop-delegate.ts"
 import { spawnThread, spawnThreadInputShape } from "./tools/spawn-thread.ts"
 import { workflow, workflowInputShape } from "./tools/workflow.ts"
 import { manageModels, manageModelsInputShape } from "./tools/manage-models.ts"
@@ -89,6 +90,7 @@ const CHUNKY_TOOLS = [
   editTool,
   sidekick,
   rateDelegate,
+  stopDelegateTool,
   spawnThread,
   workflow,
   manageModels,
@@ -303,6 +305,7 @@ export function createChunkySdkMcpServer(
         emit,
       ),
       wrapChunkyTool(rateDelegate.name, rateDelegate.description, rateDelegateInputShape, (args) => rateDelegate.invoke(args, runConfig), emit),
+      wrapChunkyTool(stopDelegateTool.name, stopDelegateTool.description, stopDelegateInputShape, (args) => stopDelegateTool.invoke(args, runConfig), emit),
       wrapChunkyTool(review.name, review.description, reviewInputShape, (args) => review.invoke(args, runConfig), emit),
       wrapChunkyTool(
         spawnThread.name,

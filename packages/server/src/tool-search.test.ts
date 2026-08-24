@@ -80,6 +80,7 @@ describe("core / deferred partition", () => {
       expect(CORE_TOOL_NAMES).toContain(name as (typeof CORE_TOOL_NAMES)[number])
     }
     expect(isCoreToolName("spawn_thread")).toBe(false)
+    expect(isCoreToolName("stop_delegate")).toBe(false)
     expect(isCoreToolName("workflow")).toBe(false)
     expect(isCoreToolName("advisor")).toBe(false)
     expect(isCoreToolName("manage_models")).toBe(false)

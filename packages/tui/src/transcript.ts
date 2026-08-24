@@ -51,7 +51,7 @@ export interface ThreadNode {
   id: string
   parentId: string | null
   title: string
-  status: "idle" | "running"
+  status: "idle" | "running" | "cancelled"
   /** Effective model running this thread (from thread.spawn) — shown in its header. */
   model?: string
   /** How many items the PARENT thread had when this thread was spawned — the point

@@ -6,7 +6,8 @@ import { useRenderer } from "@opentui/react"
 import { rawModeSupported, useInput } from "./useInput.js"
 import {
   ROUTES,
-  readSSE,
+  readSessionEventStream,
+  sessionEventsUrl,
   type AgentEvent,
   type CacheCold,
   type CacheGuardResponse,
@@ -30,6 +31,7 @@ import { mockRun } from "@chunky/protocol/mock"
 import { mockThreadsRun } from "./mockThreads.js"
 import { initialState, popUser, pushUser, reduce, type TranscriptState } from "./transcript.js"
 import { abortableSleep, isIntentionalAbort, reconnectDelay, retryableHttpMessage, shouldReresolve } from "./reconnect.js"
+import { SessionStreamMachine, type CommittedSessionStream } from "./sessionStream.js"
 import { findWorkspaceServer, serverIsRetiring } from "./serverDiscovery.js"
 import { ACCENT, BORDER, setIncognitoTheme, WARNING } from "./theme.js"
 import { activeExecutorModelLabel, prettyModel } from "./providerMark.js"
@@ -348,6 +350,9 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
   // render from the event. Cleared before each live send so the server's echo
   // can't double with the local pushUser echo (see reduce()'s message.user).
   const resumeReplayRef = useRef(false)
+  // One committed durable projection + cursor per session. Connection attempts
+  // publish working replay state only at replay-end.
+  const sessionStreamsRef = useRef(new Map<string, CommittedSessionStream>())
   // Set below once `attachSession`/`printLine` exist; lets the SSE reducer
   // (declared earlier than both) react to another client rewinding this session.
   const onRemoteRewindRef = useRef<(sessionId: string, turn: number) => void>(() => {})
@@ -428,15 +433,15 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
   const lastAssistantRef = useRef("")
 
   const apply = useCallback(
-    (ev: AgentEvent) => {
+    (ev: AgentEvent, updateTranscript = true) => {
       // Replayed OWN sends have no local pushUser echo — the persisted event is
       // their only appearance (reduce() skips from-less user events so live
       // sends don't double). Only rendered while a resume replay is streaming.
       if (ev.type === "message.user" && !ev.from && resumeReplayRef.current) {
-        setState((s) => pushUser(s, ev.text))
+        if (updateTranscript) setState((s) => pushUser(s, ev.text))
         return
       }
-      setState((s) => reduce(s, ev))
+      if (updateTranscript) setState((s) => reduce(s, ev))
       if (ev.type === "session.title" && ev.sessionId === sessionIdRef.current) setSessionLabel(ev.title)
       if (ev.type === "message.start" && !ev.threadId) lastAssistantRef.current = ""
       if (ev.type === "message.delta" && !ev.threadId) lastAssistantRef.current += ev.text
@@ -451,7 +456,7 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
       // Live sends are echoed locally after the POST is accepted. On resume, the
       // accepted injected:false event is the sole raw transcript echo;
       // injected:true is only a model-continuation marker.
-      if (ev.type === "message.interjection" && !ev.injected && resumeReplayRef.current) {
+      if (updateTranscript && ev.type === "message.interjection" && !ev.injected && resumeReplayRef.current) {
         setState((s) => pushUser(s, ev.text))
       }
       if (runningRef.current && (ev.type === "error" || (ev.type === "message.end" && ev.reason === "error"))) {
@@ -558,16 +563,52 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
         while (!cancelled) {
           try {
             setConnection(attempt ? "reconnecting" : "connecting")
-            const evRes = await fetch(baseUrl + ROUTES.events(sessionId), { signal: streamAbort.signal })
+            const machine = new SessionStreamMachine(sessionStreamsRef.current.get(sessionId))
+            const evRes = await fetch(baseUrl + sessionEventsUrl(sessionId, { cursor: machine.requestCursor ?? undefined }), { signal: streamAbort.signal })
+            if (evRes.status === 400 && machine.requestCursor) {
+              // A malformed persisted cursor can never succeed on retry. Drop
+              // the resumable shadow and take a full replay on the next loop.
+              sessionStreamsRef.current.delete(sessionId)
+              throw new Error("invalid session event cursor")
+            }
             if (!evRes.ok) throw new Error(retryableHttpMessage(evRes.status))
-            // /events always begins with the complete history. Reset the
-            // projection before consuming it so replay never duplicates rows.
-            setState(initialState)
             resumeReplayRef.current = true
             setConnection("connected")
-            for await (const ev of readSSE(evRes)) {
+            let firstFrame = true
+            let legacy = false
+            for await (const frame of readSessionEventStream(evRes)) {
               if (cancelled) break
-              apply(ev)
+              // Older servers ignore stream=v2 and return unnamed data frames.
+              // Keep their prior reset-and-full-replay behavior unchanged.
+              if (firstFrame && frame.kind === "legacy") {
+                legacy = true
+                sessionStreamsRef.current.delete(sessionId)
+                setState(initialState)
+                resumeReplayRef.current = true
+              }
+              firstFrame = false
+              if (legacy) {
+                if (frame.kind === "legacy") apply(frame.event)
+                attempt = 0
+                continue
+              }
+              const step = machine.handle(frame)
+              if (step.kind === "replay-event") {
+                // Replay transcript changes stay in the working shadow, while
+                // title/status/goal side state hydrates as events arrive.
+                apply(step.event, false)
+              } else if (step.kind === "commit") {
+                sessionStreamsRef.current.set(sessionId, { durable: step.durable, cursor: step.cursor })
+                setState(step.state)
+                resumeReplayRef.current = false
+              } else if (step.kind === "visible") {
+                apply(step.event)
+                if (machine.replayComplete && machine.cursor) sessionStreamsRef.current.set(sessionId, { durable: machine.durable, cursor: machine.cursor })
+              } else if (step.kind === "durable" && machine.cursor) {
+                // Raw live message.delta tokens already reached the screen; the
+                // canonical event advances only the resumable durable shadow.
+                sessionStreamsRef.current.set(sessionId, { durable: machine.durable, cursor: machine.cursor })
+              }
               // A successful replay or live event proves the attachment is
               // healthy; the next independent failure starts at base delay.
               attempt = 0
@@ -1029,11 +1070,11 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
   // live-session effect at an EXISTING id so its SSE history replays. /resume,
   // /rewind (truncated history), /fork (the child) and a remote session.rewound
   // all funnel through here — there is deliberately no second attach path.
-  const attachSession = useCallback((sessionId: string) => {
+  const attachSession = useCallback((sessionId: string, preserveTranscript = false) => {
     setResumePicker(null)
     setRewindPicker(null)
     setForkPicker(null)
-    setState(initialState)
+    if (!preserveTranscript) setState(initialState)
     setLastTurnErrored(false)
     setHasCompletedTurn(false)
     setStartedAt(null)
@@ -1055,7 +1096,7 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
   // session.rewound event, so it reaches the current pair through this ref.
   onRemoteRewindRef.current = (sessionId, turn) => {
     printLine(`Session rewound to turn ${turn} — reattaching.`)
-    attachSession(sessionId)
+    attachSession(sessionId, true)
   }
 
   // /rewind — restore files AND conversation to an earlier turn. The picker only

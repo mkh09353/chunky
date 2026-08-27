@@ -7,6 +7,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { randomUUID } from "node:crypto"
+import { encodeSessionEventCursor, readSessionEventStream, sessionEventsUrl } from "@chunky/protocol"
 
 const root = mkdtempSync(join(tmpdir(), "chunky-tui-handover-"))
 const workspace = join(root, "workspace")
@@ -91,28 +92,28 @@ afterAll(() => {
   rmSync(root, { recursive: true, force: true })
 })
 
-/** A session's replayed history, read until `wanted` shows up (or the reader
- *  runs dry). Frames can arrive in any number of chunks — the stream opens with
- *  a `: ready` comment — so this accumulates rather than trusting the first
- *  read, and aborts instead of waiting on the 20s keep-alive. */
-async function replayContains(baseUrl: string, sessionId: string, wanted: string): Promise<boolean> {
+/** Read one v2 replay through its explicit boundary. */
+async function replay(
+  baseUrl: string,
+  sessionId: string,
+  cursor?: string,
+): Promise<{ texts: string[]; cursor: string }> {
   const abort = new AbortController()
-  const res = await fetch(`${baseUrl}/api/sessions/${sessionId}/events`, { headers: auth, signal: abort.signal })
+  const res = await fetch(baseUrl + sessionEventsUrl(sessionId, cursor ? { cursor } : undefined), {
+    headers: auth,
+    signal: abort.signal,
+  })
   if (!res.ok) throw new Error(`events failed (${res.status})`)
-  const reader = res.body!.getReader()
-  const decoder = new TextDecoder()
-  let seen = ""
+  const texts: string[] = []
   try {
-    for (let chunk = 0; chunk < 20; chunk++) {
-      const read = await Promise.race([
-        reader.read(),
-        Bun.sleep(2_000).then(() => ({ done: true, value: undefined }) as ReadableStreamReadResult<Uint8Array>),
-      ])
-      if (read.done) break
-      seen += decoder.decode(read.value, { stream: true })
-      if (seen.includes(wanted)) return true
+    for await (const frame of readSessionEventStream(res)) {
+      if (frame.kind === "legacy") throw new Error("expected v2 session stream")
+      if (frame.kind === "event" && frame.event.type === "message.user") texts.push(frame.event.text)
+      if (frame.kind === "replay-end") {
+        return { texts, cursor: encodeSessionEventCursor(frame.cursor) }
+      }
     }
-    return seen.includes(wanted)
+    throw new Error("session replay ended without replay-end")
   } finally {
     abort.abort()
   }
@@ -149,7 +150,16 @@ test("a superseded server hands its session over to the replacement", async () =
     method: "POST", headers: auth, body: JSON.stringify({ text: marker }),
   })
   expect(sent.status).toBe(202)
-  expect(await replayContains(oldServer.baseUrl, sessionId, marker)).toBe(true)
+  const initialReplay = await replay(oldServer.baseUrl, sessionId)
+  expect(initialReplay.texts).toContain(marker)
+
+  // Persist a suffix after the committed cursor. A replacement-server resume
+  // must replay this turn, but not the already-committed marker above.
+  const suffix = "written after the cursor"
+  const sentSuffix = await fetch(`${oldServer.baseUrl}/api/sessions/${sessionId}/messages`, {
+    method: "POST", headers: auth, body: JSON.stringify({ text: suffix }),
+  })
+  expect(sentSuffix.status).toBe(202)
 
   // While only the old server exists, discovery stays with it.
   expect(await discover(workspace)).toBe(oldServer.baseUrl)
@@ -176,9 +186,11 @@ test("a superseded server hands its session over to the replacement", async () =
   })()
   expect(moved).toBe(newServer.baseUrl)
 
-  // Reattaching to the SAME session on the replacement IS resuming: the new
-  // server replays the history written on the old one.
-  expect(await replayContains(newServer.baseUrl, sessionId, marker)).toBe(true)
+  // Reattaching with the committed cursor receives only the missing suffix,
+  // proving cursor state survives the server handover.
+  const resumed = await replay(newServer.baseUrl, sessionId, initialReplay.cursor)
+  expect(resumed.texts).toContain(suffix)
+  expect(resumed.texts).not.toContain(marker)
 
   const listed = await fetch(`${newServer.baseUrl}/api/sessions?cwd=${encodeURIComponent(workspace)}`, { headers: auth })
   const { sessions } = await listed.json() as { sessions: { sessionId: string }[] }

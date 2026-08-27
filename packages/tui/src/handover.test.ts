@@ -7,6 +7,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { randomUUID } from "node:crypto"
+import { Database } from "bun:sqlite"
 import { encodeSessionEventCursor, readSessionEventStream, sessionEventsUrl } from "@chunky/protocol"
 
 const root = mkdtempSync(join(tmpdir(), "chunky-tui-handover-"))
@@ -57,6 +58,12 @@ function startServer(version: string): Managed {
   const port = freePort()
   const id = randomUUID()
   const nonce = randomUUID()
+  // Isolate the installed-runtime identity too. Otherwise a developer checkout
+  // whose package version differs from this test's synthetic 1.0.0/2.0.0
+  // servers makes each child retire itself before the handover can run.
+  const chunkyDir = join(root, `chunky-${version}`)
+  mkdirSync(join(chunkyDir, "app"), { recursive: true })
+  writeFileSync(join(chunkyDir, "app", "package.json"), JSON.stringify({ version }))
   const recordPath = join(serversDir, `${version}.json`)
   writeFileSync(recordPath, JSON.stringify({
     schema: 1, id, workspace, version, buildId: `build-${version}`, nonce, port, pid: process.pid, startedAt: Date.now(),
@@ -66,6 +73,7 @@ function startServer(version: string): Managed {
     env: {
       ...process.env,
       CHUNKY_PORT: String(port),
+      CHUNKY_DIR: chunkyDir,
       CHUNKY_SETTINGS: join(root, "settings.json"),
       CHUNKY_AUTH: join(root, "auth.json"),
       CHUNKY_DB: join(root, "chunky.db"),
@@ -156,10 +164,20 @@ test("a superseded server hands its session over to the replacement", async () =
   // Persist a suffix after the committed cursor. A replacement-server resume
   // must replay this turn, but not the already-committed marker above.
   const suffix = "written after the cursor"
-  const sentSuffix = await fetch(`${oldServer.baseUrl}/api/sessions/${sessionId}/messages`, {
-    method: "POST", headers: auth, body: JSON.stringify({ text: suffix }),
-  })
-  expect(sentSuffix.status).toBe(202)
+  // Append a durable suffix directly, as the server's own cursor integration
+  // tests do. The no-provider message route is intentionally allowed to fail,
+  // so a second POST would not be a deterministic persisted-turn fixture.
+  const db = new Database(join(root, "chunky.db"))
+  try {
+    const next = db.query("SELECT COALESCE(MAX(seq),-1)+1 n FROM events WHERE session_id=?").get(sessionId) as { n: number }
+    db.query("INSERT INTO events (session_id,seq,json) VALUES (?,?,?)").run(
+      sessionId,
+      next.n,
+      JSON.stringify({ type: "message.user", text: suffix }),
+    )
+  } finally {
+    db.close()
+  }
 
   // While only the old server exists, discovery stays with it.
   expect(await discover(workspace)).toBe(oldServer.baseUrl)

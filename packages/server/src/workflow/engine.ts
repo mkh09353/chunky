@@ -180,21 +180,31 @@ function buildScope(host: WorkflowHost, args: unknown): Record<string, unknown> 
   }
 
   async function agent(prompt: unknown, opts: AgentOpts = {}): Promise<unknown> {
-    if (typeof prompt !== "string" || !prompt.trim()) {
-      throw new Error("agent(prompt, opts?) — `prompt` must be a non-empty string.")
+    let normalizedPrompt = prompt
+    let normalizedOpts = opts
+    if (prompt !== null && typeof prompt === "object" && !Array.isArray(prompt)) {
+      const input = prompt as Record<string, unknown>
+      const promptKey = ["prompt", "instructions", "task"].find((key) => Object.prototype.hasOwnProperty.call(input, key))
+      normalizedPrompt = promptKey ? input[promptKey] : undefined
+      const { prompt: _prompt, instructions: _instructions, task: _task, title, ...objectOpts } = input
+      if (objectOpts.label === undefined && title !== undefined) objectOpts.label = title
+      normalizedOpts = objectOpts as AgentOpts
+    }
+    if (typeof normalizedPrompt !== "string" || !normalizedPrompt.trim()) {
+      throw new Error("agent(prompt, opts?) — `prompt` must be a non-empty string. Hint: use agent('your prompt', { ...opts }).")
     }
     if (++totalAgents > MAX_AGENTS_PER_RUN) {
       throw new Error(`workflow exceeded the ${MAX_AGENTS_PER_RUN}-agent per-run cap (likely a runaway loop).`)
     }
     const runLive = async () => {
-      const selection = await selectionFor(opts)
-      const label = opts.label ?? deriveLabel(prompt)
-      const phase = opts.phase ?? currentPhase
+      const selection = await selectionFor(normalizedOpts)
+      const label = normalizedOpts.label ?? deriveLabel(normalizedPrompt)
+      const phase = normalizedOpts.phase ?? currentPhase
       const title = phase ? `${phase} · ${label}` : label
       return sem.run(async () => {
-        const instructions = opts.schema ? prompt + schemaSuffix(opts.schema) : prompt
+        const instructions = normalizedOpts.schema ? normalizedPrompt + schemaSuffix(normalizedOpts.schema) : normalizedPrompt
         const text = await host.spawn({ title, instructions, selection })
-        if (!opts.schema) return text
+        if (!normalizedOpts.schema) return text
         const parsed = extractJson(text)
         if (parsed !== undefined) return parsed
         // One corrective retry, then give up (null → the script can .filter(Boolean)).
@@ -209,7 +219,7 @@ function buildScope(host: WorkflowHost, args: unknown): Record<string, unknown> 
         return reparsed === undefined ? null : reparsed
       })
     }
-    return host.journalAgent ? host.journalAgent(prompt, opts, runLive) : runLive()
+    return host.journalAgent ? host.journalAgent(normalizedPrompt, normalizedOpts, runLive) : runLive()
   }
 
   // parallel/pipeline deliberately do NOT take a semaphore slot themselves — only

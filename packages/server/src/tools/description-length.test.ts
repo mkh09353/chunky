@@ -49,7 +49,7 @@ test("every registered agent tool description leaves room below the SDK cap", ()
     const workflowDescription = registered.get("standard:workflow")!.description
     const first1200 = workflowDescription.slice(0, 1200)
     expect(first1200).toContain("agent(prompt: string, opts?)")
-    expect(first1200).toContain("positional nonblank string, NOT an object")
+    expect(first1200).toContain("Object form { prompt | instructions | task, ...opts } is also accepted")
     expect(first1200).toContain("parallel(thunks)")
     expect(first1200).toContain("Minimal example (3 lines)")
   } finally {

@@ -15,7 +15,7 @@ import {
 } from "../workflow/registry.ts"
 
 const DESCRIPTION = `Run a dynamic workflow only for work needing MANY parallel sub-agents (broad audits/research or large fan-outs), or when explicitly requested. Script API (JavaScript with top-level await):
-- agent(prompt: string, opts?) calls one sub-agent. The prompt MUST be a positional nonblank string, NOT an object. opts: { label, phase, tags: string[], tier:'small'|'medium'|'big', provider, model, effort, speed, schema }.
+- agent(prompt: string, opts?) calls one sub-agent. The prompt MUST be nonblank. Object form { prompt | instructions | task, ...opts } is also accepted. opts: { label, phase, tags: string[], tier:'small'|'medium'|'big', provider, model, effort, speed, schema }.
 - parallel(thunks) runs an array of () => agent(...) concurrently and returns ordered results; failures are null.
 - phase(title) groups visible progress; log(msg) narrates progress. pipeline(items, ...stages) is also available.
 - args is the JSON value passed to this tool. Use return to produce the ONE final workflow result.

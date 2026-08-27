@@ -8,6 +8,7 @@ import { describe, expect, test } from "bun:test"
 import type { AgentEvent } from "@chunky/protocol"
 import type { AgentSelectionOverride } from "../providers/registry.ts"
 import { runWorkflowScript, workflowConcurrency, type WorkflowHost } from "./engine.ts"
+import { requestHash } from "./journal.ts"
 import { runScript } from "./runtime.ts"
 
 interface SpawnCall {
@@ -59,6 +60,95 @@ describe("workflow engine — primitives", () => {
     expect(spawns).toHaveLength(1)
     expect(spawns[0]!.title).toBe("x")
     expect(spawns[0]!.instructions).toBe("do a thing")
+  })
+
+  test("agent() accepts prompt/instructions/task object forms", async () => {
+    const { host, spawns } = makeHost({ reply: (call) => `ok:${call.instructions}` })
+    const out = await runWorkflowScript(
+      host,
+      `const r = []
+       r.push(await agent({ prompt: 'from prompt', tags: ['fast'] }))
+       r.push(await agent({ instructions: 'from instructions', tier: 'small' }))
+       r.push(await agent({ task: 'from task', effort: 'high' }))
+       return JSON.stringify(r)`,
+    )
+    expect(JSON.parse(out)).toEqual(["ok:from prompt", "ok:from instructions", "ok:from task"])
+    expect(spawns.map((call) => call.instructions)).toEqual(["from prompt", "from instructions", "from task"])
+    expect(spawns[1]!.selection).toEqual({ effort: "low" })
+    expect(spawns[2]!.selection).toEqual({ effort: "high" })
+  })
+
+  test("agent() object form uses the first present prompt key", async () => {
+    const { host, spawns } = makeHost()
+    await runWorkflowScript(host, `return await agent({ prompt: 'first', instructions: 'second', task: 'third' })`)
+    expect(spawns).toHaveLength(1)
+    expect(spawns[0]!.instructions).toBe("first")
+  })
+
+  test("agent() object form maps title to label", async () => {
+    const { host, spawns } = makeHost()
+    await runWorkflowScript(host, `return await agent({ task: 'do it', title: 'Object title' })`)
+    expect(spawns).toHaveLength(1)
+    expect(spawns[0]!.title).toBe("Object title")
+  })
+
+  test("blank top-level agent() prompt reports the existing error with a positional-form hint", async () => {
+    const { host, spawns } = makeHost()
+    const out = await runWorkflowScript(host, `return await agent({ instructions: '   ' })`)
+    expect(out).toContain("agent(prompt, opts?) — `prompt` must be a non-empty string.")
+    expect(out).toContain("Hint: use agent('your prompt', { ...opts }).")
+    expect(spawns).toHaveLength(0)
+  })
+
+  test("object and positional forms pass the same normalized request hash to the journal", async () => {
+    const hashes: string[] = []
+    const { host } = makeHost({ reply: () => "ok" })
+    host.journalAgent = async (prompt, opts, live) => {
+      hashes.push(requestHash(prompt, opts))
+      return live()
+    }
+    await runWorkflowScript(
+      host,
+      `await agent('x', { tags: ['a'] })
+       return await agent({ prompt: 'x', tags: ['a'] })`,
+    )
+    expect(hashes).toHaveLength(2)
+    expect(hashes[0]).toBe(hashes[1])
+  })
+
+  test("parallel() turns a blank-prompt item into null while siblings succeed", async () => {
+    const { host, spawns } = makeHost({ concurrency: 1, reply: () => "ok" })
+    const out = await runWorkflowScript(
+      host,
+      `return await parallel([
+        () => agent('one'),
+        () => agent({ task: '' }),
+        () => agent({ instructions: 'three' }),
+      ])`,
+    )
+    expect(JSON.parse(out)).toEqual(["ok", null, "ok"])
+    expect(spawns.map((call) => call.instructions)).toEqual(["one", "three"])
+  })
+
+  test("a rejected blank call does not consume the per-run agent allowance", async () => {
+    const { host, spawns } = makeHost({ reply: () => "ok" })
+    const out = await runWorkflowScript(
+      host,
+      `try { await agent({ task: '' }) } catch {}
+       for (let i = 0; i < 1000; i++) await agent('valid ' + i)
+       return 'done'`,
+    )
+    expect(out).toBe("done")
+    expect(spawns).toHaveLength(1000)
+  })
+
+  test("pipeline() turns a blank-prompt item into null while siblings succeed", async () => {
+    const { host } = makeHost({ reply: () => "ok" })
+    const out = await runWorkflowScript(
+      host,
+      `return await pipeline(['one', '', 'three'], item => agent({ task: item }))`,
+    )
+    expect(JSON.parse(out)).toEqual(["ok", null, "ok"])
   })
 
   test("parallel() runs thunks; a throwing thunk becomes null", async () => {

@@ -982,6 +982,139 @@ export interface FileSearchResponse {
   error?: string
 }
 
+// ---- Session event replay cursors ------------------------------------------
+
+export interface SessionEventCursor { generation: string; nextSeq: number }
+
+/** Opaque URL-safe cursor for a position in one session history generation. */
+export function encodeSessionEventCursor(c: SessionEventCursor): string {
+  const json = JSON.stringify({ v: 1, g: c.generation, n: c.nextSeq })
+  const bytes = new TextEncoder().encode(json)
+  let binary = ""
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
+}
+
+/** Decode a replay cursor, rejecting malformed or unsupported positions. */
+export function decodeSessionEventCursor(s: string): SessionEventCursor | null {
+  try {
+    if (!s || !/^[A-Za-z0-9_-]+$/.test(s)) return null
+    const base64 = s.replace(/-/g, "+").replace(/_/g, "/")
+    const padded = base64 + "=".repeat((4 - base64.length % 4) % 4)
+    const binary = atob(padded)
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
+    const value = JSON.parse(new TextDecoder().decode(bytes)) as { v?: unknown; g?: unknown; n?: unknown }
+    if (value.v !== 1 || typeof value.g !== "string" || !value.g) return null
+    if (typeof value.n !== "number" || !Number.isInteger(value.n) || value.n < 0) return null
+    return { generation: value.g, nextSeq: value.n }
+  } catch {
+    return null
+  }
+}
+
+export type SessionEventStreamFrame =
+  | { kind: "event"; seq: number; cursor: SessionEventCursor; event: AgentEvent }
+  | { kind: "live"; event: AgentEvent }
+  | { kind: "replay-end"; cursor: SessionEventCursor }
+  | { kind: "replay-reset"; reason: "history-rewritten" | "cursor-ahead"; cursor: SessionEventCursor }
+
+export function sessionEventsUrl(id: string, opts?: { cursor?: string }): string {
+  const cursor = opts?.cursor ? `&cursor=${encodeURIComponent(opts.cursor)}` : ""
+  return `${ROUTES.events(id)}?stream=v2${cursor}`
+}
+
+/** Serialize one named v2 session-event stream frame. */
+export function sseFrame(frame: SessionEventStreamFrame): string {
+  if (frame.kind === "event") {
+    return `event: session.event\nid: ${encodeSessionEventCursor(frame.cursor)}\ndata: ${JSON.stringify({ seq: frame.seq, event: frame.event })}\n\n`
+  }
+  if (frame.kind === "live") {
+    return `event: session.live\ndata: ${JSON.stringify({ event: frame.event })}\n\n`
+  }
+  if (frame.kind === "replay-end") {
+    return `event: replay.end\ndata: ${JSON.stringify({ cursor: frame.cursor })}\n\n`
+  }
+  return `event: replay.reset\ndata: ${JSON.stringify({ reason: frame.reason, cursor: frame.cursor })}\n\n`
+}
+
+/** Parse both v2 named frames and unnamed legacy AgentEvent frames. */
+export async function* readSessionEventStream(
+  res: Response,
+): AsyncGenerator<SessionEventStreamFrame | { kind: "legacy"; event: AgentEvent }> {
+  if (!res.body) return
+  const reader = res.body.getReader()
+  const decoder = new TextDecoder()
+  let buffer = ""
+  const parse = (raw: string): SessionEventStreamFrame | { kind: "legacy"; event: AgentEvent } | null => {
+    let name: string | undefined
+    let id: string | undefined
+    const data: string[] = []
+    for (const line of raw.split("\n")) {
+      if (!line || line.startsWith(":")) continue
+      const colon = line.indexOf(":")
+      const field = colon < 0 ? line : line.slice(0, colon)
+      let value = colon < 0 ? "" : line.slice(colon + 1)
+      if (value.startsWith(" ")) value = value.slice(1)
+      if (field === "event") name = value
+      else if (field === "id") id = value
+      else if (field === "data") data.push(value)
+    }
+    if (data.length === 0) return null
+    try {
+      const value = JSON.parse(data.join("\n")) as any
+      if (!name) return { kind: "legacy", event: value as AgentEvent }
+      if (name === "session.event") {
+        const cursor = id ? decodeSessionEventCursor(id) : null
+        if (!cursor || !Number.isInteger(value?.seq) || value.seq < 0 || !value?.event) return null
+        return { kind: "event", seq: value.seq, cursor, event: value.event as AgentEvent }
+      }
+      if (name === "session.live" && value?.event) return { kind: "live", event: value.event as AgentEvent }
+      if (name === "replay.end") {
+        const cursor = validCursorValue(value?.cursor)
+        return cursor ? { kind: "replay-end", cursor } : null
+      }
+      if (name === "replay.reset") {
+        const cursor = validCursorValue(value?.cursor)
+        const reason = value?.reason
+        return cursor && (reason === "history-rewritten" || reason === "cursor-ahead")
+          ? { kind: "replay-reset", reason, cursor }
+          : null
+      }
+    } catch {
+      return null
+    }
+    return null
+  }
+  try {
+    for (;;) {
+      const { done, value } = await reader.read()
+      if (done) break
+      buffer += decoder.decode(value, { stream: true }).replace(/\r/g, "")
+      let index: number
+      while ((index = buffer.indexOf("\n\n")) !== -1) {
+        const frame = parse(buffer.slice(0, index))
+        buffer = buffer.slice(index + 2)
+        if (frame) yield frame
+      }
+    }
+    buffer += decoder.decode().replace(/\r/g, "")
+    if (buffer) {
+      const frame = parse(buffer)
+      if (frame) yield frame
+    }
+  } finally {
+    reader.releaseLock()
+  }
+}
+
+function validCursorValue(value: unknown): SessionEventCursor | null {
+  if (!value || typeof value !== "object") return null
+  const cursor = value as { generation?: unknown; nextSeq?: unknown }
+  if (typeof cursor.generation !== "string" || !cursor.generation) return null
+  if (typeof cursor.nextSeq !== "number" || !Number.isInteger(cursor.nextSeq) || cursor.nextSeq < 0) return null
+  return { generation: cursor.generation, nextSeq: cursor.nextSeq }
+}
+
 // ---- SSE helpers (used by BOTH sides) ----
 
 /** Serialize one AgentEvent as an SSE frame. */

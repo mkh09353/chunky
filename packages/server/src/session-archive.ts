@@ -3,7 +3,7 @@ import { dirname, join } from "node:path"
 import { createGzip, createGunzip } from "node:zlib"
 import { createInterface } from "node:readline"
 import { once } from "node:events"
-import { createHash } from "node:crypto"
+import { createHash, randomUUID } from "node:crypto"
 import { Database } from "bun:sqlite"
 import { openSqlite, retrySqliteTransaction } from "./sqlite.ts"
 import { durableDbPath } from "./store.ts"
@@ -21,7 +21,7 @@ function write(stream: NodeJS.WritableStream, line: string): Promise<void> | voi
 
 export async function archiveSession(sessionId: string): Promise<boolean> {
   const db = openSqlite(durableDbPath)
-  const session = db.query("SELECT id,title,workspace,created_at,last_activity,incognito FROM sessions WHERE id=?").get(sessionId) as any
+  const session = db.query("SELECT id,title,workspace,created_at,last_activity,incognito,history_generation FROM sessions WHERE id=?").get(sessionId) as any
   if (!session || session.incognito) return false
   const goal = db.query("SELECT * FROM goals WHERE session_id=?").get(sessionId) as any
   if (goal?.status === "active") return false
@@ -34,7 +34,7 @@ export async function archiveSession(sessionId: string): Promise<boolean> {
   mkdirSync(dirname(target), { recursive: true })
   const gzip = createGzip(), output = createWriteStream(temp, { mode: 0o600 })
   gzip.pipe(output)
-  await write(gzip, JSON.stringify({ version: 1, sessionId, title: session.title, workspace: session.workspace, createdAt: session.created_at, lastActivity: session.last_activity, turns, goal: goal ?? null }) + "\n")
+  await write(gzip, JSON.stringify({ version: 1, sessionId, title: session.title, workspace: session.workspace, createdAt: session.created_at, lastActivity: session.last_activity, historyGeneration: session.history_generation || randomUUID(), turns, goal: goal ?? null }) + "\n")
   let after = -1
   for (;;) {
     const rows = db.query("SELECT seq,json FROM events WHERE session_id=? AND seq>? ORDER BY seq LIMIT ?").all(sessionId, after, PAGE_SIZE) as Array<{ seq: number; json: string }>
@@ -85,7 +85,7 @@ async function restoreSession(sessionId: string): Promise<boolean> {
   for await (const line of lines) {
     if (!header) {
       header = JSON.parse(line)
-      db.query("INSERT OR IGNORE INTO sessions (id,title,created_at,last_activity,workspace,incognito) VALUES (?,?,?,?,?,0)").run(sessionId, header.title, header.createdAt, header.lastActivity, header.workspace)
+      db.query("INSERT OR IGNORE INTO sessions (id,title,created_at,last_activity,workspace,incognito,history_generation) VALUES (?,?,?,?,?,0,?)").run(sessionId, header.title, header.createdAt, header.lastActivity, header.workspace, typeof header.historyGeneration === "string" && header.historyGeneration ? header.historyGeneration : randomUUID())
       for (const t of header.turns ?? []) db.query("INSERT OR IGNORE INTO session_turns VALUES (?,?,?,?,?,?,?,?,?,?)").run(t.session_id,t.turn_index,t.start_event_seq,t.end_event_seq,t.snapshot_commit,t.anchor_checkpoint_id,t.user_text,t.status,t.created_at,t.completed_at)
       const g = header.goal
       if (g) db.query("INSERT OR IGNORE INTO goals (session_id,objective,status,mode,created_at,updated_at,turns,max_turns,evidence,blocked_reason) VALUES (?,?,?,?,?,?,?,?,?,?)").run(g.session_id,g.objective,g.status,g.mode,g.created_at,g.updated_at,g.turns,g.max_turns,g.evidence,g.blocked_reason)

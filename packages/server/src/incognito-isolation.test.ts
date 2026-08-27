@@ -16,7 +16,10 @@ test("dual store keeps incognito data out of durable sqlite", () => {
   const id = `incog-${crypto.randomUUID()}`
   markSessionIncognito(id, ["fake"])
   Store.createSession(id)
-  Store.appendEvent(id, { type: "message.start" } as any)
+  const generation = Store.historyGeneration(id)
+  expect(generation).not.toBe("")
+  expect(Store.appendEvent(id, { type: "message.start", role: "assistant" })).toBe(0)
+  expect(Store.historyFromSeq(id, 0)).toEqual([{ seq: 0, event: { type: "message.start", role: "assistant" } }])
   Store.startTurn(id, "hello", null)
   Store.logUsage({ sessionId: id, role: "lead", provider: "fake", model: "m", inputTokens: 1 })
   Store.createDelegation({ id: crypto.randomUUID(), sessionId: id, kind: "child", provider: "fake", model: "m", briefSnippet: "x" })

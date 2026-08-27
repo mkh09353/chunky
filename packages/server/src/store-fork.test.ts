@@ -12,7 +12,9 @@ test("forkSession copies transcript, turns, selection, and metadata independentl
   const turn = Store.startTurn(parent, "hello", "snapshot")
   Store.appendEvent(parent, { type: "message.delta", text: "answer" })
   Store.completeTurn(parent, turn, "checkpoint")
+  const parentGeneration = Store.historyGeneration(parent)
   Store.forkSession(child, parent, "/child-worktree", "worktree", "continue", { gitCommonDir: "/parent-workspace/.git", branch: "chunky/child" })
+  expect(Store.historyGeneration(child)).not.toBe(parentGeneration)
   expect(Store.history(child)).toEqual(Store.history(parent))
   expect(Store.turn(child, turn)).toEqual(Store.turn(parent, turn))
   expect(Store.pinnedSelectionOf(child)).toEqual(Store.pinnedSelectionOf(parent))
@@ -25,7 +27,8 @@ test("forkSession copies transcript, turns, selection, and metadata independentl
 test("rewindTranscript removes events at its turn boundary and later turns while callers clear state", () => {
   const id = `rewind-${crypto.randomUUID()}`
   Store.createSession(id)
-  Store.appendEvent(id, { type: "message.user", text: "one" })
+  expect(Store.appendEvent(id, { type: "message.user", text: "one" })).toBe(0)
+  const generation = Store.historyGeneration(id)
   const first = Store.startTurn(id, "one", "a")
   Store.appendEvent(id, { type: "message.delta", text: "one" })
   Store.completeTurn(id, first, "a")
@@ -35,6 +38,7 @@ test("rewindTranscript removes events at its turn boundary and later turns while
   Store.putGoal({ sessionId: id, objective: "remove", status: "active", mode: "direct", createdAt: 1, updatedAt: 1, turns: 0, maxTurns: 2 } as Goal)
   const point = Store.turn(id, second)!
   Store.rewindTranscript(id, second, point.startEventSeq)
+  expect(Store.historyGeneration(id)).not.toBe(generation)
   Store.clearGoal(id); Store.clearTodos(id)
   // The visible user event is emitted before startTurn records its boundary;
   // rewind retains that transcript event and drops everything from the run.
@@ -88,6 +92,32 @@ test("listShell aggregates workspaces as compact summaries sorted by activity", 
   ])
   for (const session of sessions) expect(Object.keys(session).sort()).toEqual([
     "createdAt", "incognito", "lastActivity", "sessionId", "title", "workspace",
+  ])
+})
+
+
+test("historyGeneration lazily initializes a legacy empty generation", async () => {
+  const id = `legacy-generation-${crypto.randomUUID()}`
+  Store.createSession(id)
+  const { Database } = await import("bun:sqlite")
+  const { durableDbPath } = await import("./store.ts")
+  const db = new Database(durableDbPath)
+  db.query("UPDATE sessions SET history_generation='' WHERE id=?").run(id)
+  db.close()
+  const generation = Store.historyGeneration(id)
+  expect(generation).not.toBe("")
+  expect(Store.historyGeneration(id)).toBe(generation)
+})
+
+test("appendEvent returns increasing sequences and historyFromSeq reads a suffix", () => {
+  const id = `history-suffix-${crypto.randomUUID()}`
+  Store.createSession(id)
+  expect(Store.appendEvent(id, { type: "message.delta", text: "zero" })).toBe(0)
+  expect(Store.appendEvent(id, { type: "message.delta", text: "one" })).toBe(1)
+  expect(Store.appendEvent(id, { type: "message.delta", text: "two" })).toBe(2)
+  expect(Store.historyFromSeq(id, 1)).toEqual([
+    { seq: 1, event: { type: "message.delta", text: "one" } },
+    { seq: 2, event: { type: "message.delta", text: "two" } },
   ])
 })
 

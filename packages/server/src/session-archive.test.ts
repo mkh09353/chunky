@@ -1,5 +1,7 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs"
+import { createHash } from "node:crypto"
+import { gunzipSync, gzipSync } from "node:zlib"
 import { join } from "node:path"
 import { createIsolatedTestState, removeIsolatedTestState } from "./test-state.ts"
 
@@ -30,15 +32,37 @@ describe("session archival", () => {
     Store.putGoal({ sessionId:id, objective:"done", status:"complete", mode:"direct", createdAt:now, updatedAt:now, turns:1, maxTurns:2 })
     const ref = saveAttachment(id, Buffer.from("image").toString("base64"), "image/png")
     const history = Store.historyWithSeq(id), turns = Store.turns(id), goal = Store.getGoal(id)
+    const generation = Store.historyGeneration(id)
     expect(await archiveSession(id)).toBe(true)
     expect(Store.exists(id)).toBe(false)
     expect(Store.listShell().find((s) => s.sessionId === id)).toMatchObject({ title:"Archived", archived:true })
     expect(await rehydrateSession(id)).toBe(true)
     expect(Store.historyWithSeq(id)).toEqual(history)
+    expect(Store.historyGeneration(id)).toBe(generation)
     expect(Store.turns(id)).toEqual(turns)
     expect(Store.getGoal(id)).toEqual(goal)
     expect(readFileSync(ref.path, "utf8")).toBe("image")
     expect(await rehydrateSession(id)).toBe(true)
+  })
+
+  test("old archive headers without a generation receive a fresh one", async () => {
+    const id = `legacy-archive-${crypto.randomUUID()}`
+    Store.createSession(id)
+    const oldGeneration = Store.historyGeneration(id)
+    expect(await archiveSession(id)).toBe(true)
+    const path = join(stateDir(), "archive", `${id}.jsonl.gz`)
+    const lines = gunzipSync(readFileSync(path)).toString("utf8").split("\n")
+    const header = JSON.parse(lines[0]!)
+    delete header.historyGeneration
+    lines[0] = JSON.stringify(header)
+    const bytes = gzipSync(lines.join("\n"))
+    writeFileSync(path, bytes)
+    const db = new (await import("bun:sqlite")).Database(durableDbPath)
+    db.query("UPDATE archived_sessions SET byte_length=?,sha256=? WHERE id=?").run(bytes.byteLength, createHash("sha256").update(bytes).digest("hex"), id)
+    db.close()
+    expect(await rehydrateSession(id)).toBe(true)
+    expect(Store.historyGeneration(id)).not.toBe(oldGeneration)
+    expect(Store.historyGeneration(id)).not.toBe("")
   })
 
   test("sweep obeys age, running, and active-goal exclusions", async () => {

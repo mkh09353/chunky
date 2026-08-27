@@ -2,6 +2,7 @@
 // Makes transcripts survive a server restart, so reconnecting to a sessionId
 // replays the full prior run — i.e. "resume". Kept deliberately tiny.
 import { openSqlite, retrySqliteTransaction } from "./sqlite.ts"
+import { randomUUID } from "node:crypto"
 import type { AgentEvent, RewindPoint, SessionSummary, UsageBreakdownResponse, UsageModelRow, UsageSeriesResponse } from "@chunky/protocol"
 import { notifySessionChanged } from "./session-changes.ts"
 import type { Goal } from "./goal.ts"
@@ -70,7 +71,8 @@ db.exec(`
     title         TEXT NOT NULL DEFAULT 'New session',
     title_custom  INTEGER NOT NULL DEFAULT 0,
     created_at    INTEGER NOT NULL,
-    last_activity INTEGER NOT NULL
+    last_activity INTEGER NOT NULL,
+    history_generation TEXT NOT NULL DEFAULT ''
   );
   CREATE TABLE IF NOT EXISTS events (
     session_id TEXT NOT NULL,
@@ -174,6 +176,7 @@ db.exec(`
   if (!cols.some((c) => c.name === "incognito")) db.exec("ALTER TABLE sessions ADD COLUMN incognito INTEGER NOT NULL DEFAULT 0")
   if (!cols.some((c) => c.name === "incognito_allow")) db.exec("ALTER TABLE sessions ADD COLUMN incognito_allow TEXT")
   if (!cols.some((c) => c.name === "title_custom")) db.exec("ALTER TABLE sessions ADD COLUMN title_custom INTEGER NOT NULL DEFAULT 0")
+  if (!cols.some((c) => c.name === "history_generation")) db.exec("ALTER TABLE sessions ADD COLUMN history_generation TEXT NOT NULL DEFAULT ''")
 }
 
 {
@@ -384,7 +387,7 @@ function scoreSlicesFor(scope: UsageDashboardScope, from: string, to: string): M
 }
 
 const stmtCreate = db.query(
-  "INSERT INTO sessions (id, title, created_at, last_activity, workspace, repository_scope, incognito, incognito_allow) VALUES (?, ?, ?, ?, ?, ?, 0, NULL)",
+  "INSERT INTO sessions (id, title, created_at, last_activity, workspace, repository_scope, incognito, incognito_allow, history_generation) VALUES (?, ?, ?, ?, ?, ?, 0, NULL, ?)",
 )
 const stmtIncognito = db.query("UPDATE sessions SET incognito = ?, incognito_allow = ? WHERE id = ?")
 const stmtGetIncognito = db.query("SELECT incognito, incognito_allow FROM sessions WHERE id = ?")
@@ -404,6 +407,7 @@ const stmtNextSeq = db.query("SELECT COALESCE(MAX(seq), -1) + 1 AS n FROM events
 const stmtInsertEvent = db.query("INSERT INTO events (session_id, seq, json) VALUES (?, ?, ?)")
 const stmtHistory = db.query("SELECT json FROM events WHERE session_id = ? ORDER BY seq ASC")
 const stmtHistoryWithSeq = db.query("SELECT seq, json FROM events WHERE session_id = ? ORDER BY seq ASC")
+const historyFromSeqSql = "SELECT seq, json FROM events WHERE session_id = ? AND seq >= ? ORDER BY seq ASC"
 const recentHistorySql = "SELECT seq, json FROM events WHERE session_id = ? ORDER BY seq DESC LIMIT ?"
 const statusEventsSql = "SELECT json FROM events WHERE session_id = ? AND json_extract(json, '$.type') IN ('session.status', 'thread.spawn', 'thread.status') ORDER BY seq ASC"
 const stmtLastSeq = db.query("SELECT MAX(seq) AS n FROM events WHERE session_id = ?")
@@ -446,6 +450,7 @@ const appendEventTx = (sessionId: string, ev: AgentEvent, now: number) => {
   const row = stmtNextSeq.get(sessionId) as { n: number }
   stmtInsertEvent.run(sessionId, row.n, JSON.stringify(ev))
   stmtTouch.run(now, sessionId)
+  return row.n
 }
 
 interface GoalRow {
@@ -648,11 +653,11 @@ export const Store = {
   createSession(id: string, title = "New session", workspace: string | null = LAUNCH_WORKSPACE, repositoryScope: "repository" | "none" = "repository"): void {
     const now = Date.now()
     if (isIncognitoSession(id)) {
-      memoryDb.query("INSERT INTO sessions (id,title,created_at,last_activity,workspace,repository_scope,incognito) VALUES (?,?,?,?,?,?,1)").run(id,title,now,now,workspace,repositoryScope)
+      memoryDb.query("INSERT INTO sessions (id,title,created_at,last_activity,workspace,repository_scope,incognito,history_generation) VALUES (?,?,?,?,?,?,1,?)").run(id,title,now,now,workspace,repositoryScope,randomUUID())
       notifySessionChanged(id)
       return
     }
-    stmtCreate.run(id, title, now, now, workspace, repositoryScope)
+    stmtCreate.run(id, title, now, now, workspace, repositoryScope, randomUUID())
     notifySessionChanged(id)
   },
   setIncognito(sessionId: string, allow: string[] | null): void {
@@ -691,17 +696,29 @@ export const Store = {
     return row?.repository_scope === "none" ? "none" : "repository"
   },
 
-  /** Persist one event and bump the session's last_activity. */
-  appendEvent(sessionId: string, ev: AgentEvent): void {
+  /** Persist one event, returning its sequence, and bump last_activity. */
+  appendEvent(sessionId: string, ev: AgentEvent): number {
     if (isIncognitoSession(sessionId)) {
       const row = memoryDb.query("SELECT COALESCE(MAX(seq),-1)+1 n FROM events WHERE session_id=?").get(sessionId) as { n: number }
       memoryDb.query("INSERT INTO events VALUES (?,?,?)").run(sessionId, row.n, JSON.stringify(ev))
       memoryDb.query("UPDATE sessions SET last_activity=? WHERE id=?").run(Date.now(), sessionId)
       notifySessionChanged(sessionId)
-      return
+      return row.n
     }
-    retrySqliteTransaction(db, () => appendEventTx(sessionId, ev, Date.now()))
+    const seq = retrySqliteTransaction(db, () => appendEventTx(sessionId, ev, Date.now()))
     notifySessionChanged(sessionId)
+    return seq
+  },
+
+  /** Stable lineage id for cursors; legacy empty values are initialized lazily. */
+  historyGeneration(sessionId: string): string {
+    const conn = backend(sessionId)
+    const row = conn.query("SELECT history_generation generation FROM sessions WHERE id=?").get(sessionId) as { generation: string } | null
+    if (!row) throw new Error(`unknown session: ${sessionId}`)
+    if (row.generation) return row.generation
+    const generation = randomUUID()
+    conn.query("UPDATE sessions SET history_generation=? WHERE id=? AND history_generation=''").run(generation, sessionId)
+    return (conn.query("SELECT history_generation generation FROM sessions WHERE id=?").get(sessionId) as { generation: string }).generation
   },
 
   /** Sequence assigned to the next persisted event (for a turn boundary). */
@@ -744,7 +761,13 @@ export const Store = {
   },
 
   rewindTranscript(sessionId: string, turn: number, startEventSeq: number): void {
-    const conn=backend(sessionId); conn.query("DELETE FROM events WHERE session_id=? AND seq>=?").run(sessionId,startEventSeq); conn.query("DELETE FROM session_turns WHERE session_id=? AND turn_index>=?").run(sessionId,turn); conn.query("DELETE FROM session_compaction_artifacts WHERE session_id=?").run(sessionId)
+    const conn = backend(sessionId)
+    retrySqliteTransaction(conn, () => {
+      conn.query("DELETE FROM events WHERE session_id=? AND seq>=?").run(sessionId, startEventSeq)
+      conn.query("DELETE FROM session_turns WHERE session_id=? AND turn_index>=?").run(sessionId, turn)
+      conn.query("DELETE FROM session_compaction_artifacts WHERE session_id=?").run(sessionId)
+      conn.query("UPDATE sessions SET history_generation=? WHERE id=?").run(randomUUID(), sessionId)
+    })
   },
 
   history(sessionId: string): AgentEvent[] {
@@ -760,6 +783,12 @@ export const Store = {
     const rows = (isIncognitoSession(sessionId)
       ? conn.query("SELECT seq, json FROM events WHERE session_id=? ORDER BY seq ASC").all(sessionId)
       : stmtHistoryWithSeq.all(sessionId)) as Array<{ seq: number; json: string }>
+    return rows.map((row) => ({ seq: row.seq, event: JSON.parse(row.json) as AgentEvent }))
+  },
+
+  /** Read a persisted suffix directly by sequence. */
+  historyFromSeq(sessionId: string, fromSeq: number): Array<{ seq: number; event: AgentEvent }> {
+    const rows = backend(sessionId).query(historyFromSeqSql).all(sessionId, fromSeq) as Array<{ seq: number; json: string }>
     return rows.map((row) => ({ seq: row.seq, event: JSON.parse(row.json) as AgentEvent }))
   },
 
@@ -1089,7 +1118,7 @@ export const Store = {
     const parent = db.query("SELECT title, selection, sidekick, agent_config FROM sessions WHERE id = ?").get(parentId) as { title: string; selection: string | null; sidekick: string | null; agent_config: string | null }
     const now = Date.now()
     retrySqliteTransaction(db, () => {
-      stmtCreate.run(childId, `${parent.title} · fork`, now, now, workspace, "repository")
+      stmtCreate.run(childId, `${parent.title} · fork`, now, now, workspace, "repository", randomUUID())
       db.query("DELETE FROM session_compaction_artifacts WHERE session_id=?").run(childId)
       if (parent.selection) stmtPinSelection.run(parent.selection, childId)
       if (parent.sidekick) db.query("UPDATE sessions SET sidekick=? WHERE id=?").run(parent.sidekick, childId)

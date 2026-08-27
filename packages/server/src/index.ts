@@ -12,7 +12,10 @@ import {
   DEFAULT_PORT,
   ROUTES,
   sse,
+  sseFrame,
+  decodeSessionEventCursor,
   type AgentEvent,
+  type SessionEventStreamFrame,
   type CacheStatusResponse,
   type GoalRequest,
   type SendBlockedResponse,
@@ -196,10 +199,19 @@ import { getGithubConfig, setGithubConfig, githubConfigResponse } from "./settin
 import { joinPrLinks, startPrAction, getPrLink } from "./pr-actions.ts"
 import { repoWorkspaceSet, sessionGitFields, type SessionGitLookup } from "./worktrees.ts"
 
-type Subscriber = ReadableStreamDefaultController<Uint8Array>
+type LegacySubscriber = { mode: "legacy"; controller: ReadableStreamDefaultController<Uint8Array> }
+type V2Subscriber = {
+  mode: "v2"
+  controller: ReadableStreamDefaultController<Uint8Array>
+  buffering: boolean
+  buffer: SessionEventStreamFrame[]
+}
+type Subscriber = LegacySubscriber | V2Subscriber
 
 // In-memory fan-out only. Durable history lives in the Store, so this is just
-// the set of currently-connected SSE clients per session.
+// the set of currently-connected SSE clients per session. V2 subscribers enter
+// buffering mode before their replay snapshot is captured, making replay/live
+// handoff race-free without changing the legacy stream.
 const live = new Map<string, Set<Subscriber>>()
 // AbortController for each session's in-flight turn, so /interrupt can cancel it.
 const running = new Map<string, AbortController>()
@@ -265,10 +277,10 @@ function subscribers(sessionId: string): Set<Subscriber> {
   return set
 }
 
-function removeSubscriber(sessionId: string, controller: Subscriber): void {
+function removeSubscriber(sessionId: string, subscriber: Subscriber): void {
   const set = live.get(sessionId)
   if (!set) return
-  set.delete(controller)
+  set.delete(subscriber)
   if (set.size === 0) live.delete(sessionId)
 }
 
@@ -277,21 +289,58 @@ function hasLiveSubscribers(): boolean {
   return false
 }
 
-const coalescePersistedMessage = createMessageCoalescer((sessionId, event) => Store.appendEvent(sessionId, event))
-
-/** Persist status/history events, then push every live event to subscribers. */
-function emitTo(sessionId: string, ev: AgentEvent): void {
-  if (ev.type !== "tool.progress" && ev.type !== "session.rewound" && ev.type !== "background.changed" && ev.type !== "ports.changed" && ev.type !== "context.compaction_failed") {
-    coalescePersistedMessage(sessionId, ev)
+function enqueueV2(sessionId: string, subscriber: V2Subscriber, frame: SessionEventStreamFrame): void {
+  if (subscriber.buffering) {
+    subscriber.buffer.push(frame)
+    return
   }
+  try {
+    subscriber.controller.enqueue(encoder.encode(sseFrame(frame)))
+  } catch {
+    removeSubscriber(sessionId, subscriber)
+  }
+}
+
+function emitPersistedToV2(sessionId: string, event: AgentEvent, seq: number): void {
   const set = live.get(sessionId)
   if (!set) return
-  const frame = encoder.encode(sse(ev))
-  for (const controller of set) {
+  const generation = Store.historyGeneration(sessionId)
+  const frame: SessionEventStreamFrame = {
+    kind: "event",
+    seq,
+    cursor: { generation, nextSeq: seq + 1 },
+    event,
+  }
+  for (const subscriber of set) if (subscriber.mode === "v2") enqueueV2(sessionId, subscriber, frame)
+}
+
+const coalescePersistedMessage = createMessageCoalescer(
+  (sessionId, event) => Store.appendEvent(sessionId, event),
+  emitPersistedToV2,
+)
+
+const liveOnlyEvent = (ev: AgentEvent): boolean =>
+  ev.type === "message.delta" || ev.type === "tool.progress" || ev.type === "session.rewound" ||
+  ev.type === "background.changed" || ev.type === "ports.changed" || ev.type === "context.compaction_failed"
+
+/** Persist canonical history events, while preserving the raw legacy fan-out. */
+function emitTo(sessionId: string, ev: AgentEvent): void {
+  const persist = ev.type !== "tool.progress" && ev.type !== "session.rewound" && ev.type !== "background.changed" && ev.type !== "ports.changed" && ev.type !== "context.compaction_failed"
+  if (persist) coalescePersistedMessage(sessionId, ev)
+  const set = live.get(sessionId)
+  if (!set) return
+  const legacyFrame = encoder.encode(sse(ev))
+  for (const subscriber of set) {
     try {
-      controller.enqueue(frame)
+      if (subscriber.mode === "legacy") subscriber.controller.enqueue(legacyFrame)
+      else if (liveOnlyEvent(ev)) {
+        // Raw message.delta tokens stay responsive as live frames. The coalescer
+        // later publishes the canonical persisted delta as an event frame; v2
+        // clients use a durable shadow projection to deduplicate the two views.
+        enqueueV2(sessionId, subscriber, { kind: "live", event: ev })
+      }
     } catch {
-      removeSubscriber(sessionId, controller)
+      removeSubscriber(sessionId, subscriber)
     }
   }
 }
@@ -364,12 +413,13 @@ subscribeSessionChanges((sessionId) => notifyShellSessionChanged(sessionId))
 function emitLiveTo(sessionId: string, ev: AgentEvent): void {
   const set = live.get(sessionId)
   if (!set) return
-  const frame = encoder.encode(sse(ev))
-  for (const controller of set) {
+  const legacyFrame = encoder.encode(sse(ev))
+  for (const subscriber of set) {
     try {
-      controller.enqueue(frame)
+      if (subscriber.mode === "legacy") subscriber.controller.enqueue(legacyFrame)
+      else enqueueV2(sessionId, subscriber, { kind: "live", event: ev })
     } catch {
-      removeSubscriber(sessionId, controller)
+      removeSubscriber(sessionId, subscriber)
     }
   }
 }
@@ -377,13 +427,14 @@ function emitLiveTo(sessionId: string, ev: AgentEvent): void {
 /** Push a server-wide configuration change to every currently attached session.
  * It intentionally is not persisted into individual session histories. */
 function broadcastLive(ev: AgentEvent): void {
-  const frame = encoder.encode(sse(ev))
+  const legacyFrame = encoder.encode(sse(ev))
   for (const [sessionId, set] of live) {
-    for (const controller of set) {
+    for (const subscriber of set) {
       try {
-        controller.enqueue(frame)
+        if (subscriber.mode === "legacy") subscriber.controller.enqueue(legacyFrame)
+        else enqueueV2(sessionId, subscriber, { kind: "live", event: ev })
       } catch {
-        removeSubscriber(sessionId, controller)
+        removeSubscriber(sessionId, subscriber)
       }
     }
   }
@@ -671,7 +722,7 @@ function corsHeaders(req?: Request): Record<string, string> {
   return {
     ...(origin && ALLOWED_ORIGINS.has(origin) ? { "Access-Control-Allow-Origin": origin, "Vary": "Origin" } : {}),
   "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization, Last-Event-ID",
   }
 }
 
@@ -2063,44 +2114,102 @@ const server = Bun.serve(withCors({
         return json({ sessionId, turn: body.turn })
       }
 
-      // GET .../events -> SSE. Replays persisted history first (== resume), then live.
+      // GET .../events -> SSE. Legacy remains byte-for-byte unchanged; stream=v2
+      // uses durable sequence cursors and a buffered replay/live handoff.
       if (kind === "events" && req.method === "GET") {
+        const url = new URL(req.url)
+        const v2 = url.searchParams.get("stream") === "v2"
+        const rawCursor = url.searchParams.get("cursor") ?? req.headers.get("Last-Event-ID")
+        const requestedCursor = rawCursor == null ? null : decodeSessionEventCursor(rawCursor)
+        if (v2 && rawCursor != null && !requestedCursor) return json({ error: "invalid session event cursor" }, 400)
+
         reconcileStaleRun(sessionId)
-        const history = Store.history(sessionId)
-        let selfController: Subscriber
+        let selfSubscriber: Subscriber
         let heartbeat: ReturnType<typeof setInterval> | undefined
+        if (v2) {
+          const stream = new ReadableStream<Uint8Array>({
+            start(controller) {
+              const subscriber: V2Subscriber = { mode: "v2", controller, buffering: true, buffer: [] }
+              selfSubscriber = subscriber
+              // Subscribe before capturing generation/boundary so concurrent
+              // persistence is buffered until the replay snapshot is complete.
+              subscribers(sessionId).add(subscriber)
+              controller.enqueue(encoder.encode(": ready\n\n"))
+
+              const generation = Store.historyGeneration(sessionId)
+              const boundary = Store.nextEventSeq(sessionId)
+              let from = requestedCursor?.nextSeq ?? 0
+              let reset: SessionEventStreamFrame | null = null
+              if (requestedCursor && requestedCursor.generation !== generation) {
+                from = 0
+                reset = { kind: "replay-reset", reason: "history-rewritten", cursor: { generation, nextSeq: 0 } }
+              } else if (requestedCursor && requestedCursor.nextSeq > boundary) {
+                from = 0
+                reset = { kind: "replay-reset", reason: "cursor-ahead", cursor: { generation, nextSeq: 0 } }
+              }
+              if (reset) controller.enqueue(encoder.encode(sseFrame(reset)))
+              for (const row of Store.historyFromSeq(sessionId, from)) {
+                if (row.seq >= boundary) break
+                controller.enqueue(encoder.encode(sseFrame({
+                  kind: "event",
+                  seq: row.seq,
+                  cursor: { generation, nextSeq: row.seq + 1 },
+                  event: row.event,
+                })))
+              }
+              controller.enqueue(encoder.encode(sseFrame({ kind: "replay-end", cursor: { generation, nextSeq: boundary } })))
+              controller.enqueue(encoder.encode(sseFrame({ kind: "live", event: { type: "ports.changed", sessionId, ports: currentSessionPorts(sessionId) } })))
+
+              // Events below the captured boundary were included in replay even
+              // if their notification raced registration; newer events and all
+              // live-only frames belong after replay-end.
+              const buffered = subscriber.buffer
+              subscriber.buffer = []
+              for (const frame of buffered) {
+                if (frame.kind === "event" && frame.seq < boundary) continue
+                controller.enqueue(encoder.encode(sseFrame(frame)))
+              }
+              subscriber.buffering = false
+              notifyShellSessionChanged(sessionId)
+              heartbeat = setInterval(() => {
+                try { controller.enqueue(encoder.encode(": ping\n\n")) } catch {}
+              }, 20_000)
+            },
+            cancel() {
+              if (heartbeat) clearInterval(heartbeat)
+              removeSubscriber(sessionId, selfSubscriber)
+              notifyShellSessionChanged(sessionId)
+            },
+          })
+          return new Response(stream, {
+            headers: {
+              "Content-Type": "text/event-stream",
+              "Cache-Control": "no-cache, no-transform",
+              Connection: "keep-alive",
+              ...corsHeaders(req),
+            },
+          })
+        }
+
+        const history = Store.history(sessionId)
         const stream = new ReadableStream<Uint8Array>({
           start(controller) {
-            selfController = controller
+            const subscriber: LegacySubscriber = { mode: "legacy", controller }
+            selfSubscriber = subscriber
             // Flush the response head immediately. Without a first byte a
-            // client's fetch() does not resolve, so attaching to a session with
-            // NO history (a brand-new thread, or a reattach after a handover)
-            // would sit unconnected until the 20s keep-alive below. A comment
-            // frame carries no `data:` line, so every client ignores it.
+            // client's fetch() does not resolve for a session with no history.
             controller.enqueue(encoder.encode(": ready\n\n"))
-            for (const ev of history) {
-              controller.enqueue(encoder.encode(sse(ev)))
-            }
+            for (const ev of history) controller.enqueue(encoder.encode(sse(ev)))
             controller.enqueue(encoder.encode(sse({ type: "ports.changed", sessionId, ports: currentSessionPorts(sessionId) })))
-            subscribers(sessionId).add(controller)
+            subscribers(sessionId).add(subscriber)
             notifyShellSessionChanged(sessionId)
-            // Heartbeat: an SSE comment every 20s so an otherwise-idle stream keeps
-            // bytes flowing. The server never times these out (idleTimeout: 0), but
-            // the TUI runs on Bun and Bun's client-side fetch aborts an idle response
-            // body after ~5 min ("TimeoutError: The operation timed out"), which is
-            // what drops the connection during quiet periods. A comment frame has no
-            // `data:` line, so readSSE ignores it — it's purely keep-alive.
             heartbeat = setInterval(() => {
-              try {
-                controller.enqueue(encoder.encode(": ping\n\n"))
-              } catch {
-                // controller already closed; cancel() clears the interval
-              }
+              try { controller.enqueue(encoder.encode(": ping\n\n")) } catch {}
             }, 20_000)
           },
           cancel() {
             if (heartbeat) clearInterval(heartbeat)
-            removeSubscriber(sessionId, selfController)
+            removeSubscriber(sessionId, selfSubscriber)
             notifyShellSessionChanged(sessionId)
           },
         })

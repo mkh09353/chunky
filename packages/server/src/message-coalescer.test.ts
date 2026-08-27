@@ -5,6 +5,23 @@ import { createMessageCoalescer, MESSAGE_FLUSH_BYTES } from "./message-coalescer
 function events(input: AgentEvent[]): AgentEvent[] { const out: AgentEvent[] = []; const add = createMessageCoalescer((_session, ev) => out.push(ev)); for (const ev of input) add("s", ev); return out }
 
 describe("message delta persistence coalescing", () => {
+  test("reports each canonical event with the persistence result", () => {
+    const reported: Array<{ event: AgentEvent; seq: number }> = []
+    let seq = 0
+    const add = createMessageCoalescer(
+      (_session, _event) => seq++,
+      (_session, event, persistedSeq) => reported.push({ event, seq: persistedSeq }),
+    )
+    add("s", { type: "message.start", role: "assistant" })
+    add("s", { type: "message.delta", text: "canonical" })
+    add("s", { type: "message.end" })
+    expect(reported).toEqual([
+      { event: { type: "message.start", role: "assistant" }, seq: 0 },
+      { event: { type: "message.delta", text: "canonical" }, seq: 1 },
+      { event: { type: "message.end" }, seq: 2 },
+    ])
+  })
+
   test("finished messages persist one coalesced delta and end", () => {
     const out = events([{ type: "message.start", role: "assistant" }, { type: "message.delta", text: "a" }, { type: "message.delta", text: "b" }, { type: "message.end" }])
     expect(out).toEqual([{ type: "message.start", role: "assistant" }, { type: "message.delta", text: "ab" }, { type: "message.end" }])

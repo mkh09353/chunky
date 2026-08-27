@@ -111,6 +111,7 @@ describe("server CORS responses", () => {
     })
     expect(options.status).toBe(204)
     expectAllowedCors(options)
+    expect(options.headers.get("Access-Control-Allow-Headers")).toContain("Last-Event-ID")
 
     const notFound = await request("/api/not-a-route", { headers: { ...auth, Origin: allowedOrigin } })
     expect(notFound.status).toBe(404)

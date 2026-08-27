@@ -18,6 +18,7 @@ const { stateDir } = await import("./repos.ts")
 const { installSessionBus, resetSessionBus } = await import("./session-bus.ts")
 const { sendToSessionTool } = await import("./tools/sessions.ts")
 const { registerThread, unregisterThread } = await import("./thread-context.ts")
+const { composePortablePrompt } = await import("./portable-handoff.ts")
 
 beforeAll(() => mkdirSync(state.root, { recursive: true }))
 afterAll(() => { delete process.env.CHUNKY_SETTINGS })
@@ -43,6 +44,29 @@ describe("session archival", () => {
     expect(Store.getGoal(id)).toEqual(goal)
     expect(readFileSync(ref.path, "utf8")).toBe("image")
     expect(await rehydrateSession(id)).toBe(true)
+  })
+
+  test("rehydrated history composes a portable handoff when its checkpoint is missing", async () => {
+    const id = `portable-resume-${crypto.randomUUID()}`
+    Store.createSession(id)
+    Store.appendEvent(id, { type:"message.user", text:"remember this question" })
+    Store.appendEvent(id, { type:"message.start", role:"assistant" } as any)
+    Store.appendEvent(id, { type:"message.delta", text:"remember this answer" } as any)
+    Store.appendEvent(id, { type:"message.end" } as any)
+    expect(await archiveSession(id)).toBe(true)
+    expect(await rehydrateSession(id)).toBe(true)
+
+    const prompt = composePortablePrompt(
+      "continue",
+      "langgraph",
+      "langgraph",
+      Store.recentHistoryWithSeq(id, 200),
+      true,
+    )
+    expect(prompt).toContain("[PORTABLE HISTORICAL TRANSCRIPT")
+    expect(prompt).toContain("remember this question")
+    expect(prompt).toContain("remember this answer")
+    expect(prompt.endsWith("\n\ncontinue")).toBe(true)
   })
 
   test("old archive headers without a generation receive a fresh one", async () => {

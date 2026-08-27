@@ -459,11 +459,30 @@ export async function runAgent(
   const runTurn = async (prompt: string, turnImages?: InputImage[]): Promise<void> => {
     const currentRuntime = providerRuntime(selection.provider)
     const previous = Store.latestLeadUsage(sessionId)
+    const agent = currentRuntime === "anthropic-sdk"
+      ? undefined
+      : getAgent(selection, resolvedWorkspace, agentsMd, sessionId, repoMemory)
+    const config = {
+      configurable: {
+        thread_id: sessionId,
+        workspace: resolvedWorkspace,
+        emitToolProgress: (toolCallId: string, chunk: string) =>
+          taggedEmitter(emit, undefined)({ type: "tool.progress", id: toolCallId, chunk }),
+        emitSessionEvent: (event: any) => emit(event),
+      },
+      streamMode: ["updates", "messages"],
+      recursionLimit: RECURSION_LIMIT,
+      signal: abort?.signal,
+    } as any
+    const checkpointMissing = agent
+      ? !((await agent.getState(config)) as any)?.config?.configurable?.checkpoint_id
+      : false
     const composedPrompt = composePortablePrompt(
       prompt,
       previous?.provider ? providerRuntime(previous.provider) : undefined,
       currentRuntime,
       Store.recentHistoryWithSeq(sessionId, 200),
+      checkpointMissing,
     )
     if (currentRuntime === "anthropic-sdk") {
       const { runAnthropicAgent } = await import("./anthropic-runner.ts")
@@ -474,20 +493,9 @@ export async function runAgent(
       })
     } else {
       const stream = await streamWithCheckpointRecovery(
-        getAgent(selection, resolvedWorkspace, agentsMd, sessionId, repoMemory),
+        agent!,
         { messages: [{ role: "user", content: await userMessageContent(composedPrompt, turnImages) }] } as any,
-        {
-          configurable: {
-            thread_id: sessionId,
-            workspace: resolvedWorkspace,
-            emitToolProgress: (toolCallId: string, chunk: string) =>
-              taggedEmitter(emit, undefined)({ type: "tool.progress", id: toolCallId, chunk }),
-            emitSessionEvent: (event: any) => emit(event),
-          },
-          streamMode: ["updates", "messages"],
-          recursionLimit: RECURSION_LIMIT,
-          signal: abort?.signal,
-        } as any,
+        config,
       )
 
       await translateStream(

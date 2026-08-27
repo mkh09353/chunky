@@ -21,8 +21,9 @@ export function composePortablePrompt(
   previousRuntime: string | undefined,
   currentRuntime: string | undefined,
   events: Array<{ event: AgentEvent }>,
+  checkpointMissing = false,
 ): string {
-  if (!incompatibleConversationRuntime(previousRuntime, currentRuntime)) return prompt
+  if (!checkpointMissing && !incompatibleConversationRuntime(previousRuntime, currentRuntime)) return prompt
   const handoff = formatPortableHandoff(events, prompt)
   return handoff ? `${handoff}\n\n${prompt}` : prompt
 }

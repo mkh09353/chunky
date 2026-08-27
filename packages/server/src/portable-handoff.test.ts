@@ -25,6 +25,12 @@ test("same runtime and missing usage preserve the exact prompt", () => {
   expect(composePortablePrompt("first", undefined, "anthropic-sdk", transcript)).toBe("first")
 })
 
+test("missing checkpoint injects prior history exactly when a handoff exists", () => {
+  expect(composePortablePrompt("resume", "langgraph", "langgraph", transcript, true)).toContain("old answer")
+  expect(composePortablePrompt("resume", "langgraph", "langgraph", transcript, false)).toBe("resume")
+  expect(composePortablePrompt("first", undefined, "langgraph", [], true)).toBe("first")
+})
+
 test("filters child/tool events and includes current user text exactly once", () => {
   const events = [
     row({ type: "message.user", text: "new request" }),

@@ -14,29 +14,21 @@ import {
   type ScanOptions,
 } from "../workflow/registry.ts"
 
-const DESCRIPTION = `Run a dynamic workflow: a JavaScript orchestration script that fans out many sub-agents in parallel, then returns ONE synthesized result. Reserve it for work that genuinely needs MANY parallel sub-agents — codebase-wide audits, reviewing every file in a dir, cross-checked research, big multi-phase refactors — or for when the user explicitly asks for a workflow. Do NOT use it for anything a direct answer or one sidekick/spawn_thread brief covers: ordinary features and fixes, short tasks, serial debugging (where accumulated context is the work), or questions. If you don't have a concrete work-list to fan out over (files, findings, items), scout first or delegate instead. Intermediate results stay in script variables — only the final return value enters your context, keeping it lean.
+const DESCRIPTION = `Run a dynamic workflow only for work needing MANY parallel sub-agents (broad audits/research or large fan-outs), or when explicitly requested. Script API (JavaScript with top-level await):
+- agent(prompt: string, opts?) calls one sub-agent. The prompt MUST be a positional nonblank string, NOT an object. opts: { label, phase, tags: string[], tier:'small'|'medium'|'big', provider, model, effort, speed, schema }.
+- parallel(thunks) runs an array of () => agent(...) concurrently and returns ordered results; failures are null.
+- phase(title) groups visible progress; log(msg) narrates progress. pipeline(items, ...stages) is also available.
+- args is the JSON value passed to this tool. Use return to produce the ONE final workflow result.
+Minimal example (3 lines):
+const files = (await agent('List files, one per line.')).split('\\n').filter(Boolean)
+const reviews = await parallel(files.map(f => () => agent('Audit ' + f, { tags: ['general'] })))
+phase('Synthesize'); return await agent('Summarize:\\n' + reviews.filter(Boolean).join('\\n'))
 
-Pass exactly one of script (inline JS) or name (a saved workflow). Saved workflows live in the project at .chunky/workflows/<name>.workflow.js (wins on collision) and in the user library at ~/.chunky/workflows/<name>.workflow.js. Each file is our JS dialect; optional metadata is \`export const meta = { name, description, when_to_use }\` or a leading comment with the same fields (name is kebab-case). Missing meta falls back to the filename. You may write reusable scripts there with the write tool. To discover saved names, omit both script and name (or pass an unknown name) — the error lists what is installed. Project files win over user files of the same name.
+Pass exactly one of script (inline JS) or name (saved workflow); omit both to list saved workflows and full docs. Optional args becomes the script global args. Default execution waits for return; detach=true runs a long fan-out in the background. resume_from_run_id resumes an eligible failed run.
 
-By default this tool is synchronous: it waits for the script's final \`return\` and that value is the tool result. Set detach=true for a long-running fan-out so the tool returns immediately with a run id; the script continues server-side and its completion (or \`workflow error: …\`) arrives later as a wake/reminder. Explicit detach=true skips the STEER-detach race — the call is fire-and-forget from the first moment. Omitting detach (or false) keeps today's awaited path, including STEER-detach if the user steers mid-run. Use detach for long-running fan-outs; default stays sync.
+Do NOT use workflow for ordinary features/fixes, short tasks, questions, serial debugging, or anything a direct answer or one sidekick/spawn_thread brief covers. Without a concrete list of independent items, scout or delegate instead. Only return enters your context. Runs are concurrency-capped and deterministic (no Date.now/Math.random). Prefer semantic tags (general, fast, research, frontend, design, premium); use provider/model only for a requested override.`
 
-Failed runs leave a same-process journal of committed agent() results. Re-invoke the SAME script+args (or the same saved name+args) with resume_from_run_id to replay those calls without re-spawning children, then continue from the first uncommitted call. Resume is not exactly-once (an in-flight agent that never committed may re-run) and does not survive a server restart. Editing a saved file between run and resume is a divergence. Incognito sessions skip journaling.
-
-The script is JavaScript with top-level \`await\`; \`return\` the final value. Available globals:
-- agent(prompt, opts?) -> the sub-agent's final text; if opts.schema (a JSON Schema) is set, returns the parsed object (or null on failure). opts: { label, phase, tags: string[], tier:'small'|'medium'|'big', provider, model, effort, speed }.
-- parallel(thunks) -> run an array of () => agent(...) concurrently; returns results in order (a failed one is null).
-- pipeline(items, ...stages) -> run each item through the stages independently (no barrier); stage signature (prev, item, index).
-- phase(title) / log(msg) -> progress grouping + a narrator line the user sees.
-- args -> the args you passed to this tool. budget -> { total, spent(), remaining() } (stub for now).
-Concurrency is capped automatically. Date.now()/Math.random() are disabled (runs must be deterministic) — vary work by array index. Prefer semantic tags over raw model ids: general, fast, research, frontend, design, premium. Chunky resolves tags to provider-qualified routes, preferring subscription and known-free targets; unmatched specialties stop so you can ask the user. Explicit provider/model is for a user-requested override.
-
-Example:
-const files = (await agent('List the route files under src/routes, one path per line, no prose.', { tags: ['fast', 'general'] })).split('\\n').filter(Boolean)
-phase('Review')
-const found = await parallel(files.map(f => () => agent(\`Audit \${f} for missing auth checks. Be specific.\`, { tags: ['general'] })))
-phase('Synthesize')
-return await agent('Synthesize these audit findings into the top risks:\\n' + found.filter(Boolean).join('\\n\\n'), { tags: ['premium'] })`
-
+const WORKFLOW_DOCS = `Full workflow docs: saved files are .chunky/workflows/<name>.workflow.js in the project (wins collisions) or ~/.chunky/workflows/<name>.workflow.js. Optional metadata is an exported meta object or leading metadata comment with name, description, and when_to_use; name is kebab-case and missing metadata falls back to the filename. Default execution waits for return. detach=true is fire-and-forget immediately (skipping the STEER-detach race); completion or workflow error arrives as a wake/reminder. Without explicit detach, steering may detach an awaited run. Failed non-incognito runs keep a same-process journal: resume_from_run_id requires identical script/name and args, replays committed agent() results, may rerun an uncommitted call, does not survive restart, and diverges if a saved file changed.`
 export const workflowInputShape = {
   script: z
     .string()
@@ -87,13 +79,13 @@ export function resolveWorkflowSource(
     return {
       error: hasScript
         ? "error: pass exactly one of script or name — not both."
-        : `error: pass exactly one of script or name. Saved workflows: ${available()}`,
+        : `error: pass exactly one of script or name. Saved workflows: ${available()}\n\n${WORKFLOW_DOCS}`,
     }
   }
   if (hasScript) return { script: input.script! }
   const name = input.name!.trim()
   const saved = resolveSavedWorkflow(name, scan)
-  if (!saved) return { error: `error: unknown workflow "${name}". Saved workflows: ${available()}` }
+  if (!saved) return { error: `error: unknown workflow "${name}". Saved workflows: ${available()}\n\n${WORKFLOW_DOCS}` }
   return { script: saved.script, workflowName: saved.name }
 }
 

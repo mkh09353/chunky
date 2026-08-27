@@ -104,6 +104,84 @@ describe("session archival", () => {
     expect(await sweepOrphanCheckpoints()).toBe(0)
   })
 
+  test("orphan sweep preserves child threads referenced by live sessions", async () => {
+    const session = `live-child-parent-${crypto.randomUUID()}`
+    const referenced = `child-${crypto.randomUUID()}`, orphan = `child-${crypto.randomUUID()}`
+    Store.createSession(session)
+    Store.appendEvent(session, { type:"thread.spawn", threadId:referenced, parentThreadId:null, title:"child" } as any)
+    const { BunSqliteSaver } = await import("./bun-sqlite-saver.ts")
+    const saver = BunSqliteSaver.fromConnString(process.env.CHUNKY_GRAPH_DB!)
+    for (const thread of [referenced, orphan]) await saver.put(
+      { configurable:{ thread_id:thread } },
+      { v:4, id:"cp", ts:"", channel_values:{}, channel_versions:{}, versions_seen:{} } as any,
+      {} as any,
+    )
+
+    expect(await sweepOrphanCheckpoints()).toBe(1)
+
+    const graph = new (await import("bun:sqlite")).Database(process.env.CHUNKY_GRAPH_DB!)
+    expect((graph.query("SELECT count(*) n FROM checkpoints WHERE thread_id=?").get(referenced) as any).n).toBe(1)
+    expect((graph.query("SELECT count(*) n FROM checkpoints WHERE thread_id=?").get(orphan) as any).n).toBe(0)
+    graph.close()
+  })
+
+  test("archive sweep removes orphan graph rows and events but preserves protected threads", async () => {
+    const suffix = crypto.randomUUID()
+    const live = `live-${suffix}`, archived = `archived-${suffix}`, activeGoal = `goal-${suffix}`, running = `running-${suffix}`
+    Store.createSession(live)
+    Store.createSession(archived)
+    Store.createSession(activeGoal)
+    Store.putGoal({ sessionId:activeGoal, objective:"live", status:"active", mode:"direct", createdAt:Date.now(), updatedAt:Date.now(), turns:0, maxTurns:2 })
+    expect(await archiveSession(archived)).toBe(true)
+
+    const { BunSqliteSaver } = await import("./bun-sqlite-saver.ts")
+    const saver = BunSqliteSaver.fromConnString(process.env.CHUNKY_GRAPH_DB!)
+    const orphan = `orphan-${suffix}`
+    for (const thread of [`${live}:sidekick`, `${archived}:tui`, `${activeGoal}:other-seat`, `${running}:sidekick`, orphan]) await saver.put(
+      { configurable:{ thread_id:thread } },
+      { v:4, id:"cp", ts:"", channel_values:{}, channel_versions:{}, versions_seen:{} } as any,
+      {} as any,
+    )
+    const graph = new (await import("bun:sqlite")).Database(process.env.CHUNKY_GRAPH_DB!)
+    graph.query("INSERT INTO checkpoint_anchors VALUES (?,?,?)").run(orphan, "cp", 1)
+    graph.query("INSERT OR REPLACE INTO writes VALUES (?,?,?,?,?,?,?,?)").run(orphan, "", "cp", "task", 0, "channel", "json", "value")
+    const db = new (await import("bun:sqlite")).Database(durableDbPath)
+    const orphanEvent = `event-orphan-${suffix}`
+    db.query("INSERT INTO events VALUES (?,?,?)").run(orphanEvent, 0, JSON.stringify({ type:"message.user", text:"orphan" }))
+    db.query("INSERT INTO session_turns VALUES (?,?,?,?,?,?,?,?,?,?)").run(orphanEvent, 0, 0, null, null, null, "orphan", "running", Date.now(), null)
+    db.close()
+
+    await sweepArchives(Date.now(), new Set([running]))
+
+    expect((graph.query("SELECT count(*) n FROM checkpoints WHERE thread_id=?").get(orphan) as any).n).toBe(0)
+    expect((graph.query("SELECT count(*) n FROM writes WHERE thread_id=?").get(orphan) as any).n).toBe(0)
+    expect((graph.query("SELECT count(*) n FROM checkpoint_anchors WHERE thread_id=?").get(orphan) as any).n).toBe(0)
+    for (const thread of [`${live}:sidekick`, `${archived}:tui`, `${activeGoal}:other-seat`, `${running}:sidekick`]) {
+      expect((graph.query("SELECT count(*) n FROM checkpoints WHERE thread_id=?").get(thread) as any).n).toBe(1)
+    }
+    expect(Store.history(orphanEvent)).toEqual([])
+    const durable = new (await import("bun:sqlite")).Database(durableDbPath)
+    expect((durable.query("SELECT count(*) n FROM session_turns WHERE session_id=?").get(orphanEvent) as any).n).toBe(0)
+    durable.close()
+    graph.close()
+  })
+
+  test("archive sweep vacuums a bloated graph database", async () => {
+    const graph = new (await import("bun:sqlite")).Database(process.env.CHUNKY_GRAPH_DB!)
+    graph.exec("CREATE TABLE IF NOT EXISTS archive_vacuum_probe (value BLOB)")
+    graph.query("INSERT INTO archive_vacuum_probe VALUES (zeroblob(?))").run(52 * 1024 * 1024)
+    graph.query("DELETE FROM archive_vacuum_probe").run()
+    const before = (graph.query("PRAGMA freelist_count").get() as { freelist_count: number }).freelist_count
+    expect(before * (graph.query("PRAGMA page_size").get() as { page_size: number }).page_size).toBeGreaterThan(50 * 1024 * 1024)
+    graph.close()
+
+    await sweepArchives()
+
+    const vacuumed = new (await import("bun:sqlite")).Database(process.env.CHUNKY_GRAPH_DB!)
+    expect((vacuumed.query("PRAGMA freelist_count").get() as { freelist_count: number }).freelist_count).toBeLessThan(before)
+    vacuumed.close()
+  })
+
   test("send_to_session single-flight rehydrates an archived target and delivers concurrent messages", async () => {
     const sender = `sender-${crypto.randomUUID()}`, target = `target-${crypto.randomUUID()}`
     Store.createSession(sender, "Sender"); Store.createSession(target, "Target")

@@ -14,6 +14,15 @@ export const ARCHIVE_AFTER_DAYS = 14
 const PAGE_SIZE = 1_000
 const graphPath = () => process.env.CHUNKY_GRAPH_DB || "chunky-graph.db"
 const archivePath = (id: string) => join(stateDir(), "archive", `${id}.jsonl.gz`)
+const VACUUM_FREELIST_BYTES = 50 * 1024 * 1024
+
+export function vacuumIfBloated(db: Database): boolean {
+  const pageSize = (db.query("PRAGMA page_size").get() as { page_size: number }).page_size
+  const freePages = (db.query("PRAGMA freelist_count").get() as { freelist_count: number }).freelist_count
+  if (pageSize * freePages <= VACUUM_FREELIST_BYTES) return false
+  db.exec("VACUUM")
+  return true
+}
 
 function write(stream: NodeJS.WritableStream, line: string): Promise<void> | void {
   if (!stream.write(line)) return once(stream, "drain").then(() => undefined)
@@ -54,9 +63,7 @@ export async function archiveSession(sessionId: string): Promise<boolean> {
     for (const table of ["events", "session_turns", "goals", "todos", "session_compaction_artifacts"]) db.query(`DELETE FROM ${table} WHERE session_id=?`).run(sessionId)
     db.query("DELETE FROM sessions WHERE id=?").run(sessionId)
   })
-  const pageSize = (db.query("PRAGMA page_size").get() as { page_size: number }).page_size
-  const freePages = (db.query("PRAGMA freelist_count").get() as { freelist_count: number }).freelist_count
-  if (pageSize * freePages > 50 * 1024 * 1024) db.exec("VACUUM")
+  vacuumIfBloated(db)
   const attachments = join(stateDir(), "attachments", sessionId), archivedAttachments = join(stateDir(), "archive", "attachments", sessionId)
   if (existsSync(attachments)) { mkdirSync(dirname(archivedAttachments), { recursive: true }); rmSync(archivedAttachments, { recursive: true, force: true }); renameSync(attachments, archivedAttachments) }
   const saver = BunSqliteSaver.fromConnString(graphPath())
@@ -116,20 +123,40 @@ export async function sweepArchives(now = Date.now(), running = new Set<string>(
   const rows = db.query("SELECT id FROM sessions WHERE last_activity<? AND incognito=0 AND id NOT IN (SELECT session_id FROM goals WHERE status='active')").all(cutoff) as Array<{ id: string }>
   const archived: string[] = []
   for (const row of rows) if (!running.has(row.id) && await archiveSession(row.id)) archived.push(row.id)
+  retrySqliteTransaction(db, () => {
+    const protectedIds = [...running]
+    const runningClause = protectedIds.length ? ` AND session_id NOT IN (${protectedIds.map(() => "?").join(",")})` : ""
+    for (const table of ["events", "session_turns"]) {
+      db.query(`DELETE FROM ${table} WHERE NOT EXISTS (SELECT 1 FROM sessions WHERE sessions.id=${table}.session_id)${runningClause}`).run(...protectedIds)
+    }
+  })
+  await sweepOrphanCheckpoints(running)
+  vacuumIfBloated(openSqlite(graphPath()))
   return archived
 }
 
-export async function sweepOrphanCheckpoints(): Promise<number> {
-  const graph = new Database(graphPath()), store = openSqlite(durableDbPath)
-  graph.exec("CREATE TABLE IF NOT EXISTS checkpoints (thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL, parent_checkpoint_id TEXT, type TEXT, checkpoint BLOB, metadata BLOB, PRIMARY KEY(thread_id,checkpoint_ns,checkpoint_id)); CREATE TABLE IF NOT EXISTS writes (thread_id TEXT NOT NULL, checkpoint_ns TEXT NOT NULL DEFAULT '', checkpoint_id TEXT NOT NULL, task_id TEXT NOT NULL, idx INTEGER NOT NULL, channel TEXT NOT NULL, type TEXT, value BLOB, PRIMARY KEY(thread_id,checkpoint_ns,checkpoint_id,task_id,idx))")
-  const ids = graph.query("SELECT DISTINCT thread_id id FROM checkpoints").all() as Array<{ id: string }>
-  const roots = new Set((store.query("SELECT id FROM sessions").all() as Array<{ id: string }>).map((r) => r.id))
-  const activeThreads = new Set(roots)
-  for (const row of store.query("SELECT json FROM events WHERE json_extract(json,'$.type')='thread.spawn'").all() as Array<{ json: string }>) {
-    try { const id = JSON.parse(row.json).threadId; if (typeof id === "string") activeThreads.add(id) } catch {}
+export async function sweepOrphanCheckpoints(running = new Set<string>()): Promise<number> {
+  const graph = openSqlite(graphPath()), store = openSqlite(durableDbPath)
+  const saver = BunSqliteSaver.fromConnString(graphPath())
+  // Set up all three graph tables before inspecting them. deleteThread uses the
+  // same saver so checkpoints, pending writes, and turn anchors remain aligned.
+  await saver.deleteThread("__archive_sweep_setup__")
+  const ids = graph.query("SELECT thread_id id FROM checkpoints UNION SELECT thread_id FROM writes UNION SELECT thread_id FROM checkpoint_anchors").all() as Array<{ id: string }>
+  const roots = new Set(running)
+  for (const row of store.query("SELECT id FROM sessions UNION SELECT id FROM archived_sessions UNION SELECT session_id id FROM goals WHERE status='active'").all() as Array<{ id: string }>) roots.add(row.id)
+  const liveChildThreads = new Set<string>()
+  for (const row of store.query("SELECT events.json FROM events JOIN sessions ON sessions.id=events.session_id WHERE json_extract(events.json,'$.type')='thread.spawn'").all() as Array<{ json: string }>) {
+    try {
+      const id = JSON.parse(row.json).threadId
+      if (typeof id === "string" && id.startsWith("child-")) liveChildThreads.add(id)
+    } catch {}
   }
-  const rootOf = (id: string) => id.startsWith("child-") ? null : id.split(/:(?:advisor|review|sidekick)/)[0]
   let deleted = 0
-  for (const row of ids) { const root = rootOf(row.id); if (activeThreads.has(row.id) || root && roots.has(root)) continue; deleted += graph.query("DELETE FROM checkpoints WHERE thread_id=?").run(row.id).changes; graph.query("DELETE FROM writes WHERE thread_id=?").run(row.id) }
+  for (const row of ids) {
+    const root = row.id.split(":", 1)[0]!
+    if (roots.has(root) || row.id.startsWith("child-") && liveChildThreads.has(row.id)) continue
+    await saver.deleteThread(row.id)
+    deleted++
+  }
   return deleted
 }

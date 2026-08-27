@@ -309,6 +309,7 @@ export class BunSqliteSaver extends BaseCheckpointSaver {
     const tx = () => {
       this.db.prepare(`DELETE FROM checkpoints WHERE thread_id = ?`).run(threadId)
       this.db.prepare(`DELETE FROM writes WHERE thread_id = ?`).run(threadId)
+      this.db.prepare(`DELETE FROM checkpoint_anchors WHERE thread_id = ?`).run(threadId)
     }
     await serializeGraphWrite(() => retrySqliteTransaction(this.db, tx))
   }

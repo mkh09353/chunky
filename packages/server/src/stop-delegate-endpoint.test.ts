@@ -60,6 +60,10 @@ test("POST stop-delegate is authenticated and idempotent for an idle session", a
   expect(created.ok).toBe(true)
   const { sessionId } = await created.json() as { sessionId: string }
 
+  const delegates = await request(`/api/sessions/${sessionId}/delegates`, { headers: auth })
+  expect(delegates.status).toBe(200)
+  expect(await delegates.json()).toEqual({ runs: [] })
+
   const missing = await request(`/api/sessions/${sessionId}/stop-delegate`, {
     method: "POST",
     headers: auth,

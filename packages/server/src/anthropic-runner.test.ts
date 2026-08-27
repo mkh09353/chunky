@@ -101,9 +101,9 @@ async function main() {
   assert(!sidekickSchema.safeParse({ task: "frontend brief", detach: "yes" }).success, "Anthropic sidekick MCP schema must reject non-boolean detach")
   assert(
     JSON.stringify(registeredTools) === JSON.stringify([
-      "bash", "create_goal", "edit", "fffind", "ffgrep", "get_goal", "get_task_output", "goal_blocked",
+      "bash", "create_goal", "edit", "fffind", "ffgrep", "get_delegate_status", "get_goal", "get_task_output", "goal_blocked",
       "goal_complete", "kill_task", "load_skill", "manage_models", "manage_providers", "manage_skill_repos", "monitor", "papercut", "rate_delegate", "read", "remember", "review", "search_skills",
-      "ship_goal", "sidekick", "spawn_thread", "workflow", "write",
+      "ship_goal", "sidekick", "spawn_thread", "stop_delegate", "workflow", "write",
     ]),
     `SDK MCP registered tool set mismatch: ${registeredTools.join(", ")}`,
   )

@@ -116,8 +116,35 @@ interface LiveDelegateHandle {
   sessionId: string
   threadId: string
   seat?: string
+  title: string
+  startedAt: number
   abort: (reason: string) => void
   done: Promise<void>
+}
+
+export interface LiveDelegateStatus {
+  kind: "sidekick" | "spawn_thread"
+  sessionId: string
+  threadId: string
+  seat?: string
+  title: string
+  startedAt: number
+  done: Promise<void>
+}
+
+/** Read-only view of the existing live-delegate registry. */
+export function listLiveDelegateStatuses(sessionId: string): LiveDelegateStatus[] {
+  return [...liveDelegates.values()]
+    .filter((handle) => handle.sessionId === sessionId && handle.kind !== "advisor")
+    .map((handle) => ({
+      kind: handle.kind === "child" ? "spawn_thread" : "sidekick",
+      sessionId: handle.sessionId,
+      threadId: handle.threadId,
+      ...(handle.seat ? { seat: handle.seat } : {}),
+      title: handle.title,
+      startedAt: handle.startedAt,
+      done: handle.done,
+    }))
 }
 
 const liveDelegates = new Map<string, LiveDelegateHandle>()
@@ -647,6 +674,8 @@ export class ThreadManager implements ThreadSpawner {
       kind: "child",
       sessionId: this.rootId,
       threadId: childThreadId,
+      title: opts.title,
+      startedAt: Date.now(),
       abort: (reason) => dog.abort.abort(new Error(reason)),
       done: new Promise<void>((resolve) => { resolveLive = resolve }),
     }
@@ -976,6 +1005,8 @@ export class ThreadManager implements ThreadSpawner {
       kind: "advisor",
       sessionId: this.rootId,
       threadId: advisorThreadId,
+      title: "Advisor",
+      startedAt: Date.now(),
       abort: (reason) => dog.abort.abort(new Error(reason)),
       done: new Promise<void>((resolve) => { resolveLive = resolve }),
     }
@@ -1204,6 +1235,8 @@ export class ThreadManager implements ThreadSpawner {
       sessionId: this.rootId,
       threadId: sidekickThreadId,
       seat: sidekickKey,
+      title,
+      startedAt: Date.now(),
       abort: (reason) => dog.abort.abort(new Error(reason)),
       done: new Promise<void>((resolve) => { resolveLive = resolve }),
     }

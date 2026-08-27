@@ -24,7 +24,7 @@ const files = (await agent('List files, one per line.')).split('\\n').filter(Boo
 const reviews = await parallel(files.map(f => () => agent('Audit ' + f, { tags: ['general'] })))
 phase('Synthesize'); return await agent('Summarize:\\n' + reviews.filter(Boolean).join('\\n'))
 
-Pass exactly one of script (inline JS) or name (saved workflow); omit both to list saved workflows and full docs. Optional args becomes the script global args. Default execution waits for return; detach=true runs a long fan-out in the background. resume_from_run_id resumes an eligible failed run.
+Pass exactly one of script (inline JS) or name (saved workflow); omit both to list saved workflows and full docs. Optional args becomes the script global args. Default execution waits for return; detach=true runs a long fan-out in the background; poll it with get_delegate_status. resume_from_run_id resumes an eligible failed run.
 
 Do NOT use workflow for ordinary features/fixes, short tasks, questions, serial debugging, or anything a direct answer or one sidekick/spawn_thread brief covers. Without a concrete list of independent items, scout or delegate instead. Only return enters your context. Runs are concurrency-capped and deterministic (no Date.now/Math.random). Prefer semantic tags (general, fast, research, frontend, design, premium); use provider/model only for a requested override.`
 

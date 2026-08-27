@@ -38,6 +38,13 @@ describe("background task tools", () => {
     } finally { await resetTasks() }
   })
 
+  test("unknown task ids point delegate runs to get_delegate_status", async () => {
+    const result = await getTaskOutput.invoke({ task_ids: ["delegate-looking-id"] }, config("e2e-unknown")) as Result
+    expect(result.raw?.results?.[0]?.status).toBe("not_found")
+    expect(result.raw?.results?.[0]?.output).toContain("get_delegate_status")
+    expect(result.promptText).toContain("get_delegate_status")
+  })
+
   test("kill is terminal and idempotent", async () => {
     const id = "e2e-kill"
     try {

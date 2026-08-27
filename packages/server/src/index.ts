@@ -68,6 +68,7 @@ import { createMessageCoalescer } from "./message-coalescer.ts"
 import { rehydrateSession, sweepArchives, sweepOrphanCheckpoints } from "./session-archive.ts"
 import { saveAttachment } from "./attachments.ts"
 import { shipHandoffPrompt } from "./tools/ship.ts"
+import { getDelegateStatuses } from "./tools/get-delegate-status.ts"
 import { Store } from "./store.ts"
 import { subscribeSessionChanges } from "./session-changes.ts"
 import { markSessionIncognito, validateIncognitoMode } from "./incognito.ts"
@@ -1945,7 +1946,7 @@ const server = Bun.serve(withCors({
     }
 
     // Match /api/sessions/:id/(events|messages|interrupt|goal|ship|cache)
-    const m = pathname.match(/^\/api\/sessions\/([^/]+)\/(events|messages|interrupt|stop-delegate|compact|goal|todos|ship|cache|rewind-points|rewind|fork|agent-config)$/)
+    const m = pathname.match(/^\/api\/sessions\/([^/]+)\/(events|messages|interrupt|stop-delegate|delegates|compact|goal|todos|ship|cache|rewind-points|rewind|fork|agent-config)$/)
     if (m) {
       const [, sessionId, kind] = m
       // An interrupted restore may already have recreated the session row while
@@ -1954,6 +1955,18 @@ const server = Bun.serve(withCors({
       // Accept any session that exists on disk (enables resume across restart),
       // not just ones created in this process.
       if (!Store.exists(sessionId)) return json({ error: "unknown session" }, 404)
+      if (kind === "delegates" && req.method === "GET") {
+        const url = new URL(req.url)
+        const timeoutRaw = url.searchParams.get("timeout_ms")
+        const timeoutMs = timeoutRaw == null ? undefined : Number(timeoutRaw)
+        if (timeoutMs !== undefined && (!Number.isFinite(timeoutMs) || timeoutMs < 0)) return json({ error: "invalid timeout_ms" }, 400)
+        return json(await getDelegateStatuses(sessionId, {
+          run_id: url.searchParams.get("run_id") ?? undefined,
+          seat: url.searchParams.get("seat") ?? undefined,
+          timeout_ms: timeoutMs,
+        }))
+      }
+
       if (kind === "agent-config" && req.method === "GET") {
         const selection = effectiveSessionSelection(sessionId)
         const mode = Store.agentConfigOf(sessionId)

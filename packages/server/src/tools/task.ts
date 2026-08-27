@@ -30,7 +30,7 @@ export const getTaskOutput = tool(
     await waitTasks(owner, task_ids, timeout_ms ?? 0)
     const results = task_ids.map((id) => {
       const record = getTaskRecord(owner, id)
-      if (!record) return { task_id: id, status: "not_found", is_terminal: true, output: "Task not found." }
+      if (!record) return { task_id: id, status: "not_found", is_terminal: true, output: "Task not found. Delegate run ids use get_delegate_status." }
       consumeTaskReminder(owner, id)
       return display(snapshotTask(record))
     })

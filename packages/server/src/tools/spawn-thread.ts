@@ -79,7 +79,7 @@ export const spawnThread = tool(
       "spawn its own children. Omit model-selection fields to inherit this thread's model, or choose a configured " +
       "provider/model when a different model is better suited. By default returns the child thread's final answer; " +
       "with detach=true it returns immediately with a run id and the report later arrives via a wake/reminder. Use " +
-      "detach for 2+ independent subtasks, and synchronous mode when you need the answer to proceed.",
+      "detach for 2+ independent subtasks, and synchronous mode when you need the answer to proceed. Poll detached runs with get_delegate_status.",
     schema: z.object(spawnThreadInputShape),
   },
 )

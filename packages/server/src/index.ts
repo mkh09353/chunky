@@ -14,8 +14,11 @@ import {
   sse,
   sseFrame,
   decodeSessionEventCursor,
+  decodeSessionHistoryPageCursor,
+  encodeSessionHistoryPageCursor,
   type AgentEvent,
   type SessionEventStreamFrame,
+  type SessionHistoryResponse,
   type CacheStatusResponse,
   type GoalRequest,
   type SendBlockedResponse,
@@ -1996,8 +1999,8 @@ const server = Bun.serve(withCors({
       return new Response("not found", { status: 404, headers: corsHeaders(req) })
     }
 
-    // Match /api/sessions/:id/(events|messages|interrupt|goal|ship|cache)
-    const m = pathname.match(/^\/api\/sessions\/([^/]+)\/(events|messages|interrupt|stop-delegate|delegates|compact|goal|todos|ship|cache|rewind-points|rewind|fork|agent-config)$/)
+    // Match /api/sessions/:id/(events|history|messages|interrupt|goal|ship|cache)
+    const m = pathname.match(/^\/api\/sessions\/([^/]+)\/(events|history|messages|interrupt|stop-delegate|delegates|compact|goal|todos|ship|cache|rewind-points|rewind|fork|agent-config)$/)
     if (m) {
       const [, sessionId, kind] = m
       // An interrupted restore may already have recreated the session row while
@@ -2112,6 +2115,45 @@ const server = Bun.serve(withCors({
         Store.clearTodos(sessionId)
         emitTo(sessionId, { type: "session.rewound", sessionId, turn: body.turn })
         return json({ sessionId, turn: body.turn })
+      }
+
+      if (kind === "history" && req.method === "GET") {
+        const url = new URL(req.url)
+        const rawTurns = url.searchParams.get("turns")
+        const parsedTurns = rawTurns == null ? 10 : Number(rawTurns)
+        if (!Number.isFinite(parsedTurns) || !Number.isInteger(parsedTurns)) {
+          return json({ error: "invalid turns" }, 400)
+        }
+        const turns = Math.max(1, Math.min(100, parsedTurns))
+        const rawBefore = url.searchParams.get("before")
+        const requestedPage = rawBefore == null ? null : decodeSessionHistoryPageCursor(rawBefore)
+        if (rawBefore != null && !requestedPage) return json({ error: "invalid history page cursor" }, 400)
+
+        reconcileStaleRun(sessionId)
+        // Same snapshot order as the v2 stream: lineage first, exclusive event
+        // boundary second, then a bounded read that cannot include newer rows.
+        const generation = Store.historyGeneration(sessionId)
+        const boundary = Store.nextEventSeq(sessionId)
+        if (requestedPage?.generation !== undefined && requestedPage.generation !== generation) {
+          return json({ error: "history-rewritten", cursor: { generation, nextSeq: boundary } }, 409)
+        }
+        if (requestedPage && requestedPage.beforeSeq > boundary) {
+          return json({ error: "invalid history page cursor" }, 400)
+        }
+        const page = requestedPage
+          ? Store.historyBefore(sessionId, requestedPage.beforeSeq, turns)
+          : Store.historyTail(sessionId, turns, boundary)
+        const response: SessionHistoryResponse = {
+          events: page.events,
+          cursor: { generation, nextSeq: boundary },
+          before: page.hasMore
+            ? encodeSessionHistoryPageCursor({ generation, beforeSeq: page.startSeq })
+            : null,
+          hasMore: page.hasMore,
+          firstSeq: page.events[0]?.seq ?? null,
+          lastSeq: page.events.at(-1)?.seq ?? null,
+        }
+        return json(response)
       }
 
       // GET .../events -> SSE. Legacy remains byte-for-byte unchanged; stream=v2

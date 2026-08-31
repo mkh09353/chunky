@@ -845,6 +845,8 @@ export const ROUTES = {
   // GET -> SSE stream of AgentEvent. Replays persisted history first, so opening
   // this on an existing id IS "resume": the full prior transcript streams, then live.
   events: (id: string) => `/api/sessions/${id}/events`,
+  // GET ?turns=&before= -> bounded transcript tail / older turn page.
+  sessionHistory: (id: string) => `/api/sessions/${id}/history`,
   rewindPoints: (id: string) => `/api/sessions/${id}/rewind-points`,
   rewind: (id: string) => `/api/sessions/${id}/rewind`,
   fork: (id: string) => `/api/sessions/${id}/fork`,
@@ -986,6 +988,26 @@ export interface FileSearchResponse {
 
 export interface SessionEventCursor { generation: string; nextSeq: number }
 
+export interface SessionHistoryRequest {
+  /** Root user turns to return. Defaults to 10 and is clamped to [1, 100]. */
+  turns?: number
+  /** Opaque exclusive cursor returned by the previous, newer page. */
+  before?: string
+}
+
+export interface SessionHistoryResponse {
+  events: Array<{ seq: number; event: AgentEvent }>
+  /** V2 stream resume position captured before this page was read. */
+  cursor: SessionEventCursor
+  /** Cursor for the next older page, or null at the beginning of history. */
+  before: string | null
+  hasMore: boolean
+  firstSeq: number | null
+  lastSeq: number | null
+}
+
+export interface SessionHistoryPageCursor { generation: string; beforeSeq: number }
+
 /** Opaque URL-safe cursor for a position in one session history generation. */
 export function encodeSessionEventCursor(c: SessionEventCursor): string {
   const json = JSON.stringify({ v: 1, g: c.generation, n: c.nextSeq })
@@ -1007,6 +1029,32 @@ export function decodeSessionEventCursor(s: string): SessionEventCursor | null {
     if (value.v !== 1 || typeof value.g !== "string" || !value.g) return null
     if (typeof value.n !== "number" || !Number.isInteger(value.n) || value.n < 0) return null
     return { generation: value.g, nextSeq: value.n }
+  } catch {
+    return null
+  }
+}
+
+/** Opaque URL-safe cursor for paging toward the beginning of one history generation. */
+export function encodeSessionHistoryPageCursor(c: SessionHistoryPageCursor): string {
+  const json = JSON.stringify({ v: 1, g: c.generation, b: c.beforeSeq })
+  const bytes = new TextEncoder().encode(json)
+  let binary = ""
+  for (const byte of bytes) binary += String.fromCharCode(byte)
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "")
+}
+
+/** Decode a history-page cursor, rejecting malformed or unsupported positions. */
+export function decodeSessionHistoryPageCursor(s: string): SessionHistoryPageCursor | null {
+  try {
+    if (!s || !/^[A-Za-z0-9_-]+$/.test(s)) return null
+    const base64 = s.replace(/-/g, "+").replace(/_/g, "/")
+    const padded = base64 + "=".repeat((4 - base64.length % 4) % 4)
+    const binary = atob(padded)
+    const bytes = Uint8Array.from(binary, (char) => char.charCodeAt(0))
+    const value = JSON.parse(new TextDecoder().decode(bytes)) as { v?: unknown; g?: unknown; b?: unknown }
+    if (value.v !== 1 || typeof value.g !== "string" || !value.g) return null
+    if (typeof value.b !== "number" || !Number.isInteger(value.b) || value.b < 0) return null
+    return { generation: value.g, beforeSeq: value.b }
   } catch {
     return null
   }

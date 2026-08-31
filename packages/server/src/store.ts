@@ -55,6 +55,12 @@ export type ResourceSampleInput = {
   command?: string | null
 }
 export type DelegationInput = { id: string; sessionId: string; kind: "sidekick" | "review" | "child" | "workflow_agent"; seat?: string; provider: string; model: string; effort?: string; briefSnippet: string }
+export type SessionHistoryPage = {
+  events: Array<{ seq: number; event: AgentEvent }>
+  startSeq: number
+  endSeq: number
+  hasMore: boolean
+}
 
 /** The durable path is fixed when this module opens its connection. Exporting it
  * lets diagnostics/tests inspect that same database rather than a later-mutated
@@ -102,6 +108,7 @@ db.exec(`
     status TEXT NOT NULL, created_at INTEGER NOT NULL, completed_at INTEGER,
     PRIMARY KEY (session_id, turn_index)
   );
+  CREATE INDEX IF NOT EXISTS session_turns_start ON session_turns(session_id, start_event_seq DESC);
   CREATE TABLE IF NOT EXISTS session_branches (
     child_session_id TEXT PRIMARY KEY, parent_session_id TEXT NOT NULL, fork_event_seq INTEGER NOT NULL,
     kind TEXT NOT NULL CHECK(kind IN ('normal', 'worktree')), directive TEXT, created_at INTEGER NOT NULL
@@ -265,6 +272,7 @@ db.exec(`
 // Mirror the complete, migrated durable schema exactly. Incognito rows never
 // use the durable connection; this copy only defines the in-process database.
 for (const row of db.query("SELECT sql FROM sqlite_master WHERE type='table' AND sql IS NOT NULL").all() as Array<{ sql: string }>) memoryDb.exec(row.sql)
+memoryDb.exec("CREATE INDEX IF NOT EXISTS session_turns_start ON session_turns(session_id, start_event_seq DESC)")
 {
   const cols = memoryDb.query("PRAGMA table_info(delegations)").all() as { name: string }[]
   if (cols.length && !cols.some((c) => c.name === "cancelled")) {
@@ -768,6 +776,34 @@ export const Store = {
       conn.query("DELETE FROM session_compaction_artifacts WHERE session_id=?").run(sessionId)
       conn.query("UPDATE sessions SET history_generation=? WHERE id=?").run(randomUUID(), sessionId)
     })
+  },
+
+  /** Read the newest bounded group of root-user turns. The optional boundary
+   * is captured by the HTTP route before this read, excluding concurrent rows. */
+  historyTail(sessionId: string, turns: number, boundary?: number): SessionHistoryPage {
+    return Store.historyBefore(sessionId, boundary ?? Store.nextEventSeq(sessionId), turns)
+  },
+
+  /** Read the contiguous event range ending exclusively at `beforeSeq`. The
+   * turn lookup is bounded by LIMIT over session_turns_start; the event lookup
+   * can only touch the resulting [start,end) primary-key range. */
+  historyBefore(sessionId: string, beforeSeq: number, turns: number): SessionHistoryPage {
+    const conn = backend(sessionId)
+    const boundedTurns = Math.max(1, Math.min(100, Math.floor(turns)))
+    const anchors = conn.query(
+      "SELECT start_event_seq startSeq FROM session_turns WHERE session_id=? AND start_event_seq<? ORDER BY start_event_seq DESC LIMIT ?",
+    ).all(sessionId, beforeSeq, boundedTurns + 1) as Array<{ startSeq: number }>
+    const hasMore = anchors.length > boundedTurns
+    const startSeq = hasMore ? anchors[boundedTurns - 1]!.startSeq : 0
+    const rows = conn.query(
+      "SELECT seq,json FROM events WHERE session_id=? AND seq>=? AND seq<? ORDER BY seq ASC",
+    ).all(sessionId, startSeq, beforeSeq) as Array<{ seq: number; json: string }>
+    return {
+      events: rows.map((row) => ({ seq: row.seq, event: JSON.parse(row.json) as AgentEvent })),
+      startSeq,
+      endSeq: beforeSeq,
+      hasMore,
+    }
   },
 
   history(sessionId: string): AgentEvent[] {

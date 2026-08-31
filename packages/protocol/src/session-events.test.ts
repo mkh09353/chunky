@@ -1,11 +1,14 @@
 import { describe, expect, test } from "bun:test"
 import {
   decodeSessionEventCursor,
+  decodeSessionHistoryPageCursor,
   encodeSessionEventCursor,
+  encodeSessionHistoryPageCursor,
   readSessionEventStream,
   sessionEventsUrl,
   sseFrame,
   type SessionEventCursor,
+  type SessionHistoryPageCursor,
   type SessionEventStreamFrame,
 } from "./index.ts"
 
@@ -23,6 +26,14 @@ describe("session event cursors", () => {
     expect(decodeSessionEventCursor(encoded)).toEqual(cursor)
     expect(sessionEventsUrl("s/1", { cursor: encoded })).toBe(`/api/sessions/s/1/events?stream=v2&cursor=${encodeURIComponent(encoded)}`)
     expect(sessionEventsUrl("s")).toBe("/api/sessions/s/events?stream=v2")
+  })
+
+  test("history page cursors round-trip as base64url", () => {
+    const page: SessionHistoryPageCursor = { generation: "generation-β", beforeSeq: 42 }
+    const encoded = encodeSessionHistoryPageCursor(page)
+    expect(encoded).toMatch(/^[A-Za-z0-9_-]+$/)
+    expect(decodeSessionHistoryPageCursor(encoded)).toEqual(page)
+    expect(decodeSessionHistoryPageCursor("not!base64")).toBeNull()
   })
 
   test("rejects malformed, negative, fractional, and unsupported cursors", () => {

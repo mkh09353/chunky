@@ -8,6 +8,7 @@ import {
   buildAnthropicOptions,
   externalMcpConfig,
   assertOAuthOnlyInit,
+  runAnthropicAgent,
   runChunkyToolForSdk,
   translateAnthropicMessages,
   type AnthropicRunnerDependencies,
@@ -177,6 +178,39 @@ async function main() {
     rejectedApiKey = String(err).includes("expected Claude OAuth")
   }
   assert(rejectedApiKey, "non-OAuth SDK initialization must fail closed")
+
+  const accountQuery = (account: { subscriptionType?: string | null; apiProvider?: string }, stream: unknown[] = []) => ((() => {
+    const q = messages(stream) as any
+    q.accountInfo = async () => account
+    q.close = () => {}
+    return q
+  }) as unknown as AnthropicRunnerDependencies["query"])
+  const accountRequest = { selection, threadId: "44444444-4444-4444-8444-444444444444", prompt: "test", emit, freshSession: true }
+  const accountDependencies = (account: { subscriptionType?: string | null; apiProvider?: string }, stream?: unknown[]): AnthropicRunnerDependencies => ({
+    query: accountQuery(account, stream),
+    getSessionInfo: (async () => undefined) as AnthropicRunnerDependencies["getSessionInfo"],
+  })
+  let nativeAuthFailure = false
+  try {
+    await runAnthropicAgent(accountRequest, accountDependencies(
+      { subscriptionType: null, apiProvider: "firstParty" },
+      [
+        { type: "system", subtype: "init", apiKeySource: "none", tools: ["mcp__chunky__read"] },
+        { type: "result", subtype: "error", errors: ["Failed to authenticate: OAuth session expired and could not be refreshed"] },
+      ],
+    ))
+  } catch (err) {
+    nativeAuthFailure = String(err).includes("Failed to authenticate: OAuth session expired and could not be refreshed") &&
+      !String(err).includes("Claude subscription OAuth is not active")
+  }
+  assert(nativeAuthFailure, "missing subscription must not mask the SDK's native authentication failure")
+  let rejectedProvider = false
+  try {
+    await runAnthropicAgent(accountRequest, accountDependencies({ subscriptionType: "pro", apiProvider: "vertex" }))
+  } catch (err) {
+    rejectedProvider = String(err).includes("using vertex") && String(err).includes("first-party Claude subscription OAuth")
+  }
+  assert(rejectedProvider, "explicit non-first-party SDK providers must remain rejected distinctly")
 
   const toolEvents: AgentEvent[] = []
   const toolResponse = await runChunkyToolForSdk(

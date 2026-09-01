@@ -710,8 +710,8 @@ export async function runAnthropicAgent(
     q = dependencies.query({ prompt: anthropicPrompt(request.prompt, request.images), options })
     request.onSubmitted?.()
     const account = await q.accountInfo()
-    if (!account.subscriptionType || account.apiProvider !== "firstParty") {
-      throw new Error("anthropic: Agent SDK account is not backed by first-party Claude subscription OAuth")
+    if (account.apiProvider && account.apiProvider !== "firstParty") {
+      throw new Error(`anthropic: Agent SDK is using ${account.apiProvider}, not first-party Claude subscription OAuth`)
     }
     const finalText = await translateAnthropicMessages(
       q,

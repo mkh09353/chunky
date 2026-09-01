@@ -91,7 +91,20 @@ export function detectClaudeCredentials(options: { home?: string; env?: NodeJS.P
 }
 
 function validCredentialsFile(path: string): boolean {
-  try { const value = JSON.parse(readFileSync(path, "utf8")) as unknown; return !!value && typeof value === "object" && !Array.isArray(value) } catch { return false }
+  try {
+    const value = JSON.parse(readFileSync(path, "utf8")) as unknown
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false
+    // Claude Code currently writes its first-party OAuth tokens under this
+    // recognizable key. A logged-out CLI can leave the record and its account
+    // metadata behind with empty tokens, so don't mistake that stale state for
+    // an authenticated subscription. Unknown schemas remain best-effort ready
+    // for forward compatibility (and macOS keychain auth is checked separately).
+    const oauth = (value as { claudeAiOauth?: unknown }).claudeAiOauth
+    if (!oauth || typeof oauth !== "object" || Array.isArray(oauth)) return true
+    const { accessToken, refreshToken } = oauth as { accessToken?: unknown; refreshToken?: unknown }
+    return (typeof accessToken === "string" && accessToken.length > 0) ||
+      (typeof refreshToken === "string" && refreshToken.length > 0)
+  } catch { return false }
 }
 
 const AUTH_STATUS_TTL_MS = 1_000

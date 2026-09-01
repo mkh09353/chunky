@@ -62,6 +62,26 @@ describe("Claude executable resolution and readiness", () => {
     expect(anthropicOAuthReady({ home, env: { PATH: "" }, platform: "linux", executable: "/missing/claude" })).toBe(true)
   })
 
+  test("does not treat an empty Claude OAuth record as ready", () => {
+    const home = mkdtempSync(join(tmpdir(), "chunky-claude-stale-auth-"))
+    const credentials = join(home, ".claude")
+    mkdirSync(credentials)
+    writeFileSync(join(credentials, ".credentials.json"), JSON.stringify({
+      claudeAiOauth: { accessToken: "", refreshToken: "", expiresAt: 0, subscriptionType: "pro" },
+    }))
+    expect(anthropicOAuthReady({ home, env: { PATH: "" }, platform: "linux", executable: "/missing/claude" })).toBe(false)
+  })
+
+  test("recognizes a token-bearing Claude OAuth record without an executable", () => {
+    const home = mkdtempSync(join(tmpdir(), "chunky-claude-valid-auth-"))
+    const credentials = join(home, ".claude")
+    mkdirSync(credentials)
+    writeFileSync(join(credentials, ".credentials.json"), JSON.stringify({
+      claudeAiOauth: { accessToken: "redacted-test-token", refreshToken: "", expiresAt: 0 },
+    }))
+    expect(anthropicOAuthReady({ home, env: { PATH: "" }, platform: "linux", executable: "/missing/claude" })).toBe(true)
+  })
+
   test("does not treat ambiguous config alone as ready", () => {
     const home = mkdtempSync(join(tmpdir(), "chunky-claude-config-"))
     writeFileSync(join(home, ".claude.json"), "{}")

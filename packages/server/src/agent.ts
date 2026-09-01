@@ -360,7 +360,7 @@ export function executorToolsFor(selection: AgentSelection, sessionId?: string) 
  *  is easily dozens-to-hundreds of tool calls. Set high so it's not a wall; it's a
  *  runaway-loop backstop, not a work budget. Applied to every `.stream()` call
  *  (run.ts, threads.ts). Override with CHUNKY_RECURSION_LIMIT. */
-export const RECURSION_LIMIT = Number(process.env.CHUNKY_RECURSION_LIMIT) || 500
+export const RECURSION_LIMIT = Number(process.env.CHUNKY_RECURSION_LIMIT) || 750
 
 /**
  * Agent construction plan for a selection: tools, prompt flags, and optional

@@ -4,6 +4,7 @@ import { ROUTES } from "@chunky/protocol"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
+import { reserveIntegrationServer } from "./test-server.ts"
 
 const root = mkdtempSync(join(tmpdir(), "chunky-resource-endpoint-"))
 const dbPath = join(root, "chunky.db")
@@ -14,6 +15,7 @@ const port = probe.port
 probe.stop()
 writeFileSync(settingsPath, JSON.stringify({ serverToken: token }))
 let server: Bun.Subprocess
+const integration = reserveIntegrationServer({ prefix: "chunky-resource-endpoint-", root, port, env: { ...process.env, CHUNKY_PORT: String(port), CHUNKY_SETTINGS: settingsPath, CHUNKY_DB: dbPath, CHUNKY_GRAPH_DB: join(root, "graph.db"), CHUNKY_RELAY: "0", CHUNKY_WORKSPACE: root, CHUNKY_MODELS_CACHE: join(root, "missing-models.json") } })
 
 async function request(path: string): Promise<Response> {
   for (let i = 0; i < 100; i++) {
@@ -29,17 +31,11 @@ beforeAll(async () => {
   })
   const [code, stdout, stderr] = await Promise.all([seed.exited, new Response(seed.stdout).text(), new Response(seed.stderr).text()])
   expect(code, `${stdout}\n${stderr}`).toBe(0)
-  server = Bun.spawn([process.execPath, "run", "packages/server/src/index.ts"], {
-    cwd: process.cwd(), env: { ...process.env, CHUNKY_PORT: String(port), CHUNKY_SETTINGS: settingsPath, CHUNKY_DB: dbPath,
-      CHUNKY_GRAPH_DB: join(root, "graph.db"), CHUNKY_RELAY: "0", CHUNKY_WORKSPACE: root, CHUNKY_MODELS_CACHE: join(root, "missing-models.json") },
-    stdout: "ignore", stderr: "ignore",
-  })
+  server = await integration.start()
 })
 
 afterAll(async () => {
-  server?.kill("SIGTERM")
-  if (server) await server.exited
-  rmSync(root, { recursive: true, force: true })
+  await integration.stop()
 })
 
 test("GET usage resources returns the typed percentile payload", async () => {

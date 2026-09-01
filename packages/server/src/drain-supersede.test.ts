@@ -5,11 +5,12 @@
 //
 // The "agent" is a fake OpenAI-compatible endpoint that accepts the request and
 // never answers, which is exactly the shape of a long turn.
-import { afterAll, expect, test } from "bun:test"
+import { afterAll, beforeAll, expect, test } from "bun:test"
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { randomUUID } from "node:crypto"
+import { reserveIntegrationServer } from "./test-server.ts"
 
 const root = mkdtempSync(join(tmpdir(), "chunky-drain-"))
 const token = "drain-test-token"
@@ -66,9 +67,13 @@ writeFileSync(recordPath, JSON.stringify({
   nonce, port: serverPort, pid: process.pid, startedAt: Date.now(),
 }))
 
-const proc = Bun.spawn([process.execPath, "run", "packages/server/src/index.ts"], {
-  cwd: join(import.meta.dir, "../../.."),
-  env: {
+const server = reserveIntegrationServer({ prefix: "chunky-drain-", root, port: serverPort, managedIdentity: {
+    CHUNKY_VERSION: "9.9.9",
+    CHUNKY_BUILD_ID: "testbuild",
+    CHUNKY_SERVER_NONCE: nonce,
+    CHUNKY_SERVER_ID: serverId,
+    CHUNKY_DISCOVERY_RECORD: recordPath,
+  }, env: {
     ...process.env,
     CHUNKY_PORT: String(serverPort),
     CHUNKY_SETTINGS: join(root, "settings.json"),
@@ -77,22 +82,15 @@ const proc = Bun.spawn([process.execPath, "run", "packages/server/src/index.ts"]
     CHUNKY_AUTH: join(root, "auth.json"),
     CHUNKY_RELAY: "0",
     CHUNKY_WORKSPACE: root,
-    CHUNKY_VERSION: "9.9.9",
-    CHUNKY_BUILD_ID: "testbuild",
-    CHUNKY_SERVER_NONCE: nonce,
-    CHUNKY_SERVER_ID: serverId,
-    CHUNKY_DISCOVERY_RECORD: recordPath,
     CHUNKY_OWNERSHIP_POLL_MS: "150",
     CHUNKY_DRAIN_TIMEOUT_MS: String(DRAIN_TIMEOUT_MS),
-  },
-  stdout: "ignore",
-  stderr: "ignore",
-})
+  } })
+let proc: Bun.Subprocess
 
-afterAll(() => {
-  try { proc.kill() } catch { /* already gone */ }
+beforeAll(async () => { proc = await server.start() })
+afterAll(async () => {
+  await server.stop()
   provider.stop(true)
-  rmSync(root, { recursive: true, force: true })
 })
 
 async function request(path: string, init: RequestInit = {}): Promise<Response> {

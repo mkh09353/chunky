@@ -1,50 +1,42 @@
 import { afterAll, describe, expect, test } from "bun:test"
-import { mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { reserveIntegrationServer, type ReservedIntegrationServer } from "./test-server.ts"
 
 const root = mkdtempSync(join(tmpdir(), "chunky-server-info-"))
 const workspace = realpathSync(root)
 const repoRoot = join(import.meta.dir, "../../..")
 const packageVersion = (JSON.parse(readFileSync(join(repoRoot, "package.json"), "utf8")) as { version: string }).version
-const processes: Bun.Subprocess[] = []
+const processes: ReservedIntegrationServer[] = []
 
-function freePort(): number {
-  const listener = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() { return undefined } } })
-  const port = listener.port
-  listener.stop()
-  return port
-}
-
-function startServer(name: string, identity?: { version: string; buildId: string }): { baseUrl: string; token: string } {
-  const state = join(root, name)
+async function startServer(name: string, identity?: { version: string; buildId: string }): Promise<{ baseUrl: string; token: string }> {
   const token = `${name}-token`
-  const port = freePort()
-  writeFileSync(join(root, `${name}-settings.json`), JSON.stringify({ serverToken: token }))
+  const state = join(root, name)
+  mkdirSync(state)
+  writeFileSync(join(state, "settings.json"), JSON.stringify({ serverToken: token }))
   const env = { ...process.env }
-  for (const key of ["CHUNKY_SERVER_NONCE", "CHUNKY_SERVER_ID", "CHUNKY_BUILD_ID", "CHUNKY_VERSION"]) delete env[key]
   if (identity) {
     env.CHUNKY_SERVER_NONCE = `${name}-nonce`
     env.CHUNKY_SERVER_ID = `${name}-id`
     env.CHUNKY_BUILD_ID = identity.buildId
     env.CHUNKY_VERSION = identity.version
   }
-  const proc = Bun.spawn([process.execPath, "run", "packages/server/src/index.ts"], {
+  const server = reserveIntegrationServer({
+    prefix: `chunky-server-info-${name}-`,
+    root: state,
     cwd: repoRoot,
-    env: {
-      ...env,
-      CHUNKY_PORT: String(port),
-      CHUNKY_SETTINGS: join(root, `${name}-settings.json`),
-      CHUNKY_DB: `${state}.db`,
-      CHUNKY_GRAPH_DB: `${state}-graph.db`,
-      CHUNKY_RELAY: "0",
-      CHUNKY_WORKSPACE: root,
-    },
-    stdout: "ignore",
-    stderr: "ignore",
+    managedIdentity: identity ? {
+      CHUNKY_SERVER_NONCE: `${name}-nonce`,
+      CHUNKY_SERVER_ID: `${name}-id`,
+      CHUNKY_BUILD_ID: identity.buildId,
+      CHUNKY_VERSION: identity.version,
+    } : undefined,
+    env: { ...env, CHUNKY_SETTINGS: join(state, "settings.json"), CHUNKY_WORKSPACE: root },
   })
-  processes.push(proc)
-  return { baseUrl: `http://127.0.0.1:${port}`, token }
+  processes.push(server)
+  await server.start()
+  return { baseUrl: server.baseUrl, token }
 }
 
 async function info(server: { baseUrl: string; token: string }): Promise<Response> {
@@ -63,14 +55,13 @@ async function info(server: { baseUrl: string; token: string }): Promise<Respons
 }
 
 afterAll(async () => {
-  for (const proc of processes) proc.kill("SIGTERM")
-  await Promise.all(processes.map((proc) => proc.exited))
+  await Promise.all(processes.map((server) => server.stop()))
   rmSync(root, { recursive: true, force: true })
 })
 
 describe("GET /api/info server identity", () => {
   test("reports launcher identity for a managed server", async () => {
-    const response = await info(startServer("managed", { version: "9.8.7", buildId: "managed-build" }))
+    const response = await info(await startServer("managed", { version: "9.8.7", buildId: "managed-build" }))
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual({
       workspace,
@@ -78,15 +69,15 @@ describe("GET /api/info server identity", () => {
       buildId: "managed-build",
       channel: "managed",
     })
-  })
+  }, 15_000)
 
   test("reports the package version and dev channel without launcher identity", async () => {
-    const response = await info(startServer("dev"))
+    const response = await info(await startServer("dev"))
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual({
       workspace,
       version: packageVersion,
       channel: "dev",
     })
-  })
+  }, 15_000)
 })

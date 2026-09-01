@@ -1,8 +1,9 @@
-import { afterAll, expect, test } from "bun:test"
+import { afterAll, beforeAll, expect, test } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import type { StopDelegateResponse } from "@chunky/protocol"
+import { reserveIntegrationServer } from "./test-server.ts"
 
 const root = mkdtempSync(join(tmpdir(), "chunky-stop-delegate-http-"))
 const token = "stop-delegate-token"
@@ -11,9 +12,7 @@ const port = listener.port
 listener.stop()
 
 writeFileSync(join(root, "settings.json"), JSON.stringify({ serverToken: token }))
-const proc = Bun.spawn([process.execPath, "run", "packages/server/src/index.ts"], {
-  cwd: join(import.meta.dir, "../../.."),
-  env: {
+const server = reserveIntegrationServer({ prefix: "chunky-stop-delegate-http-", root, port, env: {
     ...process.env,
     CHUNKY_PORT: String(port),
     CHUNKY_SETTINGS: join(root, "settings.json"),
@@ -22,15 +21,10 @@ const proc = Bun.spawn([process.execPath, "run", "packages/server/src/index.ts"]
     CHUNKY_RELAY: "0",
     CHUNKY_WORKSPACE: root,
     CHUNKY_MODELS_CACHE: join(root, "missing-models.json"),
-  },
-  stdout: "ignore",
-  stderr: "ignore",
-})
+  } })
 
-afterAll(() => {
-  try { proc.kill() } catch { /* already gone */ }
-  rmSync(root, { recursive: true, force: true })
-})
+beforeAll(async () => { await server.start() })
+afterAll(async () => { await server.stop() })
 
 const baseUrl = `http://127.0.0.1:${port}`
 const auth = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }

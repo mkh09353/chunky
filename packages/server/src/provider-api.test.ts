@@ -1,8 +1,9 @@
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
 import { ROUTES } from "@chunky/protocol"
+import { reserveIntegrationServer } from "./test-server.ts"
 
 const root = mkdtempSync(join(tmpdir(), "chunky-provider-api-"))
 const token = "provider-api-test-token"
@@ -22,12 +23,7 @@ writeFileSync(settingsPath, JSON.stringify({
 }))
 writeFileSync(authPath, JSON.stringify({ "broken-custom": { type: "api", key: "bad-key" } }))
 
-const proc = Bun.spawn([process.execPath, "run", "packages/server/src/index.ts"], {
-  cwd: join(import.meta.dir, "../../.."),
-  env: { ...process.env, CHUNKY_PORT: String(port), CHUNKY_SETTINGS: settingsPath, CHUNKY_AUTH: authPath, CHUNKY_DB: join(root, "chunky.db"), CHUNKY_RELAY: "0" },
-  stdout: "ignore",
-  stderr: "ignore",
-})
+const server = reserveIntegrationServer({ prefix: "chunky-provider-api-", root, port, env: { ...process.env, CHUNKY_PORT: String(port), CHUNKY_SETTINGS: settingsPath, CHUNKY_AUTH: authPath, CHUNKY_DB: join(root, "chunky.db"), CHUNKY_RELAY: "0" } })
 const baseUrl = `http://127.0.0.1:${port}`
 const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }
 
@@ -40,11 +36,10 @@ async function request(path: string, init: RequestInit): Promise<Response> {
   throw last
 }
 
+beforeAll(async () => { await server.start() })
 afterAll(async () => {
-  proc.kill("SIGTERM")
-  await proc.exited
+  await server.stop()
   provider.stop(true)
-  rmSync(root, { recursive: true, force: true })
 })
 
 describe("provider setup API", () => {

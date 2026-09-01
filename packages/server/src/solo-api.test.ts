@@ -1,7 +1,8 @@
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
+import { reserveIntegrationServer } from "./test-server.ts"
 
 const root = mkdtempSync(join(tmpdir(), "chunky-solo-api-"))
 const token = "solo-api-token"
@@ -9,11 +10,8 @@ const probe = Bun.listen({ hostname: "127.0.0.1", port: 0, socket: { data() {} }
 const port = probe.port
 probe.stop()
 writeFileSync(join(root, "settings.json"), JSON.stringify({ serverToken: token }))
-const proc = Bun.spawn([process.execPath, "run", "packages/server/src/index.ts"], {
-  cwd: join(import.meta.dir, "../../.."),
-  env: { ...process.env, CHUNKY_PORT: String(port), CHUNKY_SETTINGS: join(root, "settings.json"), CHUNKY_DB: join(root, "chunky.db"), CHUNKY_RELAY: "0" },
-  stdout: "ignore", stderr: "ignore",
-})
+const server = reserveIntegrationServer({ prefix: "chunky-solo-api-", root, port, env: { ...process.env, CHUNKY_PORT: String(port), CHUNKY_SETTINGS: join(root, "settings.json"), CHUNKY_DB: join(root, "chunky.db"), CHUNKY_RELAY: "0" } })
+let proc: Bun.Subprocess
 const base = `http://127.0.0.1:${port}`
 const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }
 async function request(path: string, init: RequestInit = {}): Promise<Response> {
@@ -21,7 +19,8 @@ async function request(path: string, init: RequestInit = {}): Promise<Response> 
   throw new Error("server did not start")
 }
 async function json(path: string, init: RequestInit = {}) { return await (await request(path, { ...init, headers: { ...headers, ...(init.headers ?? {}) } })).json() as any }
-afterAll(async () => { proc.kill("SIGTERM"); await proc.exited; rmSync(root, { recursive: true, force: true }) })
+beforeAll(async () => { proc = await server.start() })
+afterAll(async () => { await server.stop() })
 
 describe("solo model HTTP routes", () => {
   test("raw selection sets solo, explicit delegate config exits solo, and mode apply restores it", async () => {

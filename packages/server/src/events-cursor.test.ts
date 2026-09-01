@@ -10,6 +10,7 @@ import {
   type SessionEventCursor,
   type SessionEventStreamFrame,
 } from "@chunky/protocol"
+import { reserveIntegrationServer } from "./test-server.ts"
 
 const root = mkdtempSync(join(tmpdir(), "chunky-events-cursor-"))
 const token = "events-cursor-token"
@@ -50,15 +51,11 @@ writeFileSync(join(root, "settings.json"), JSON.stringify({
   customProviders: [{ id: "faux", label: "Faux", baseURL: `http://127.0.0.1:${provider.port}/v1`, billing: "metered", defaultModel: "faux-model" }],
 }))
 writeFileSync(join(root, "auth.json"), JSON.stringify({ faux: { type: "api", key: "faux-key" } }))
-const proc = Bun.spawn([process.execPath, "run", "packages/server/src/index.ts"], {
-  cwd: join(import.meta.dir, "../../.."),
-  env: {
+const server = reserveIntegrationServer({ prefix: "chunky-events-cursor-", root, port, env: {
     ...process.env,
     CHUNKY_PORT: String(port), CHUNKY_SETTINGS: join(root, "settings.json"), CHUNKY_AUTH: join(root, "auth.json"),
     CHUNKY_DB: dbPath, CHUNKY_GRAPH_DB: join(root, "graph.db"), CHUNKY_RELAY: "0", CHUNKY_WORKSPACE: root,
-  },
-  stdout: "ignore", stderr: "ignore",
-})
+  } })
 const base = `http://127.0.0.1:${port}`
 const auth = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }
 let db: Database
@@ -107,15 +104,14 @@ async function initial(stream: Awaited<ReturnType<typeof openV2>>, count: number
 }
 
 beforeAll(async () => {
+  await server.start()
   await request("/api/info", { headers: auth })
   db = new Database(dbPath)
 })
 afterAll(async () => {
   db?.close()
-  try { proc.kill("SIGTERM") } catch {}
-  await proc.exited
+  await server.stop()
   provider.stop(true)
-  rmSync(root, { recursive: true, force: true })
 })
 
 describe("cursor-aware session event streams", () => {

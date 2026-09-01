@@ -257,6 +257,7 @@ function scheduleDream(sessionId: string): void {
 /** The desktop app's built-in browser pane (CDP endpoint), as announced over
  *  POST ROUTES.appBrowser. Null until an app checks in. Process-local by
  *  design — see the route handler for why this isn't persisted. */
+const testParentPid = Number(process.env.CHUNKY_TEST_PARENT_PID)
 export async function shutdownServer(signal: NodeJS.Signals): Promise<never> {
   if (shuttingDown) return new Promise(() => {})
   shuttingDown = true
@@ -270,6 +271,13 @@ export async function shutdownServer(signal: NodeJS.Signals): Promise<never> {
 
 process.once("SIGTERM", () => { void shutdownServer("SIGTERM") })
 process.once("SIGINT", () => { void shutdownServer("SIGINT") })
+
+if (Number.isInteger(testParentPid) && testParentPid > 1) {
+  const parentWatch = setInterval(() => {
+    try { process.kill(testParentPid, 0) } catch { void shutdownServer("SIGTERM") }
+  }, 1_000)
+  parentWatch.unref()
+}
 
 function subscribers(sessionId: string): Set<Subscriber> {
   let set = live.get(sessionId)
@@ -785,6 +793,9 @@ function withCors<T extends { fetch: (req: Request, ...args: any[]) => Response 
 const port = Number(process.env.CHUNKY_PORT) || DEFAULT_PORT
 const launcherManaged = !!process.env.CHUNKY_SERVER_NONCE
 const serverLeases = launcherManaged ? new ServerLeaseTracker(() => Date.now(), 30_000, 30_000) : null
+// Test-only orphan protection. Direct integration-test children opt in with the
+// spawning test runner's pid; installed, launcher-managed, and dev servers
+// never receive this variable and retain their normal lifetime.
 // Retirement after a launcher replaced this build with a newer one. Draining
 // refuses NEW turns but never interrupts work already in flight (see drain.ts).
 // The timeout is tunable so tests need not wait five minutes.

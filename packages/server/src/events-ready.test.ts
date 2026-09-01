@@ -1,10 +1,11 @@
 // Attaching to a session must connect immediately, even when it has no history
 // yet: clients only consider a stream open once the first byte arrives, and the
 // next one after that can be the 20s keep-alive.
-import { afterAll, expect, test } from "bun:test"
+import { afterAll, beforeAll, expect, test } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os"
 import { join } from "node:path"
+import { reserveIntegrationServer } from "./test-server.ts"
 
 const root = mkdtempSync(join(tmpdir(), "chunky-events-ready-"))
 const token = "events-ready-token"
@@ -13,9 +14,7 @@ const port = listener.port
 listener.stop()
 
 writeFileSync(join(root, "settings.json"), JSON.stringify({ serverToken: token }))
-const proc = Bun.spawn([process.execPath, "run", "packages/server/src/index.ts"], {
-  cwd: join(import.meta.dir, "../../.."),
-  env: {
+const server = reserveIntegrationServer({ prefix: "chunky-events-ready-", root, port, env: {
     ...process.env,
     CHUNKY_PORT: String(port),
     CHUNKY_SETTINGS: join(root, "settings.json"),
@@ -23,15 +22,11 @@ const proc = Bun.spawn([process.execPath, "run", "packages/server/src/index.ts"]
     CHUNKY_GRAPH_DB: join(root, "chunky-graph.db"),
     CHUNKY_RELAY: "0",
     CHUNKY_WORKSPACE: root,
-  },
-  stdout: "ignore",
-  stderr: "ignore",
-})
+  } })
+let proc: Bun.Subprocess
 
-afterAll(() => {
-  try { proc.kill() } catch { /* already gone */ }
-  rmSync(root, { recursive: true, force: true })
-})
+beforeAll(async () => { proc = await server.start() })
+afterAll(async () => { await server.stop() })
 
 const baseUrl = `http://127.0.0.1:${port}`
 const auth = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }

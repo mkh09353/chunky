@@ -1,7 +1,8 @@
-import { afterAll, describe, expect, test } from "bun:test";
+import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { reserveIntegrationServer } from "../test-server.ts";
 
 const root = mkdtempSync(join(tmpdir(), "chunky-relay-api-"));
 const token = "local-server-token";
@@ -43,11 +44,7 @@ writeFileSync(
   join(root, "settings.json"),
   JSON.stringify({ serverToken: token }),
 );
-const proc = Bun.spawn(
-  [process.execPath, "run", "packages/server/src/index.ts"],
-  {
-    cwd: join(import.meta.dir, "../../../../"),
-    env: {
+const server = reserveIntegrationServer({ prefix: "chunky-relay-api-", root, port, env: {
       ...process.env,
       CHUNKY_PORT: String(port),
       CHUNKY_SETTINGS: join(root, "settings.json"),
@@ -55,11 +52,7 @@ const proc = Bun.spawn(
       CHUNKY_RELAY_CONFIG: join(root, "relay.json"),
       CHUNKY_RELAY_URL: `http://127.0.0.1:${relay.port}`,
       CHUNKY_RELAY: "0",
-    },
-    stdout: "ignore",
-    stderr: "ignore",
-  },
-);
+    } });
 const base = `http://127.0.0.1:${port}`;
 async function request(
   path: string,
@@ -76,11 +69,10 @@ async function request(
   }
   throw error;
 }
+beforeAll(async () => { await server.start(); });
 afterAll(async () => {
-  proc.kill("SIGTERM");
-  await proc.exited;
+  await server.stop();
   relay.stop(true);
-  rmSync(root, { recursive: true, force: true });
 });
 
 describe("local relay pairing API", () => {

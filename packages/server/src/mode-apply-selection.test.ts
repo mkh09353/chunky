@@ -1,8 +1,9 @@
-import { afterAll, describe, expect, test } from "bun:test"
+import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { join } from "node:path"
 import { tmpdir } from "node:os"
 import type { AgentEvent } from "@chunky/protocol"
+import { reserveIntegrationServer } from "./test-server.ts"
 
 const root = mkdtempSync(join(tmpdir(), "chunky-mode-apply-"))
 const token = "mode-apply-token"
@@ -15,11 +16,7 @@ writeFileSync(join(root, "settings.json"), JSON.stringify({
   selections: { grok: { model: "grok-4.5", effort: "high" } },
   advisor: { enabled: false }, review: { enabled: false }, sidekick: { enabled: false }, sidekickSeats: {},
 }))
-const proc = Bun.spawn([process.execPath, "run", "packages/server/src/index.ts"], {
-  cwd: join(import.meta.dir, "../../.."),
-  env: { ...process.env, CHUNKY_PORT: String(port), CHUNKY_SETTINGS: join(root, "settings.json"), CHUNKY_DB: join(root, "chunky.db"), CHUNKY_RELAY: "0" },
-  stdout: "ignore", stderr: "ignore",
-})
+const server = reserveIntegrationServer({ prefix: "chunky-mode-apply-", root, port, env: { ...process.env, CHUNKY_PORT: String(port), CHUNKY_SETTINGS: join(root, "settings.json"), CHUNKY_DB: join(root, "chunky.db"), CHUNKY_RELAY: "0" } })
 const base = `http://127.0.0.1:${port}`
 const headers = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }
 
@@ -51,6 +48,14 @@ async function openEvents(sessionId: string) {
       }
       return null
     },
+    async nextType(type: AgentEvent["type"], timeoutMs = 1_000): Promise<AgentEvent | null> {
+      const deadline = Date.now() + timeoutMs
+      while (Date.now() < deadline) {
+        const event = await this.next(deadline - Date.now())
+        if (!event || event.type === type) return event
+      }
+      return null
+    },
     close() { void reader.cancel() },
   }
 }
@@ -63,7 +68,8 @@ const completeSpec = {
   sidekickSeats: { frontend: { provider: "anthropic", model: "claude-opus-4-6", effort: "high" } },
 }
 
-afterAll(async () => { proc.kill("SIGTERM"); await proc.exited; rmSync(root, { recursive: true, force: true }) })
+beforeAll(async () => { await server.start() })
+afterAll(async () => { await server.stop() })
 
 describe("mode apply selection", () => {
   test("session apply persists the complete preset without changing globals", async () => {
@@ -106,15 +112,15 @@ describe("mode apply selection", () => {
     const target = await createSession(), other = await createSession()
     const targetEvents = await openEvents(target), otherEvents = await openEvents(other)
     await json("/api/modes/session-complete/apply", { method: "POST", body: JSON.stringify({ sessionId: target }) })
-    expect(await targetEvents.next()).toMatchObject({ type: "mode.applied", name: "session-complete", sessionId: target })
-    expect(await otherEvents.next(150)).toBeNull()
+    expect(await targetEvents.nextType("mode.applied")).toMatchObject({ type: "mode.applied", name: "session-complete", sessionId: target })
+    expect(await otherEvents.nextType("mode.applied", 150)).toBeNull()
     // The timed read remains pending by design; cancel and reattach before the
     // broadcast assertion so there is never more than one reader.read in flight.
     otherEvents.close()
     const otherBroadcastEvents = await openEvents(other)
     await json("/api/modes/new-global/apply", { method: "POST" })
-    expect(await targetEvents.next()).toMatchObject({ type: "mode.applied", name: "new-global" })
-    expect(await otherBroadcastEvents.next()).toMatchObject({ type: "mode.applied", name: "new-global" })
+    expect(await targetEvents.nextType("mode.applied")).toMatchObject({ type: "mode.applied", name: "new-global" })
+    expect(await otherBroadcastEvents.nextType("mode.applied")).toMatchObject({ type: "mode.applied", name: "new-global" })
     targetEvents.close(); otherBroadcastEvents.close()
   })
 })

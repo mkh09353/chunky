@@ -9,6 +9,7 @@ import {
   type AgentEvent,
   type SessionHistoryResponse,
 } from "@chunky/protocol"
+import { reserveIntegrationServer } from "./test-server.ts"
 
 const root = mkdtempSync(join(tmpdir(), "chunky-history-page-"))
 const token = "history-page-token"
@@ -18,9 +19,7 @@ const port = listener.port
 listener.stop()
 
 writeFileSync(join(root, "settings.json"), JSON.stringify({ serverToken: token }))
-const proc = Bun.spawn([process.execPath, "run", "packages/server/src/index.ts"], {
-  cwd: join(import.meta.dir, "../../.."),
-  env: {
+const server = reserveIntegrationServer({ prefix: "chunky-history-page-", root, port, env: {
     ...process.env,
     CHUNKY_PORT: String(port),
     CHUNKY_SETTINGS: join(root, "settings.json"),
@@ -30,10 +29,7 @@ const proc = Bun.spawn([process.execPath, "run", "packages/server/src/index.ts"]
     CHUNKY_MODELS_CACHE: join(root, "missing-models-cache.json"),
     CHUNKY_RELAY: "0",
     CHUNKY_WORKSPACE: root,
-  },
-  stdout: "ignore",
-  stderr: "ignore",
-})
+  } })
 const base = `http://127.0.0.1:${port}`
 const auth = { Authorization: `Bearer ${token}`, "Content-Type": "application/json" }
 let db: Database
@@ -75,15 +71,14 @@ async function history(id: string, query = ""): Promise<{ response: Response; bo
 }
 
 beforeAll(async () => {
+  await server.start()
   await request("/api/info")
   db = new Database(dbPath)
 })
 
 afterAll(async () => {
   db?.close()
-  try { proc.kill("SIGTERM") } catch {}
-  await proc.exited
-  rmSync(root, { recursive: true, force: true })
+  await server.stop()
 })
 
 describe("bounded session history pages", () => {

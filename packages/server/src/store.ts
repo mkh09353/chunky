@@ -416,6 +416,8 @@ const stmtInsertEvent = db.query("INSERT INTO events (session_id, seq, json) VAL
 const stmtHistory = db.query("SELECT json FROM events WHERE session_id = ? ORDER BY seq ASC")
 const stmtHistoryWithSeq = db.query("SELECT seq, json FROM events WHERE session_id = ? ORDER BY seq ASC")
 const historyFromSeqSql = "SELECT seq, json FROM events WHERE session_id = ? AND seq >= ? ORDER BY seq ASC"
+const historyRangeSql = "SELECT seq, json FROM events WHERE session_id = ? AND seq >= ? AND seq < ? ORDER BY seq ASC LIMIT ?"
+const replayRangeStatsSql = "SELECT COUNT(*) AS events, COALESCE(SUM(length(json)), 0) AS bytes FROM events WHERE session_id = ? AND seq >= ? AND seq < ?"
 const recentHistorySql = "SELECT seq, json FROM events WHERE session_id = ? ORDER BY seq DESC LIMIT ?"
 const statusEventsSql = "SELECT json FROM events WHERE session_id = ? AND json_extract(json, '$.type') IN ('session.status', 'thread.spawn', 'thread.status') ORDER BY seq ASC"
 const stmtLastSeq = db.query("SELECT MAX(seq) AS n FROM events WHERE session_id = ?")
@@ -825,6 +827,23 @@ export const Store = {
   /** Read a persisted suffix directly by sequence. */
   historyFromSeq(sessionId: string, fromSeq: number): Array<{ seq: number; event: AgentEvent }> {
     const rows = backend(sessionId).query(historyFromSeqSql).all(sessionId, fromSeq) as Array<{ seq: number; json: string }>
+    return rows.map((row) => ({ seq: row.seq, event: JSON.parse(row.json) as AgentEvent }))
+  },
+
+  /** Size of the durable range [fromSeq, toSeqExclusive) in one aggregate
+   * query, so the v2 stream can refuse an oversized replay before it starts. */
+  replayRangeStats(sessionId: string, fromSeq: number, toSeqExclusive: number): { events: number; bytes: number } {
+    const row = backend(sessionId).query(replayRangeStatsSql).get(sessionId, fromSeq, toSeqExclusive) as { events: number; bytes: number } | null
+    return { events: row?.events ?? 0, bytes: row?.bytes ?? 0 }
+  },
+
+  /** One page of the durable range [fromSeq, toSeqExclusive), at most `limit`
+   * rows. Fully materialized by `.all()` so no sqlite statement stays open
+   * across the caller's awaits; page again from `last.seq + 1`. */
+  historyRange(sessionId: string, fromSeq: number, toSeqExclusive: number, limit: number): Array<{ seq: number; event: AgentEvent }> {
+    const boundedLimit = Math.max(0, Math.floor(limit))
+    if (boundedLimit === 0 || fromSeq >= toSeqExclusive) return []
+    const rows = backend(sessionId).query(historyRangeSql).all(sessionId, fromSeq, toSeqExclusive, boundedLimit) as Array<{ seq: number; json: string }>
     return rows.map((row) => ({ seq: row.seq, event: JSON.parse(row.json) as AgentEvent }))
   },
 

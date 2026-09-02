@@ -15,6 +15,7 @@ import {
   sseFrame,
   decodeSessionEventCursor,
   decodeSessionHistoryPageCursor,
+  encodeSessionEventCursor,
   encodeSessionHistoryPageCursor,
   type AgentEvent,
   type SessionEventStreamFrame,
@@ -201,14 +202,21 @@ import { currentPrReviews, currentGithubOrgs, pollPrReviews, startPrReviewsPolle
 import { getGithubConfig, setGithubConfig, githubConfigResponse } from "./settings.ts"
 import { joinPrLinks, startPrAction, getPrLink } from "./pr-actions.ts"
 import { repoWorkspaceSet, sessionGitFields, type SessionGitLookup } from "./worktrees.ts"
+import { REPLAY_BUDGET, replayExceedsBudget } from "./replay-budget.ts"
 
 type LegacySubscriber = { mode: "legacy"; controller: ReadableStreamDefaultController<Uint8Array> }
 type V2Subscriber = {
   mode: "v2"
-  controller: ReadableStreamDefaultController<Uint8Array>
+  // Null only while the subscriber is registered but its ReadableStream has
+  // not started yet; `buffering` is true for that whole window, so nothing
+  // touches the controller before it exists.
+  controller: ReadableStreamDefaultController<Uint8Array> | null
   buffering: boolean
   buffer: SessionEventStreamFrame[]
 }
+/** Rows read per sqlite page while replaying a v2 stream; bounds the memory a
+ * replay of any length can hold at once. */
+const REPLAY_PAGE_ROWS = 200
 type Subscriber = LegacySubscriber | V2Subscriber
 
 // In-memory fan-out only. Durable history lives in the Store, so this is just
@@ -306,6 +314,7 @@ function enqueueV2(sessionId: string, subscriber: V2Subscriber, frame: SessionEv
     return
   }
   try {
+    if (!subscriber.controller) throw new Error("v2 subscriber has no stream")
     subscriber.controller.enqueue(encoder.encode(sseFrame(frame)))
   } catch {
     removeSubscriber(sessionId, subscriber)
@@ -2180,29 +2189,107 @@ const server = Bun.serve(withCors({
         let selfSubscriber: Subscriber
         let heartbeat: ReturnType<typeof setInterval> | undefined
         if (v2) {
+          // Subscribe BEFORE capturing generation/boundary and before the
+          // Response exists. Persistence that lands after this point is held
+          // in `buffer` (buffering stays true until replay-end), so:
+          //   - rows with seq <  boundary were durable when the boundary was
+          //     read and are delivered exactly once by the paged replay; their
+          //     buffered copies are dropped at replay-end;
+          //   - rows with seq >= boundary are never read by the replay
+          //     (bounded by `boundary`) and are flushed once after replay-end.
+          // Nothing between capture and replay-end is lost or duplicated, and
+          // a rejected request simply removes the subscriber again.
+          const subscriber: V2Subscriber = { mode: "v2", controller: null, buffering: true, buffer: [] }
+          selfSubscriber = subscriber
+          subscribers(sessionId).add(subscriber)
+
+          const generation = Store.historyGeneration(sessionId)
+          const boundary = Store.nextEventSeq(sessionId)
+          let from = requestedCursor?.nextSeq ?? 0
+          let reset: SessionEventStreamFrame | null = null
+          if (requestedCursor && requestedCursor.generation !== generation) {
+            from = 0
+            reset = { kind: "replay-reset", reason: "history-rewritten", cursor: { generation, nextSeq: 0 } }
+          } else if (requestedCursor && requestedCursor.nextSeq > boundary) {
+            from = 0
+            reset = { kind: "replay-reset", reason: "cursor-ahead", cursor: { generation, nextSeq: 0 } }
+          }
+
+          // Preflight: a supplied cursor asks for an incremental catch-up. When
+          // that range (after reset resolution) is oversized, refuse the stream
+          // so the client rebuilds from the bounded history tail instead of
+          // streaming the whole transcript. A missing cursor is a cold/legacy
+          // rebuild and still replays everything, paged below.
+          if (rawCursor != null) {
+            const stats = Store.replayRangeStats(sessionId, from, boundary)
+            if (replayExceedsBudget(stats, REPLAY_BUDGET)) {
+              removeSubscriber(sessionId, subscriber)
+              return json({
+                error: "session event replay too large",
+                code: "replay-too-large",
+                cursor: encodeSessionEventCursor({ generation, nextSeq: boundary }),
+                events: stats.events,
+                bytes: stats.bytes,
+              }, 400)
+            }
+          }
+
+          // Paged replay driven by pull(): each pull reads one bounded page and
+          // enqueues it; the stream only pulls again once the client has drained
+          // what was enqueued (desiredSize > 0), which is the backpressure. No
+          // sqlite statement is held open between pulls.
+          let nextSeq = from
+          let replayDone = false
+          let closed = false
+          const finish = (controller: ReadableStreamDefaultController<Uint8Array>) => {
+            replayDone = true
+            controller.enqueue(encoder.encode(sseFrame({ kind: "replay-end", cursor: { generation, nextSeq: boundary } })))
+            controller.enqueue(encoder.encode(sseFrame({ kind: "live", event: { type: "ports.changed", sessionId, ports: currentSessionPorts(sessionId) } })))
+
+            // Events below the captured boundary were included in replay even
+            // if their notification raced registration; newer events and all
+            // live-only frames belong after replay-end.
+            const buffered = subscriber.buffer
+            subscriber.buffer = []
+            for (const frame of buffered) {
+              if (frame.kind === "event" && frame.seq < boundary) continue
+              controller.enqueue(encoder.encode(sseFrame(frame)))
+            }
+            subscriber.buffering = false
+            heartbeat = setInterval(() => {
+              try { controller.enqueue(encoder.encode(": ping\n\n")) } catch {}
+            }, 20_000)
+          }
+          const teardown = () => {
+            if (closed) return
+            closed = true
+            replayDone = true
+            if (heartbeat) clearInterval(heartbeat)
+            heartbeat = undefined
+            removeSubscriber(sessionId, subscriber)
+            notifyShellSessionChanged(sessionId)
+          }
           const stream = new ReadableStream<Uint8Array>({
             start(controller) {
-              const subscriber: V2Subscriber = { mode: "v2", controller, buffering: true, buffer: [] }
-              selfSubscriber = subscriber
-              // Subscribe before capturing generation/boundary so concurrent
-              // persistence is buffered until the replay snapshot is complete.
-              subscribers(sessionId).add(subscriber)
+              subscriber.controller = controller
               controller.enqueue(encoder.encode(": ready\n\n"))
-
-              const generation = Store.historyGeneration(sessionId)
-              const boundary = Store.nextEventSeq(sessionId)
-              let from = requestedCursor?.nextSeq ?? 0
-              let reset: SessionEventStreamFrame | null = null
-              if (requestedCursor && requestedCursor.generation !== generation) {
-                from = 0
-                reset = { kind: "replay-reset", reason: "history-rewritten", cursor: { generation, nextSeq: 0 } }
-              } else if (requestedCursor && requestedCursor.nextSeq > boundary) {
-                from = 0
-                reset = { kind: "replay-reset", reason: "cursor-ahead", cursor: { generation, nextSeq: 0 } }
-              }
               if (reset) controller.enqueue(encoder.encode(sseFrame(reset)))
-              for (const row of Store.historyFromSeq(sessionId, from)) {
-                if (row.seq >= boundary) break
+              notifyShellSessionChanged(sessionId)
+            },
+            pull(controller) {
+              if (replayDone || closed) return
+              // History was rewritten under a replay that had already started
+              // (only possible now that replay spans multiple pulls). The rows
+              // in [nextSeq, boundary) no longer mean what the captured
+              // generation says, so end the stream; the client reconnects with
+              // its cursor and receives a history-rewritten reset.
+              if (Store.historyGeneration(sessionId) !== generation) {
+                teardown()
+                try { controller.close() } catch {}
+                return
+              }
+              const rows = Store.historyRange(sessionId, nextSeq, boundary, REPLAY_PAGE_ROWS)
+              for (const row of rows) {
                 controller.enqueue(encoder.encode(sseFrame({
                   kind: "event",
                   seq: row.seq,
@@ -2210,28 +2297,11 @@ const server = Bun.serve(withCors({
                   event: row.event,
                 })))
               }
-              controller.enqueue(encoder.encode(sseFrame({ kind: "replay-end", cursor: { generation, nextSeq: boundary } })))
-              controller.enqueue(encoder.encode(sseFrame({ kind: "live", event: { type: "ports.changed", sessionId, ports: currentSessionPorts(sessionId) } })))
-
-              // Events below the captured boundary were included in replay even
-              // if their notification raced registration; newer events and all
-              // live-only frames belong after replay-end.
-              const buffered = subscriber.buffer
-              subscriber.buffer = []
-              for (const frame of buffered) {
-                if (frame.kind === "event" && frame.seq < boundary) continue
-                controller.enqueue(encoder.encode(sseFrame(frame)))
-              }
-              subscriber.buffering = false
-              notifyShellSessionChanged(sessionId)
-              heartbeat = setInterval(() => {
-                try { controller.enqueue(encoder.encode(": ping\n\n")) } catch {}
-              }, 20_000)
+              if (rows.length) nextSeq = rows[rows.length - 1]!.seq + 1
+              if (rows.length < REPLAY_PAGE_ROWS || nextSeq >= boundary) finish(controller)
             },
             cancel() {
-              if (heartbeat) clearInterval(heartbeat)
-              removeSubscriber(sessionId, selfSubscriber)
-              notifyShellSessionChanged(sessionId)
+              teardown()
             },
           })
           return new Response(stream, {

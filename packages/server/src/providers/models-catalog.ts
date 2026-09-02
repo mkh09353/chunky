@@ -114,7 +114,7 @@ const FAMILY_FALLBACK: Record<(typeof FAMILY_ALIASES)[number], string> = {
   opus: "claude-opus-5",
   sonnet: "claude-sonnet-5",
   haiku: "claude-haiku-4-5",
-  fable: "claude-fable-5",
+  fable: "claude-fable-5-1",
 }
 
 function splitModelVariant(model: string): { base: string; suffix: string } {

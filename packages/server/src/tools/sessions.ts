@@ -94,7 +94,8 @@ export const sendToSessionTool = tool(
     // Resolve the target: exact id, or unambiguous prefix.
     let targetId = session_id.trim()
     if (!Store.exists(targetId) && !Store.isArchived(targetId)) {
-      const matches = Store.list()
+      // Cold sessions are a valid target (restored below), so prefix-match them too.
+      const matches = [...Store.list(), ...Store.listArchived()]
         .map((s) => s.sessionId)
         .filter((id) => id.startsWith(targetId))
       if (matches.length === 1) targetId = matches[0]!

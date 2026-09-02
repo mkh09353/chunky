@@ -26,7 +26,7 @@ git(["commit", "-m", "init"], repo)
 const { addRepo, listRepos } = await import("./repos.ts")
 const { Store } = await import("./store.ts")
 const { createForkWorktree } = await import("./worktree-fork.ts")
-const { repoWorkspaceSet, sessionGitFields } = await import("./worktrees.ts")
+const { repoWorkspaceSet, sessionGitFields, worktreeResolver } = await import("./worktrees.ts")
 const { canonicalWorkspace } = await import("./launcher-discovery.ts")
 
 const registered = addRepo(repo)
@@ -59,6 +59,10 @@ const lookup = {
     return listRepos().repos.find((r) => canonicalWorkspace(r.path) === target)?.id ?? null
   },
 }
+// Git resolves in the background (never on the request path); the route's first
+// answer would be flat, so let the resolver settle before reading what it knows.
+repoWorkspaceSet(registered.path, (paths) => Store.worktreeWorkspacesUnder(paths))
+await worktreeResolver.flush()
 const workspaces = repoWorkspaceSet(registered.path, (paths) => Store.worktreeWorkspacesUnder(paths))
 console.log(`\nrepoWorkspaceSet -> ${JSON.stringify(workspaces, null, 2)}`)
 

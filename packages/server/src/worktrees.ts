@@ -19,10 +19,21 @@
 // ever, not one per delta. Within the TTL a lookup is a Map hit and nothing
 // else.
 //
+// AND NO GIT EVER RUNS ON THE REQUEST PATH. Lookups are synchronous Map reads;
+// git runs asynchronously in the background (stale-while-revalidate):
+//   · fresh entry   → served.
+//   · expired entry → the stale value is served NOW and one refresh is queued.
+//   · never seen    → null is served (clients render flat) and a resolve is queued.
+// At most one resolve is in flight per workspace. When a background resolve
+// stores a value that DIFFERS from what was being served, `onResolved` fires
+// so the session stream can re-emit the affected rows within its debounce
+// instead of waiting for a client poll.
+//
 // Ordering of sources, cheapest first:
 //   1. `session_workspaces` (Store.workspaceMetadataOf) — the fork worktree's
 //      branch and path were recorded when it was created. No subprocess at all.
-//   2. `git rev-parse --show-toplevel` + `git worktree list --porcelain`, cached.
+//   2. `git rev-parse --show-toplevel` + `git worktree list --porcelain`, cached
+//      and resolved in the background (see below).
 //
 // NOTHING here may throw and nothing may be fatal: a deleted worktree, an
 // unmounted volume, a detached HEAD, a missing git binary and a plain
@@ -30,7 +41,6 @@
 // as "render flat".
 //
 // Run with: bun test src/worktrees.test.ts
-import { spawnSync } from "node:child_process"
 import { existsSync } from "node:fs"
 import { resolve } from "node:path"
 
@@ -54,21 +64,24 @@ export interface WorkspaceGit {
 }
 
 /** Runs git and returns stdout, or null for any failure whatsoever. Injectable
- *  so the cache and fallback rules are testable without a real repository. */
-export type GitRunner = (args: string[], cwd: string) => string | null
+ *  so the cache and fallback rules are testable without a real repository. A
+ *  synchronous runner (the scripted fakes in tests) is accepted as-is. */
+export type GitRunner = (args: string[], cwd: string) => string | null | Promise<string | null>
 
 /** Arguments are always an ARRAY — never a shell string, so a path containing
- *  spaces, quotes or `;` is data and can never become a command. */
-export const spawnGit: GitRunner = (args, cwd) => {
+ *  spaces, quotes or `;` is data and can never become a command. Asynchronous
+ *  on purpose: this is only ever called from a background resolve, and a
+ *  blocking spawn here would stall every request in flight for its duration. */
+export const spawnGit: GitRunner = async (args, cwd) => {
   try {
-    const result = spawnSync("git", args, {
-      cwd,
-      encoding: "utf8",
-      timeout: GIT_TIMEOUT_MS,
-      stdio: ["ignore", "pipe", "ignore"],
-    })
-    if (result.error || result.status !== 0 || typeof result.stdout !== "string") return null
-    return result.stdout
+    const proc = Bun.spawn(["git", ...args], { cwd, stdin: "ignore", stdout: "pipe", stderr: "ignore" })
+    const timer = setTimeout(() => { try { proc.kill() } catch { /* already gone */ } }, GIT_TIMEOUT_MS)
+    try {
+      const [stdout, code] = await Promise.all([new Response(proc.stdout).text(), proc.exited])
+      return code === 0 ? stdout : null
+    } finally {
+      clearTimeout(timer)
+    }
   } catch {
     return null
   }
@@ -114,13 +127,24 @@ interface CacheEntry<T> {
   value: T
 }
 
+/** Fires (with the resolved, canonical workspace key) when a background resolve
+ *  stored an answer that differs from what was being served for it — a miss
+ *  filling in counts, a refresh confirming the same answer does not. */
+export type ResolvedListener = (workspacePath: string) => void
+
 export interface ResolverOptions {
   git?: GitRunner
   now?: () => number
   ttlMs?: number
   /** Injectable so "the worktree was deleted" is testable without a filesystem. */
   exists?: (path: string) => boolean
+  onResolved?: ResolvedListener
 }
+
+/** How many background git resolves may run at once. A cold boot with sessions
+ *  spread over hundreds of folders must not fork hundreds of git processes in
+ *  one tick; the rest wait their turn (still off the request path). */
+const MAX_CONCURRENT_RESOLVES = 4
 
 /**
  * A workspace resolver with its own cache. The server uses one shared instance
@@ -134,19 +158,38 @@ export class WorktreeResolver {
   private readonly exists: (path: string) => boolean
   private readonly cache = new Map<string, CacheEntry<WorkspaceGit | null>>()
   private readonly existsCache = new Map<string, CacheEntry<boolean>>()
+  /** Keys with a background resolve queued or running: at most one each. */
+  private readonly inflight = new Map<string, Promise<void>>()
+  private readonly waiting: (() => void)[] = []
+  private active = 0
   /** Test/diagnostic counter: how many workspaces were actually resolved by git. */
   private spawns = 0
+  /** Notified after a background resolve CHANGED a workspace's answer. */
+  onResolved: ResolvedListener | null
 
   constructor(options: ResolverOptions = {}) {
     this.git = options.git ?? spawnGit
     this.now = options.now ?? Date.now
     this.ttlMs = options.ttlMs ?? WORKTREE_TTL_MS
     this.exists = options.exists ?? existsSync
+    this.onResolved = options.onResolved ?? null
   }
 
-  /** How many times git was consulted. Only cache misses increment it. */
+  /** How many times git was consulted. Only cache misses/refreshes increment it. */
   get gitCalls(): number {
     return this.spawns
+  }
+
+  /** Background resolves queued or running right now. */
+  get pending(): number {
+    return this.inflight.size
+  }
+
+  /** Settles once every background resolve — including any scheduled by an
+   *  `onResolved` listener while waiting — has stored its result. For tests
+   *  and the manual verifier; the server never awaits this. */
+  async flush(): Promise<void> {
+    while (this.inflight.size > 0) await Promise.all([...this.inflight.values()])
   }
 
   private fresh<T>(store: Map<string, CacheEntry<T>>, key: string): CacheEntry<T> | null {
@@ -160,6 +203,8 @@ export class WorktreeResolver {
   }
 
   private remember<T>(store: Map<string, CacheEntry<T>>, key: string, value: T): T {
+    // Delete first so a refreshed key moves to the young end of the Map.
+    store.delete(key)
     store.set(key, { at: this.now(), value })
     // Insertion-ordered eviction: the oldest key is the first one Map yields.
     while (store.size > WORKTREE_CACHE_MAX) {
@@ -186,24 +231,35 @@ export class WorktreeResolver {
   }
 
   /**
-   * Resolve a workspace, or null when it is not inside a usable git repository.
+   * Resolve a workspace from the cache: the answer, null when it is not inside
+   * a usable git repository, or null when it has simply not been resolved YET.
    *
-   * Both outcomes are cached for the TTL: refuting a folder must not be more
+   * Never waits for git. A fresh entry is served as is; an expired one is
+   * served stale while one background refresh runs; a never-seen workspace
+   * gets a background resolve and null for now. Both positive and negative
+   * outcomes are cached for the TTL: refuting a folder must not be more
    * expensive than confirming one, or every delta would re-spawn git for every
    * non-repository session.
    */
   resolve(workspace: string): WorkspaceGit | null {
     const key = safeResolve(workspace)
     if (!key) return null
-    const cached = this.fresh(this.cache, key)
-    if (cached) return cached.value
-    return this.remember(this.cache, key, this.query(key))
+    const entry = this.cache.get(key)
+    if (entry && this.now() - entry.at < this.ttlMs) return entry.value
+    this.schedule(key)
+    return entry?.value ?? null
+  }
+
+  /** Start resolving a workspace in the background unless it is already fresh.
+   *  Server start pre-warms every registered repo through this. */
+  warm(workspace: string): void {
+    this.resolve(workspace)
   }
 
   /**
    * Every worktree path belonging to the repository rooted at `repoPath`, main
    * worktree first. Falls back to the path itself so a caller can always use
-   * the result as a workspace set, repository or not.
+   * the result as a workspace set, repository or not (or not yet resolved).
    */
   worktreePathsFor(repoPath: string): string[] {
     const key = safeResolve(repoPath)
@@ -216,21 +272,63 @@ export class WorktreeResolver {
     return info.worktrees.includes(key) ? info.worktrees : [key, ...info.worktrees]
   }
 
-  /** Drop everything (a repo was added/removed, or a test wants a fresh start). */
+  /** Drop everything (a repo was added/removed, or a test wants a fresh start).
+   *  Resolves already in flight complete and store their (fresh) answers. */
   clear(): void {
     this.cache.clear()
     this.existsCache.clear()
     this.spawns = 0
   }
 
-  private query(workspace: string): WorkspaceGit | null {
+  /** Queue one background resolve for `key` unless one is already in flight. */
+  private schedule(key: string): void {
+    if (this.inflight.has(key)) return
+    const served = this.cache.get(key)?.value ?? null
+    const task = this.acquire()
+      .then(() => this.query(key))
+      .catch(() => null)
+      .then((value) => {
+        this.remember(this.cache, key, value)
+        if (!sameGit(served, value)) this.announce(key)
+      })
+      .finally(() => {
+        this.inflight.delete(key)
+        this.release()
+      })
+    this.inflight.set(key, task)
+  }
+
+  private acquire(): Promise<void> {
+    if (this.active < MAX_CONCURRENT_RESOLVES) {
+      this.active += 1
+      return Promise.resolve()
+    }
+    return new Promise((grant) => this.waiting.push(grant))
+  }
+
+  private release(): void {
+    const next = this.waiting.shift()
+    // Hand the slot straight to the next waiter, otherwise free it.
+    if (next) next()
+    else this.active -= 1
+  }
+
+  private announce(key: string): void {
+    try {
+      this.onResolved?.(key)
+    } catch {
+      // Decoration: a listener must never break resolution or the cache.
+    }
+  }
+
+  private async query(workspace: string): Promise<WorkspaceGit | null> {
     if (!this.pathExists(workspace)) return null
     this.spawns += 1
-    const top = this.git(["rev-parse", "--show-toplevel"], workspace)
+    const top = await this.git(["rev-parse", "--show-toplevel"], workspace)
     if (top == null) return null
     const toplevel = safeResolve(top.trim())
     if (!toplevel) return null
-    const porcelain = this.git(["worktree", "list", "--porcelain"], workspace)
+    const porcelain = await this.git(["worktree", "list", "--porcelain"], workspace)
     if (porcelain == null) return null
     const records = parseWorktreePorcelain(porcelain)
     if (records.length === 0) return null
@@ -251,6 +349,15 @@ export class WorktreeResolver {
   }
 }
 
+/** Did a background resolve change the answer? Null (never resolved) and null
+ *  (refuted) compare equal on purpose: refuting a plain folder is not news. */
+function sameGit(a: WorkspaceGit | null, b: WorkspaceGit | null): boolean {
+  if (a === b) return true
+  if (!a || !b) return false
+  return a.mainPath === b.mainPath && a.branch === b.branch && a.linked === b.linked
+    && a.worktrees.length === b.worktrees.length && a.worktrees.every((path, i) => path === b.worktrees[i])
+}
+
 /** `resolve()` on a value that may be empty or malformed, without throwing. */
 function safeResolve(path: string | null | undefined): string | null {
   if (typeof path !== "string" || path.length === 0 || path.includes("\0")) return null
@@ -261,7 +368,8 @@ function safeResolve(path: string | null | undefined): string | null {
   }
 }
 
-/** The server-wide instance. One cache for every session-summary builder. */
+/** The server-wide instance. One cache for every session-summary builder.
+ *  index.ts sets `onResolved` so the session stream re-emits affected rows. */
 export const worktreeResolver = new WorktreeResolver()
 
 // ---- Repository workspace set ----------------------------------------------

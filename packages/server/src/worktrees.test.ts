@@ -48,15 +48,41 @@ const PORCELAIN = [
   "",
 ].join("\n")
 
-function resolverFor(top: string, options: { now?: () => number; ttlMs?: number } = {}) {
+/** A scripted git whose answers can be held back, so "in flight" is observable. */
+function gatedGit(responses: Record<string, string | null>) {
+  const calls: { args: string[]; cwd: string }[] = []
+  let open: () => void = () => {}
+  let gate = Promise.resolve()
+  const runner: GitRunner = async (args, cwd) => {
+    calls.push({ args, cwd })
+    await gate
+    return responses[args[0] === "rev-parse" ? "rev-parse" : "worktree"] ?? null
+  }
+  return {
+    runner,
+    calls,
+    hold: () => { gate = new Promise<void>((resolve) => { open = resolve }) },
+    release: () => open(),
+  }
+}
+
+function resolverFor(top: string, options: { now?: () => number; ttlMs?: number; onResolved?: (path: string) => void } = {}) {
   const git = fakeGit({ "rev-parse": `${top}\n`, worktree: PORCELAIN })
   const resolver = new WorktreeResolver({
     git: git.runner,
     exists: () => true,
     now: options.now,
     ttlMs: options.ttlMs,
+    onResolved: options.onResolved,
   })
   return { resolver, git }
+}
+
+/** Read once (which schedules the background resolve), let it land, read again. */
+async function settled<T>(resolver: WorktreeResolver, read: () => T): Promise<T> {
+  read()
+  await resolver.flush()
+  return read()
 }
 
 const emptyLookup: SessionGitLookup = {
@@ -89,9 +115,9 @@ test("empty or junk porcelain yields no records instead of throwing", () => {
 
 // ---- resolution ------------------------------------------------------------
 
-test("the main worktree resolves to itself and is not reported as linked", () => {
+test("the main worktree resolves to itself and is not reported as linked", async () => {
   const { resolver } = resolverFor(MAIN)
-  expect(resolver.resolve(MAIN)).toEqual({
+  expect(await settled(resolver, () => resolver.resolve(MAIN))).toEqual({
     mainPath: MAIN,
     branch: "main",
     linked: false,
@@ -99,9 +125,9 @@ test("the main worktree resolves to itself and is not reported as linked", () =>
   })
 })
 
-test("a linked worktree reports its own branch and the repository's main path", () => {
+test("a linked worktree reports its own branch and the repository's main path", async () => {
   const { resolver } = resolverFor(LINKED)
-  expect(resolver.resolve(LINKED)).toEqual({
+  expect(await settled(resolver, () => resolver.resolve(LINKED))).toEqual({
     mainPath: MAIN,
     branch: "chunky/widget-abc",
     linked: true,
@@ -111,44 +137,181 @@ test("a linked worktree reports its own branch and the repository's main path", 
 
 // ---- caching (the whole point of the module) -------------------------------
 
-test("repeated resolution inside the TTL consults git exactly once", () => {
+test("repeated resolution inside the TTL consults git exactly once", async () => {
   const { resolver, git } = resolverFor(MAIN)
+  for (let i = 0; i < 50; i++) resolver.resolve(MAIN)
+  await resolver.flush()
   for (let i = 0; i < 50; i++) resolver.resolve(MAIN)
   expect(resolver.gitCalls).toBe(1)
   // rev-parse + worktree list, and nothing more.
   expect(git.calls).toHaveLength(2)
 })
 
-test("a NON-repository workspace is refuted once, not once per delta", () => {
+test("a NON-repository workspace is refuted once, not once per delta", async () => {
   const git = fakeGit({ "rev-parse": null, worktree: null })
   const resolver = new WorktreeResolver({ git: git.runner, exists: () => true })
+  for (let i = 0; i < 50; i++) expect(resolver.resolve("/tmp/not-a-repo")).toBeNull()
+  await resolver.flush()
   for (let i = 0; i < 50; i++) expect(resolver.resolve("/tmp/not-a-repo")).toBeNull()
   // Negative caching is what stops a folder full of non-repo sessions from
   // spawning git on every 250ms session-stream delta.
   expect(resolver.gitCalls).toBe(1)
 })
 
-test("a missing path is refuted without invoking git at all", () => {
+test("a missing path is refuted without invoking git at all", async () => {
   const git = fakeGit({ "rev-parse": `${MAIN}\n`, worktree: PORCELAIN })
   const resolver = new WorktreeResolver({ git: git.runner, exists: () => false })
+  expect(resolver.resolve("/gone")).toBeNull()
+  await resolver.flush()
   expect(resolver.resolve("/gone")).toBeNull()
   expect(git.calls).toHaveLength(0)
 })
 
-test("the cache expires on the TTL and re-resolves afterwards", () => {
+test("the cache expires on the TTL and re-resolves afterwards", async () => {
   let clock = 1_000
   const { resolver } = resolverFor(MAIN, { now: () => clock, ttlMs: 30_000 })
   resolver.resolve(MAIN)
+  await resolver.flush()
   clock += 29_999
   resolver.resolve(MAIN)
+  await resolver.flush()
   expect(resolver.gitCalls).toBe(1)
   clock += 2
   resolver.resolve(MAIN)
+  await resolver.flush()
   expect(resolver.gitCalls).toBe(2)
 })
 
-test("worktreePathsFor returns the repository's whole set, and degrades to the path itself", () => {
+// ---- stale-while-revalidate (git never runs on the request path) -----------
+
+test("a never-seen workspace is null NOW and resolves in the background", async () => {
+  const resolved: string[] = []
+  const { resolver, git } = resolverFor(MAIN, { onResolved: (path) => resolved.push(path) })
+  // The request path gets its answer synchronously: nothing yet, render flat.
+  expect(resolver.resolve(MAIN)).toBeNull()
+  expect(resolver.pending).toBe(1)
+  // …and git has not been consulted inside that call.
+  expect(git.calls).toHaveLength(0)
+  await resolver.flush()
+  expect(resolver.pending).toBe(0)
+  expect(resolver.resolve(MAIN)?.branch).toBe("main")
+  // null → value is a change worth announcing, once, with the canonical key.
+  expect(resolved).toEqual([MAIN])
+})
+
+test("an expired entry is served STALE while exactly one refresh runs", async () => {
+  let clock = 1_000
+  const git = gatedGit({ "rev-parse": `${MAIN}\n`, worktree: PORCELAIN })
+  const resolver = new WorktreeResolver({ git: git.runner, exists: () => true, now: () => clock, ttlMs: 30_000 })
+  await settled(resolver, () => resolver.resolve(MAIN))
+  expect(resolver.gitCalls).toBe(1)
+  clock += 30_001
+  git.hold()
+  // Expired: every caller still gets the old answer immediately…
+  for (let i = 0; i < 20; i++) expect(resolver.resolve(MAIN)?.branch).toBe("main")
+  // …while ONE refresh (not twenty) is in flight for the key.
+  expect(resolver.pending).toBe(1)
+  git.release()
+  await resolver.flush()
+  expect(resolver.gitCalls).toBe(2)
+  expect(resolver.resolve(MAIN)?.branch).toBe("main")
+})
+
+test("at most one background resolve is in flight per key, across keys", async () => {
+  const git = gatedGit({ "rev-parse": `${MAIN}\n`, worktree: PORCELAIN })
+  const resolver = new WorktreeResolver({ git: git.runner, exists: () => true })
+  git.hold()
+  for (let i = 0; i < 10; i++) {
+    resolver.resolve(MAIN)
+    resolver.resolve(LINKED)
+  }
+  expect(resolver.pending).toBe(2)
+  git.release()
+  await resolver.flush()
+  expect(resolver.gitCalls).toBe(2)
+  expect(git.calls).toHaveLength(4)
+})
+
+test("onResolved fires only when the answer CHANGED", async () => {
+  let clock = 1_000
+  let branch = "main"
+  const resolved: string[] = []
+  const git: GitRunner = (args) =>
+    args[0] === "rev-parse"
+      ? `${MAIN}\n`
+      : [`worktree ${MAIN}`, "HEAD 1111", `branch refs/heads/${branch}`, ""].join("\n")
+  const resolver = new WorktreeResolver({
+    git,
+    exists: () => true,
+    now: () => clock,
+    ttlMs: 30_000,
+    onResolved: (path) => resolved.push(path),
+  })
+  await settled(resolver, () => resolver.resolve(MAIN))
+  expect(resolved).toEqual([MAIN])
+  // A refresh that confirms the same answer is not news.
+  clock += 30_001
+  await settled(resolver, () => resolver.resolve(MAIN))
+  expect(resolved).toEqual([MAIN])
+  // A refresh that finds a different branch is.
+  clock += 30_001
+  branch = "feature"
+  expect(resolver.resolve(MAIN)?.branch).toBe("main")
+  await resolver.flush()
+  expect(resolver.resolve(MAIN)?.branch).toBe("feature")
+  expect(resolved).toEqual([MAIN, MAIN])
+})
+
+test("negative results are cached and never announced (null → null is not a change)", async () => {
+  let clock = 1_000
+  const resolved: string[] = []
+  const git = fakeGit({ "rev-parse": null, worktree: null })
+  const resolver = new WorktreeResolver({
+    git: git.runner,
+    exists: () => true,
+    now: () => clock,
+    ttlMs: 30_000,
+    onResolved: (path) => resolved.push(path),
+  })
+  await settled(resolver, () => resolver.resolve("/tmp/plain"))
+  for (let i = 0; i < 50; i++) expect(resolver.resolve("/tmp/plain")).toBeNull()
+  expect(resolver.gitCalls).toBe(1)
+  expect(resolver.pending).toBe(0)
+  expect(resolved).toEqual([])
+  // The refutation expires like a positive answer and is re-checked once.
+  clock += 30_001
+  await settled(resolver, () => resolver.resolve("/tmp/plain"))
+  expect(resolver.gitCalls).toBe(2)
+  expect(resolved).toEqual([])
+})
+
+test("a throwing or rejecting git runner, or a throwing listener, degrades to a cached null", async () => {
+  const throwing = new WorktreeResolver({ git: () => { throw new Error("no git") }, exists: () => true })
+  await settled(throwing, () => throwing.resolve(MAIN))
+  expect(throwing.resolve(MAIN)).toBeNull()
+  expect(throwing.pending).toBe(0)
+  const rejecting = new WorktreeResolver({ git: () => Promise.reject(new Error("no git")), exists: () => true })
+  await settled(rejecting, () => rejecting.resolve(MAIN))
+  expect(rejecting.resolve(MAIN)).toBeNull()
+  const { resolver } = resolverFor(MAIN, { onResolved: () => { throw new Error("listener bug") } })
+  expect(await settled(resolver, () => resolver.resolve(MAIN)?.branch)).toBe("main")
+})
+
+test("a synchronous and an asynchronous git runner are both accepted", async () => {
+  const sync = new WorktreeResolver({ git: () => `${MAIN}\n`, exists: () => true })
+  const async = new WorktreeResolver({ git: async () => `${MAIN}\n`, exists: () => true })
+  // Both runners answer every call with a path, which parses to one main record.
+  expect((await settled(sync, () => sync.resolve(MAIN)))?.mainPath).toBeUndefined()
+  expect((await settled(async, () => async.resolve(MAIN)))?.mainPath).toBeUndefined()
+  expect(sync.gitCalls).toBe(1)
+  expect(async.gitCalls).toBe(1)
+})
+
+test("worktreePathsFor returns the repository's whole set, and degrades to the path itself", async () => {
   const { resolver } = resolverFor(MAIN)
+  // Unresolved yet: the path itself, never empty; resolved: the whole set.
+  expect(resolver.worktreePathsFor(MAIN)).toEqual([MAIN])
+  await resolver.flush()
   expect(resolver.worktreePathsFor(MAIN)).toEqual([MAIN, LINKED])
   const nonRepo = new WorktreeResolver({
     git: fakeGit({ "rev-parse": null, worktree: null }).runner,
@@ -162,16 +325,16 @@ test("worktreePathsFor returns the repository's whole set, and degrades to the p
 
 // ---- repository workspace set ----------------------------------------------
 
-test("repoWorkspaceSet unions git's worktrees with the paths forks recorded", () => {
+test("repoWorkspaceSet unions git's worktrees with the paths forks recorded", async () => {
   const { resolver } = resolverFor(MAIN)
   const recorded = "/state/worktrees/widget-recorded"
-  expect(repoWorkspaceSet(MAIN, () => [recorded], resolver)).toEqual([MAIN, LINKED, recorded])
+  expect(await settled(resolver, () => repoWorkspaceSet(MAIN, () => [recorded], resolver))).toEqual([MAIN, LINKED, recorded])
 })
 
-test("repoWorkspaceSet survives a throwing store read and still covers the repo", () => {
+test("repoWorkspaceSet survives a throwing store read and still covers the repo", async () => {
   const { resolver } = resolverFor(MAIN)
   const boom = () => { throw new Error("db is gone") }
-  expect(repoWorkspaceSet(MAIN, boom, resolver)).toEqual([MAIN, LINKED])
+  expect(await settled(resolver, () => repoWorkspaceSet(MAIN, boom, resolver))).toEqual([MAIN, LINKED])
 })
 
 test("repoWorkspaceSet on a plain folder is still the folder itself, never empty", () => {
@@ -182,23 +345,26 @@ test("repoWorkspaceSet on a plain folder is still the folder itself, never empty
   expect(repoWorkspaceSet("/tmp/plain", () => [], resolver)).toEqual([resolve("/tmp/plain")])
 })
 
-test("building a whole session list costs a BOUNDED number of git calls", () => {
+test("building a whole session list costs a BOUNDED number of git calls", async () => {
   const { resolver } = resolverFor(MAIN)
   const lookup: SessionGitLookup = { ...emptyLookup, repoIdForPath: () => "rwidget" }
-  // 200 rows across two workspaces, re-emitted 20 times (the 250ms delta cadence).
+  // 200 rows across two workspaces, re-emitted 20 times (the 250ms delta cadence),
+  // with the background resolves landing somewhere in the middle.
   for (let delta = 0; delta < 20; delta++) {
     for (let row = 0; row < 100; row++) {
       sessionGitFields(`s${row}`, MAIN, lookup, resolver)
       sessionGitFields(`l${row}`, LINKED, lookup, resolver)
     }
+    if (delta === 10) await resolver.flush()
   }
+  await resolver.flush()
   // One per distinct workspace, for the whole TTL — not one per row per delta.
   expect(resolver.gitCalls).toBe(2)
 })
 
 // ---- summary fields: session_workspaces fast path --------------------------
 
-test("a fork-worktree session gets branch, worktree and repo WITHOUT touching git", () => {
+test("a fork-worktree session gets branch, worktree and repo WITHOUT touching git", async () => {
   const { resolver, git } = resolverFor(MAIN)
   const lookup: SessionGitLookup = {
     workspaceMetadataOf: (id) =>
@@ -211,9 +377,12 @@ test("a fork-worktree session gets branch, worktree and repo WITHOUT touching gi
     branch: "chunky/widget-abc",
     worktree: { path: LINKED, isLinked: true },
   })
-  // The whole point of the fast path: the recorded metadata already knows.
+  // The whole point of the fast path: the recorded metadata already knows, so
+  // nothing was even scheduled in the background.
+  await resolver.flush()
   expect(git.calls).toHaveLength(0)
   expect(resolver.gitCalls).toBe(0)
+  expect(resolver.pending).toBe(0)
 })
 
 test("a fork worktree whose directory is gone reports nothing rather than a stale branch", () => {
@@ -244,26 +413,29 @@ test("a fork worktree still reports its branch when its repo is unregistered", (
 
 // ---- summary fields: git fallback + degradation ----------------------------
 
-test("a directory session falls back to git and omits `worktree` on the main checkout", () => {
+test("a directory session falls back to git and omits `worktree` on the main checkout", async () => {
   const { resolver } = resolverFor(MAIN)
   const lookup: SessionGitLookup = { ...emptyLookup, repoIdForPath: (p) => (p === MAIN ? "rwidget" : null) }
+  // Before git has answered the row renders flat — never an error, never a wait.
+  expect(sessionGitFields("plain", MAIN, lookup, resolver)).toEqual({})
+  await resolver.flush()
   expect(sessionGitFields("plain", MAIN, lookup, resolver)).toEqual({
     repoId: "rwidget",
     branch: "main",
   })
 })
 
-test("a session in a linked worktree resolved via git is marked linked", () => {
+test("a session in a linked worktree resolved via git is marked linked", async () => {
   const { resolver } = resolverFor(LINKED)
   const lookup: SessionGitLookup = { ...emptyLookup, repoIdForPath: (p) => (p === MAIN ? "rwidget" : null) }
-  expect(sessionGitFields("plain", LINKED, lookup, resolver)).toEqual({
+  expect(await settled(resolver, () => sessionGitFields("plain", LINKED, lookup, resolver))).toEqual({
     repoId: "rwidget",
     branch: "chunky/widget-abc",
     worktree: { path: LINKED, isLinked: true },
   })
 })
 
-test("repo identity is asked about git's canonical main path, not the queried spelling", () => {
+test("repo identity is asked about git's canonical main path, not the queried spelling", async () => {
   // git reports realpath'd paths (/tmp -> /private/tmp on macOS). Callers must
   // therefore match the registry realpath-aware; this pins WHICH path they get
   // asked about, so a weaker lookup fails loudly here instead of silently
@@ -276,20 +448,20 @@ test("repo identity is asked about git's canonical main path, not the queried sp
   })
   const canonical = new WorktreeResolver({ git: git.runner, exists: () => true })
   void resolver
-  const fields = sessionGitFields("s", "/repos/widget", {
+  const fields = await settled(canonical, () => sessionGitFields("s", "/repos/widget", {
     ...emptyLookup,
     repoIdForPath: (path) => {
       asked.push(path)
       return null
     },
-  }, canonical)
+  }, canonical))
   expect(asked).toEqual(["/private/repos/widget"])
   expect(fields).toEqual({ branch: "main" })
 })
 
-test("no git, a detached HEAD and a throwing lookup all degrade to no fields", () => {
+test("no git, a detached HEAD and a throwing lookup all degrade to no fields", async () => {
   const noGit = new WorktreeResolver({ git: () => null, exists: () => true })
-  expect(sessionGitFields("s", "/tmp/anything", emptyLookup, noGit)).toEqual({})
+  expect(await settled(noGit, () => sessionGitFields("s", "/tmp/anything", emptyLookup, noGit))).toEqual({})
 
   const detached = new WorktreeResolver({
     git: (args) =>
@@ -300,7 +472,7 @@ test("no git, a detached HEAD and a throwing lookup all degrade to no fields", (
   })
   // Detached: a repo id is still knowable, a branch is not.
   expect(
-    sessionGitFields("s", MAIN, { ...emptyLookup, repoIdForPath: () => "rwidget" }, detached),
+    await settled(detached, () => sessionGitFields("s", MAIN, { ...emptyLookup, repoIdForPath: () => "rwidget" }, detached)),
   ).toEqual({ repoId: "rwidget" })
 
   const throwing: SessionGitLookup = {
@@ -309,7 +481,7 @@ test("no git, a detached HEAD and a throwing lookup all degrade to no fields", (
     repoIdForPath: () => { throw new Error("registry is gone") },
   }
   const { resolver } = resolverFor(MAIN)
-  expect(sessionGitFields("s", MAIN, throwing, resolver)).toEqual({ branch: "main" })
+  expect(await settled(resolver, () => sessionGitFields("s", MAIN, throwing, resolver))).toEqual({ branch: "main" })
 })
 
 test("malformed workspaces never throw", () => {
@@ -363,7 +535,7 @@ function git(args: string[], cwd: string): void {
   if (result.status !== 0) throw new Error(`git ${args.join(" ")} failed: ${result.stderr}`)
 }
 
-test("a REAL linked worktree resolves end to end and lists under its repo", () => {
+test("a REAL linked worktree resolves end to end and lists under its repo", async () => {
   const root = join(tmpdir(), `chunky-worktree-test-${crypto.randomUUID()}`)
   dirs.push(root)
   const repo = join(root, "widget")
@@ -380,6 +552,10 @@ test("a REAL linked worktree resolves end to end and lists under its repo", () =
   expect(existsSync(linked)).toBe(true)
 
   const resolver = new WorktreeResolver()
+  // The real, asynchronous git runner: first reads schedule, nothing blocks.
+  expect(resolver.resolve(repo)).toBeNull()
+  expect(resolver.resolve(linked)).toBeNull()
+  await resolver.flush()
   const fromRepo = resolver.resolve(repo)
   const fromLinked = resolver.resolve(linked)
   expect(fromRepo?.branch).toBe("main")

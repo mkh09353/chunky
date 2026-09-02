@@ -7,6 +7,7 @@ import { createHash, randomUUID } from "node:crypto"
 import { Database } from "bun:sqlite"
 import { openSqlite, retrySqliteTransaction } from "./sqlite.ts"
 import { durableDbPath } from "./store.ts"
+import { notifySessionChanged } from "./session-changes.ts"
 import { stateDir } from "./repos.ts"
 import { BunSqliteSaver } from "./bun-sqlite-saver.ts"
 
@@ -32,6 +33,8 @@ export async function archiveSession(sessionId: string): Promise<boolean> {
   const db = openSqlite(durableDbPath)
   const session = db.query("SELECT id,title,workspace,created_at,last_activity,incognito,history_generation FROM sessions WHERE id=?").get(sessionId) as any
   if (!session || session.incognito) return false
+  // Repository-less chats (workspace NULL) are not representable in archived_sessions.
+  if (!session.workspace) return false
   const goal = db.query("SELECT * FROM goals WHERE session_id=?").get(sessionId) as any
   if (goal?.status === "active") return false
   const turns = db.query("SELECT * FROM session_turns WHERE session_id=? ORDER BY turn_index").all(sessionId)
@@ -63,6 +66,9 @@ export async function archiveSession(sessionId: string): Promise<boolean> {
     for (const table of ["events", "session_turns", "goals", "todos", "session_compaction_artifacts"]) db.query(`DELETE FROM ${table} WHERE session_id=?`).run(sessionId)
     db.query("DELETE FROM sessions WHERE id=?").run(sessionId)
   })
+  // The session list stream resolves this id against live rows only, so the
+  // notification becomes a `remove` delta for every connected client.
+  notifySessionChanged(sessionId)
   vacuumIfBloated(db)
   const attachments = join(stateDir(), "attachments", sessionId), archivedAttachments = join(stateDir(), "archive", "attachments", sessionId)
   if (existsSync(attachments)) { mkdirSync(dirname(archivedAttachments), { recursive: true }); rmSync(archivedAttachments, { recursive: true, force: true }); renameSync(attachments, archivedAttachments) }
@@ -105,6 +111,7 @@ async function restoreSession(sessionId: string): Promise<boolean> {
   if (existsSync(attachments) && !existsSync(restored)) { mkdirSync(dirname(restored), { recursive: true }); renameSync(attachments, restored) }
   db.query("DELETE FROM archived_sessions WHERE id=?").run(sessionId)
   rmSync(target, { force: true })
+  notifySessionChanged(sessionId)
   return true
 }
 
@@ -122,7 +129,11 @@ export async function sweepArchives(now = Date.now(), running = new Set<string>(
   try { db.query("DELETE FROM resource_samples WHERE ts < ?").run(cutoff) } catch {}
   const rows = db.query("SELECT id FROM sessions WHERE last_activity<? AND incognito=0 AND id NOT IN (SELECT session_id FROM goals WHERE status='active')").all(cutoff) as Array<{ id: string }>
   const archived: string[] = []
-  for (const row of rows) if (!running.has(row.id) && await archiveSession(row.id)) archived.push(row.id)
+  for (const row of rows) {
+    if (running.has(row.id)) continue
+    try { if (await archiveSession(row.id)) archived.push(row.id) }
+    catch (error) { console.warn(`[archive] skipping session ${row.id}: ${(error as Error).message}`) }
+  }
   retrySqliteTransaction(db, () => {
     const protectedIds = [...running]
     const runningClause = protectedIds.length ? ` AND session_id NOT IN (${protectedIds.map(() => "?").join(",")})` : ""

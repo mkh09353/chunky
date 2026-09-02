@@ -72,7 +72,7 @@ import {
 import { listEvalReplays, startEvalReplay } from "./eval-replay.ts"
 import { effectiveSessionSelection, runAgent, type InputImage, type InterjectionBoundary } from "./run.ts"
 import { createMessageCoalescer } from "./message-coalescer.ts"
-import { rehydrateSession, sweepArchives, sweepOrphanCheckpoints } from "./session-archive.ts"
+import { rehydrateSession, sweepArchives } from "./session-archive.ts"
 import { saveAttachment } from "./attachments.ts"
 import { shipHandoffPrompt } from "./tools/ship.ts"
 import { getDelegateStatuses } from "./tools/get-delegate-status.ts"
@@ -201,7 +201,7 @@ import { hasAppZoo, setAppZooEndpoint } from "./app-zoo.ts"
 import { currentPrReviews, currentGithubOrgs, pollPrReviews, startPrReviewsPoller } from "./github-prs.ts"
 import { getGithubConfig, setGithubConfig, githubConfigResponse } from "./settings.ts"
 import { joinPrLinks, startPrAction, getPrLink } from "./pr-actions.ts"
-import { repoWorkspaceSet, sessionGitFields, type SessionGitLookup } from "./worktrees.ts"
+import { repoWorkspaceSet, sessionGitFields, worktreeResolver, type SessionGitLookup } from "./worktrees.ts"
 import { REPLAY_BUDGET, replayExceedsBudget } from "./replay-budget.ts"
 
 type LegacySubscriber = { mode: "legacy"; controller: ReadableStreamDefaultController<Uint8Array> }
@@ -240,6 +240,8 @@ const encoder = new TextEncoder()
 const dreamTimers = new Map<string, ReturnType<typeof setTimeout>>()
 const DREAM_IDLE_MS = 10 * 60_000
 const ARCHIVE_SWEEP_MS = 24 * 60 * 60_000
+const ARCHIVE_BOOT_SWEEP_DELAY_MS = 60_000
+const REQUEST_LOG_ENABLED = process.env.CHUNKY_REQUEST_LOG === "1"
 
 let shuttingDown = false
 const relayPairing = new RelayPairing()
@@ -398,7 +400,9 @@ function gitFieldsFor(session: SessionSummary): SessionSummary {
  *  run stopped but whose sidekick is still working from a settled one, and would
  *  have to confirm every such row with an extra poll. */
 function shellSummary(sessionId: string): SessionSummary | null {
-  const session = Store.summary(sessionId)
+  // Live rows only: a session that was just archived resolves to null here and
+  // is emitted as a `remove` by the stream; a rehydrated one comes back as upsert.
+  const session = Store.liveSummary(sessionId)
   return session && gitFieldsFor({
     ...session,
     attached: (live.get(sessionId)?.size ?? 0) > 0,
@@ -408,8 +412,10 @@ function shellSummary(sessionId: string): SessionSummary | null {
   })
 }
 
-function shellSessions(): SessionSummary[] {
-  return Store.listShell().map((session) => gitFieldsFor({
+/** `includeArchived` keeps the mobile shell list unchanged; the stream snapshot
+ *  passes false so cold sessions never enter the cross-repository feed. */
+function shellSessions(includeArchived = true): SessionSummary[] {
+  return (includeArchived ? Store.listShell() : Store.listShellLive()).map((session) => gitFieldsFor({
     ...session,
     attached: (live.get(session.sessionId)?.size ?? 0) > 0,
     running: running.has(session.sessionId),
@@ -427,6 +433,17 @@ function notifyShellSessionChanged(sessionId: string): void {
 type ShellChangeListener = (sessionId: string) => void
 const shellChangeListeners = new Set<ShellChangeListener>()
 subscribeSessionChanges((sessionId) => notifyShellSessionChanged(sessionId))
+// Git never runs on the request path (worktrees.ts): a row whose workspace has
+// not been resolved yet is emitted flat. When the background resolve lands
+// with a different answer, re-emit every live row in that workspace or in any
+// worktree of its repository, so the stream's next debounce carries the git
+// fields instead of the client waiting for its next poll.
+worktreeResolver.onResolved = (workspacePath) => {
+  const covered = new Set(worktreeResolver.worktreePathsFor(workspacePath))
+  for (const session of Store.listShellLive()) {
+    if (session.workspace && covered.has(session.workspace)) notifyShellSessionChanged(session.sessionId)
+  }
+}
 
 /** Push an event only to currently attached clients of one session. It is
  * deliberately never persisted, so reconnect/replay cannot repeat UI actions. */
@@ -834,7 +851,23 @@ const serverVersion = (() => {
 })()
 const managedServer = !!(process.env.CHUNKY_SERVER_NONCE && process.env.CHUNKY_SERVER_ID && process.env.CHUNKY_BUILD_ID && process.env.CHUNKY_VERSION)
 
-const server = Bun.serve(withCors({
+/** Opt-in request log (CHUNKY_REQUEST_LOG=1): method, pathname, status, and
+ * handler wall time only; never query strings, headers, or bodies. */
+function withRequestLog<T extends { fetch: (req: Request, ...args: any[]) => Response | Promise<Response> }>(options: T): T {
+  if (!REQUEST_LOG_ENABLED) return options
+  const fetch = options.fetch
+  return {
+    ...options,
+    async fetch(req: Request, ...args: any[]): Promise<Response> {
+      const started = performance.now()
+      const response = await fetch(req, ...args)
+      console.log(`[http] ${req.method} ${new URL(req.url).pathname} ${response.status} ${(performance.now() - started).toFixed(1)}ms`)
+      return response
+    },
+  } as T
+}
+
+const server = Bun.serve(withRequestLog(withCors({
   port,
   idleTimeout: 0, // never time out SSE connections
   async fetch(req, server) {
@@ -1883,7 +1916,7 @@ const server = Bun.serve(withCors({
             shellChangeListeners.add(listener)
             return () => shellChangeListeners.delete(listener)
           })()
-          send("snapshot", { sessions: shellSessions() } satisfies ShellSessionsResponse)
+          send("snapshot", { sessions: shellSessions(false) } satisfies ShellSessionsResponse)
           heartbeat = setInterval(() => {
             try { controller?.enqueue(encoder.encode(": ping\n\n")) } catch { /* cancel cleans up */ }
           }, 15_000)
@@ -1900,11 +1933,15 @@ const server = Bun.serve(withCors({
 
     // GET /api/sessions?repo=<id> -> ListSessionsResponse for that repo (or the
     // default one). Threads are scoped per repo so each folder has its own list.
+    // Live rows only; `archived=1` returns the repo's cold (server-archived)
+    // sessions instead, so clients page the two lists separately.
     if (req.method === "GET" && pathname === ROUTES.listSessions) {
       const repoId = url.searchParams.get("repo")
       const scope = url.searchParams.get("scope")
+      const archived = url.searchParams.get("archived") === "1"
       if (scope !== null && scope !== "none") return json({ error: "scope must be none" }, 400)
       if (scope === "none" && (repoId || url.searchParams.has("cwd"))) return json({ error: "scope=none cannot be combined with repo or cwd" }, 400)
+      if (scope === "none" && archived) return json({ error: "scope=none cannot be combined with archived" }, 400)
       if (scope === "none") return json({ sessions: Store.list(undefined, "none") })
       const repo = repoId ? repoById(repoId) : activeRepo()
       const cwd = url.searchParams.get("cwd")
@@ -1914,8 +1951,8 @@ const server = Bun.serve(withCors({
       // `cwd` is a precise question and keeps the exact-match answer.
       const workspace = cwd ? canonicalWorkspace(cwd) : repo?.path
       const rows = cwd || !workspace
-        ? Store.list(workspace)
-        : Store.listByWorkspaces(repoWorkspaceSet(workspace, (paths) => Store.worktreeWorkspacesUnder(paths)))
+        ? (archived ? Store.listArchived(workspace) : Store.list(workspace))
+        : (archived ? Store.listArchivedByWorkspaces : Store.listByWorkspaces)(repoWorkspaceSet(workspace, (paths) => Store.worktreeWorkspacesUnder(paths)))
       const sessions = rows.map((session) => gitFieldsFor({
         ...session,
         attached: (live.get(session.sessionId)?.size ?? 0) > 0,
@@ -2522,7 +2559,7 @@ const server = Bun.serve(withCors({
 
     return new Response("not found", { status: 404, headers: corsHeaders(req) })
   },
-}))
+})))
 
 const discoveryRecord = process.env.CHUNKY_DISCOVERY_RECORD
 const ownershipId = process.env.CHUNKY_SERVER_ID
@@ -2585,8 +2622,10 @@ if (startupVersion) {
   timer.unref?.()
   stopVersionStalenessPoller = () => clearInterval(timer)
 }
-const runArchiveSweep = () => void sweepArchives(Date.now(), new Set(running.keys())).then(() => sweepOrphanCheckpoints()).catch((error) => console.warn(`[archive] sweep failed: ${(error as Error).message}`))
-runArchiveSweep()
+const runArchiveSweep = () => void sweepArchives(Date.now(), new Set(running.keys())).catch((error) => console.warn(`[archive] sweep failed: ${(error as Error).message}`))
+// Delay the boot sweep so its full event scan does not compete with client startup.
+const archiveBootSweep = setTimeout(runArchiveSweep, ARCHIVE_BOOT_SWEEP_DELAY_MS)
+archiveBootSweep.unref()
 const archiveSweepTimer = setInterval(runArchiveSweep, ARCHIVE_SWEEP_MS)
 archiveSweepTimer.unref()
 startResourceWatch({
@@ -2601,6 +2640,7 @@ startResourceWatch({
 })
 const shutdown = () => {
   stopResourceWatch()
+  clearTimeout(archiveBootSweep)
   clearInterval(archiveSweepTimer)
   stopOwnershipPoller?.()
   stopVersionStalenessPoller?.()
@@ -2616,6 +2656,17 @@ process.once("SIGINT", shutdown)
 console.log(
   `[@chunky/server] listening on http://localhost:${server.port} (provider=${activeProviderId()})`,
 )
+
+// Pre-warm the worktree cache for every registered repository, off the startup
+// path: the first session list then already carries repo/branch fields instead
+// of rendering flat until its background resolves land.
+setTimeout(() => {
+  try {
+    for (const repo of listRepos().repos) worktreeResolver.warm(repo.path)
+  } catch {
+    // Decoration only; a broken registry read must not affect startup.
+  }
+}, 0)
 
 if (serverLeases) {
   const retirement = setInterval(() => {

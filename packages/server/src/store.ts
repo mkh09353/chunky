@@ -409,6 +409,22 @@ const stmtListAll = db.query(
 const stmtListByWorkspace = db.query(
   "SELECT id, title, created_at, last_activity, workspace FROM sessions WHERE workspace = ? ORDER BY last_activity DESC LIMIT 100",
 )
+const stmtListArchivedAll = db.query(
+  "SELECT id, title, created_at, last_activity, workspace FROM archived_sessions ORDER BY last_activity DESC LIMIT 100",
+)
+const stmtListArchivedByWorkspace = db.query(
+  "SELECT id, title, created_at, last_activity, workspace FROM archived_sessions WHERE workspace = ? ORDER BY last_activity DESC LIMIT 100",
+)
+type ArchivedListRow = { id: string; title: string; created_at: number; last_activity: number; workspace: string }
+/** A cold row is never incognito (archiveSession refuses them) and never attached/running. */
+const archivedSummary = (r: ArchivedListRow): SessionSummary => ({ sessionId: r.id, title: r.title, createdAt: r.created_at, lastActivity: r.last_activity, workspace: r.workspace, incognito: false, archived: true })
+/** Compact rows for the cross-repository shell; `archived` adds the cold index. */
+function shellRows(archived: boolean): SessionSummary[] {
+  const rows = [...db.query("SELECT id,title,created_at,last_activity,workspace,repository_scope,incognito,0 archived FROM sessions").all(), ...memoryDb.query("SELECT id,title,created_at,last_activity,workspace,repository_scope,incognito,0 archived FROM sessions").all(), ...(archived ? db.query("SELECT id,title,created_at,last_activity,workspace,'repository' repository_scope,0 incognito,1 archived FROM archived_sessions").all() : [])] as Array<{ id: string; title: string; created_at: number; last_activity: number; workspace: string; repository_scope: string | null; incognito: number; archived: number }>
+  const deduped = new Map<string, SessionSummary>()
+  for (const row of rows) deduped.set(row.id, { sessionId: row.id, title: row.title, createdAt: row.created_at, lastActivity: row.last_activity, workspace: row.workspace, ...(row.repository_scope === "none" ? { repositoryScope: "none" as const } : {}), incognito: !!row.incognito, ...(row.archived ? { archived: true } : {}) })
+  return [...deduped.values()].sort((a, b) => b.lastActivity - a.lastActivity)
+}
 const stmtWorkspace = db.query("SELECT workspace FROM sessions WHERE id = ?")
 const stmtTitleOf = db.query("SELECT title FROM sessions WHERE id = ?")
 const stmtNextSeq = db.query("SELECT COALESCE(MAX(seq), -1) + 1 AS n FROM events WHERE session_id = ?")
@@ -938,20 +954,31 @@ export const Store = {
     return row != null && row.title_custom === 0
   },
 
-  /** Compact shell lookup: row only, never hydrates transcript events. */
-  summary(sessionId: string): SessionSummary | null {
+  /** Compact shell lookup: LIVE row only (null for a cold session). The session
+   *  stream uses this so an archived id maps to a `remove` delta, never an upsert. */
+  liveSummary(sessionId: string): SessionSummary | null {
     const row = backend(sessionId).query("SELECT id,title,created_at,last_activity,workspace,repository_scope,incognito FROM sessions WHERE id=?").get(sessionId) as { id: string; title: string; created_at: number; last_activity: number; workspace: string; repository_scope: string | null; incognito: number } | null
-    if (row) return { sessionId: row.id, title: row.title, createdAt: row.created_at, lastActivity: row.last_activity, workspace: row.workspace, ...(row.repository_scope === "none" ? { repositoryScope: "none" as const } : {}), incognito: !!row.incognito }
-    const archived = db.query("SELECT id,title,created_at,last_activity,workspace FROM archived_sessions WHERE id=?").get(sessionId) as { id: string; title: string; created_at: number; last_activity: number; workspace: string } | null
-    return archived && { sessionId: archived.id, title: archived.title, createdAt: archived.created_at, lastActivity: archived.last_activity, workspace: archived.workspace, archived: true } as SessionSummary
+    return row && { sessionId: row.id, title: row.title, createdAt: row.created_at, lastActivity: row.last_activity, workspace: row.workspace, ...(row.repository_scope === "none" ? { repositoryScope: "none" as const } : {}), incognito: !!row.incognito }
   },
 
-  /** Unbounded compact row query for the mobile cross-repository shell. */
+  /** Compact shell lookup: row only, never hydrates transcript events. Falls
+   *  back to the archived index so a cold session can still be opened by id. */
+  summary(sessionId: string): SessionSummary | null {
+    const row = Store.liveSummary(sessionId)
+    if (row) return row
+    const archived = db.query("SELECT id,title,created_at,last_activity,workspace FROM archived_sessions WHERE id=?").get(sessionId) as ArchivedListRow | null
+    return archived && archivedSummary(archived)
+  },
+
+  /** Unbounded compact row query for the mobile cross-repository shell (live + archived). */
   listShell(): SessionSummary[] {
-    const rows = [...db.query("SELECT id,title,created_at,last_activity,workspace,repository_scope,incognito,0 archived FROM sessions").all(), ...memoryDb.query("SELECT id,title,created_at,last_activity,workspace,repository_scope,incognito,0 archived FROM sessions").all(), ...db.query("SELECT id,title,created_at,last_activity,workspace,'repository' repository_scope,0 incognito,1 archived FROM archived_sessions").all()] as Array<{ id: string; title: string; created_at: number; last_activity: number; workspace: string; repository_scope: string | null; incognito: number; archived: number }>
-    const deduped = new Map<string, SessionSummary>()
-    for (const row of rows) deduped.set(row.id, { sessionId: row.id, title: row.title, createdAt: row.created_at, lastActivity: row.last_activity, workspace: row.workspace, ...(row.repository_scope === "none" ? { repositoryScope: "none" as const } : {}), incognito: !!row.incognito, ...(row.archived ? { archived: true } : {}) } as SessionSummary)
-    return [...deduped.values()].sort((a, b) => b.lastActivity - a.lastActivity)
+    return shellRows(true)
+  },
+
+  /** `listShell` without the archived index: the session-stream snapshot, where
+   *  cold rows are dead weight (1,400+ rows per client connect on a real DB). */
+  listShellLive(): SessionSummary[] {
+    return shellRows(false)
   },
 
   /** List sessions, optionally scoped to one workspace (repo). Omit `workspace`
@@ -970,16 +997,21 @@ export const Store = {
       workspace: string | null
     }[]
     const memoryRows = (workspace ? memoryDb.query("SELECT id,title,created_at,last_activity,workspace FROM sessions WHERE workspace=?").all(workspace) : memoryDb.query("SELECT id,title,created_at,last_activity,workspace FROM sessions").all()) as typeof rows
-    const archivedRows = (workspace ? db.query("SELECT id,title,created_at,last_activity,workspace FROM archived_sessions WHERE workspace=?").all(workspace) : db.query("SELECT id,title,created_at,last_activity,workspace FROM archived_sessions").all()) as typeof rows
-    return [...rows, ...memoryRows, ...archivedRows].sort((a,b) => b.last_activity - a.last_activity).slice(0, 100).map((r) => ({
+    return [...rows, ...memoryRows].sort((a,b) => b.last_activity - a.last_activity).slice(0, 100).map((r) => ({
       sessionId: r.id,
       title: r.title,
       createdAt: r.created_at,
       lastActivity: r.last_activity,
       workspace: r.workspace,
       incognito: isIncognitoSession(r.id),
-      ...(archivedRows.some((a) => a.id === r.id) ? { archived: true } : {}),
     } as SessionSummary))
+  },
+
+  /** Cold (server-archived) sessions only — the `archived=1` list. Live rows are
+   *  never merged in; clients ask for the two lists separately. */
+  listArchived(workspace?: string): SessionSummary[] {
+    const rows = (workspace ? stmtListArchivedByWorkspace.all(workspace) : stmtListArchivedAll.all()) as ArchivedListRow[]
+    return rows.map(archivedSummary)
   },
 
   /**
@@ -1009,16 +1041,25 @@ export const Store = {
       workspace: string | null
     }[]
     const memoryRows = memoryDb.query(`${columns} sessions ${tail}`).all(...paths) as typeof rows
-    const archivedRows = db.query(`${columns} archived_sessions ${tail}`).all(...paths) as typeof rows
-    return [...rows, ...memoryRows, ...archivedRows].sort((a, b) => b.last_activity - a.last_activity).slice(0, 100).map((r) => ({
+    return [...rows, ...memoryRows].sort((a, b) => b.last_activity - a.last_activity).slice(0, 100).map((r) => ({
       sessionId: r.id,
       title: r.title,
       createdAt: r.created_at,
       lastActivity: r.last_activity,
       workspace: r.workspace,
       incognito: isIncognitoSession(r.id),
-      ...(archivedRows.some((a) => a.id === r.id) ? { archived: true } : {}),
     } as SessionSummary))
+  },
+
+  /** `listArchived` over a repository's workspace set (repo + linked worktrees).
+   *  Mirrors `listByWorkspaces`: paths are bound as parameters and an empty set
+   *  returns nothing. */
+  listArchivedByWorkspaces(workspaces: readonly string[]): SessionSummary[] {
+    const paths = [...new Set(workspaces.filter((path) => typeof path === "string" && path.length > 0))]
+    if (paths.length === 0) return []
+    const holes = paths.map(() => "?").join(",")
+    const rows = db.query(`SELECT id,title,created_at,last_activity,workspace FROM archived_sessions WHERE workspace IN (${holes}) ORDER BY last_activity DESC LIMIT 100`).all(...paths) as ArchivedListRow[]
+    return rows.map(archivedSummary)
   },
 
   /**

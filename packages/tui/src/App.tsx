@@ -1048,13 +1048,23 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
       return
     }
     try {
-      const res = await fetch(`${baseUrl + ROUTES.listSessions}?cwd=${encodeURIComponent(process.cwd())}`)
+      const cwd = `?cwd=${encodeURIComponent(process.cwd())}`
+      const res = await fetch(baseUrl + ROUTES.listSessions + cwd)
       const body = (await res.json()) as ListSessionsResponse
+      // Cold (server-archived) threads are listed separately; attaching one
+      // rehydrates it. Best-effort: an older server answers with the live list
+      // again, which the id de-dupe below absorbs.
+      let cold: ListSessionsResponse["sessions"] = []
+      try {
+        const archived = await fetch(`${baseUrl + ROUTES.listSessions + cwd}&archived=1`)
+        if (archived.ok) cold = ((await archived.json()) as ListSessionsResponse).sessions
+      } catch {}
+      const live = new Set(body.sessions.map((s) => s.sessionId))
       // Hide the thread we're already on, and never-used ones (no events means
       // last_activity never moved past creation — every TUI launch leaves one).
-      const sessions = body.sessions.filter(
-        (s) => s.sessionId !== sessionIdRef.current && s.lastActivity > s.createdAt,
-      )
+      const sessions = [...body.sessions, ...cold.filter((s) => !live.has(s.sessionId))]
+        .sort((a, b) => b.lastActivity - a.lastActivity)
+        .filter((s) => s.sessionId !== sessionIdRef.current && s.lastActivity > s.createdAt)
       if (sessions.length === 0) {
         printLine("No previous threads in this repo yet.")
         return

@@ -467,6 +467,9 @@ export interface SessionSummary {
   /** Set ONLY when `workspace` is a linked worktree rather than the repository's
    *  main one. Its absence means "main worktree (or unknown)", never "no repo". */
   worktree?: { path: string; isLinked: true }
+  /** Server-archived cold session; only returned for `archived=1` requests
+   *  (and the mobile shell list). Never present on a live row. */
+  archived?: boolean
 }
 export interface ListSessionsResponse {
   sessions: SessionSummary[]
@@ -787,7 +790,7 @@ export const ROUTES = {
   // POST CreateSessionRequest -> CreateSessionResponse (pinned to repoId's
   // workspace; the default repo when omitted).
   createSession: `/api/sessions`,
-  listSessions: `/api/sessions`, // GET ?repo=<id>&cwd=<path>&scope=none -> ListSessionsResponse
+  listSessions: `/api/sessions`, // GET ?repo=<id>&cwd=<path>&scope=none -> ListSessionsResponse (live only); ?archived=1 (+repo/cwd, not scope=none) -> cold sessions only, each `archived: true`
   shellSessions: `/api/sessions/shell`, // GET -> ShellSessionsResponse
   sessionStream: `/api/sessions/stream`, // GET SSE: snapshot + SessionDelta
   prReviews: `/api/pr-reviews`, // GET -> PrReviewsState (cached)

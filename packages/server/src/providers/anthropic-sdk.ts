@@ -107,7 +107,7 @@ function validCredentialsFile(path: string): boolean {
   } catch { return false }
 }
 
-const AUTH_STATUS_TTL_MS = 1_000
+const AUTH_STATUS_TTL_MS = 30_000
 const NON_OAUTH_ENVIRONMENT = [
   "ANTHROPIC_API_KEY",
   "ANTHROPIC_AUTH_TOKEN",

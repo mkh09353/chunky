@@ -101,6 +101,24 @@ describe("session archival", () => {
     expect(Store.exists(running)).toBe(true); expect(Store.exists(goal)).toBe(true)
   })
 
+  test("sweep skips repository-less sessions without writing an archive file", async () => {
+    const old = Date.now() - (ARCHIVE_AFTER_DAYS + 1) * 86_400_000
+    const suffix = crypto.randomUUID(), repoless = `repoless-${suffix}`, normal = `normal-${suffix}`
+    Store.createSession(repoless, "No repo", null, "none")
+    Store.createSession(normal, "Repo", "/workspace")
+    for (const id of [repoless, normal]) Store.appendEvent(id, { type:"message.user", text:id })
+    const db = new (await import("bun:sqlite")).Database(durableDbPath)
+    db.query("UPDATE sessions SET last_activity=? WHERE id IN (?,?)").run(old, repoless, normal)
+    db.close()
+    const swept = await sweepArchives(Date.now())
+    expect(swept).toContain(normal)
+    expect(swept).not.toContain(repoless)
+    expect(Store.exists(normal)).toBe(false)
+    expect(Store.exists(repoless)).toBe(true)
+    expect(existsSync(join(stateDir(), "archive", `${repoless}.jsonl.gz`))).toBe(false)
+    expect(existsSync(join(stateDir(), "archive", `${normal}.jsonl.gz`))).toBe(true)
+  })
+
   test("publishes only completed archive files", async () => {
     const id = `atomic-${crypto.randomUUID()}`
     Store.createSession(id)

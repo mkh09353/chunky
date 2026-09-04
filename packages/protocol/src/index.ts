@@ -644,6 +644,8 @@ export interface ModeAdvisor {
   provider: string
   model: string
   effort?: string
+  /** Named sidekick seats may pin a speed (e.g. "fast"); advisor/sidekick ignore it. */
+  speed?: string
 }
 /** A named trio of executor + sidekick + advisor models, applied as one unit via
  *  /mode. Captures which combinations actually work well (e.g. a Fable executor
@@ -691,6 +693,50 @@ export interface SessionAgentConfigResponse {
   sidekick: SoloAdvisorConfig
   sidekickSeats: Record<string, ModeAdvisor>
 }
+/** One provider row in GET ROUTES.onboarding. `inherited` = credentials found
+ *  outside Chunky (e.g. the Claude CLI login); it counts as ready. */
+export interface OnboardingProviderStatus {
+  id: string
+  label: string
+  status: "ready" | "inherited" | "missing"
+  detail?: string
+}
+/** A mode the server suggests seeding/applying during onboarding. `locked`
+ *  means at least one provider the spec references is not ready yet; the spec
+ *  is still complete so the client can show exactly what it would apply. */
+export interface OnboardingSuggestedMode {
+  name: string
+  description: string
+  spec: ModeSpec
+  locked?: boolean
+  missingProviders?: string[]
+}
+/** The canonical recommended mode. `requires` lists the providers the client
+ *  should drive the user through; `missing` is the subset not ready yet. */
+export interface OnboardingRecommendation {
+  name: "fire"
+  requires: string[]
+  missing: string[]
+}
+/** GET ROUTES.onboarding. */
+export interface OnboardingResponse {
+  providers: OnboardingProviderStatus[]
+  onboardedAt: number | null
+  suggestedModes: OnboardingSuggestedMode[]
+  recommended: OnboardingRecommendation | null
+}
+/** POST ROUTES.onboardingApply — save `mode` under `name` (default "default"),
+ *  pin it as the active mode, and apply it globally. 409 when any provider the
+ *  spec references is not ready. */
+export interface OnboardingApplyRequest {
+  name?: string
+  mode: ModeSpec
+}
+export interface OnboardingApplyResponse {
+  applied: string
+  spec: ModeSpec
+}
+
 /** POST ROUTES.modes — save a mode. Omitted `spec` snapshots the current
  *  executor+advisor pairing under `name`. */
 export interface SaveModeRequest {

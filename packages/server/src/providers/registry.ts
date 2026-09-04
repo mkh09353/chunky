@@ -462,7 +462,7 @@ export function resolveSidekickSeat(name: string, sessionId?: string): AgentSele
   if (!effectiveSidekickConfig(sessionId).enabled) return null
   const seat = effectiveSidekickSeats(sessionId)[name]
   if (!seat || !providers[seat.provider]) return null
-  return Object.freeze({ provider: seat.provider, model: seat.model, effort: seat.effort, speed: undefined })
+  return Object.freeze({ provider: seat.provider, model: seat.model, effort: seat.effort, speed: seat.speed })
 }
 
 // OAuth providers self-register on import. Kept at the bottom so the registry's

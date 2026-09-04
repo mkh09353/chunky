@@ -59,6 +59,7 @@ import {
   type ResourceUsageResponse,
   type ProviderQuotasResponse,
   type EvalsResponse,
+  type OnboardingApplyResponse,
 } from "@chunky/protocol"
 import {
   deleteEvalCandidate,
@@ -111,7 +112,7 @@ import { requestCompaction } from "./compaction.ts"
 import { isMcpAuthorized, mcpConfig, startMcpAuthorization } from "./mcp-auth.ts"
 import { checkForUpdate, currentVersion, installedVersion, persistCheck, readPersistedCheck } from "./update/updater.ts"
 import { checkInstalledVersion, onStaleRuntime } from "./staleRuntime.ts"
-import { applyOnboardingMode, onboardingResponse, suggestedModes, ensureDefaultModes, saveCustomProvider } from "./onboarding.ts"
+import { applyOnboardingMode, onboardingResponse, suggestedModes, ensureDefaultModes, saveCustomProvider, ModeProvidersNotReadyError } from "./onboarding.ts"
 import {
   currentModeSpec,
   deleteMode,
@@ -979,9 +980,9 @@ const server = Bun.serve(withRequestLog(withCors({
       if (!spec?.provider || !spec.model) return json({ error: "mode provider and model are required" }, 400)
       const name = body?.name?.trim() || "default"
       if (!/^[\w+.-]{1,40}$/.test(name)) return json({ error: "invalid mode name" }, 400)
-      try { applyOnboardingMode(name, spec) } catch (err) { return json({ error: (err as Error).message }, 404) }
+      try { applyOnboardingMode(name, spec) } catch (err) { return json({ error: (err as Error).message }, err instanceof ModeProvidersNotReadyError ? 409 : 404) }
       broadcastLive({ type: "mode.applied", name, spec })
-      return json({ applied: name, spec })
+      return json({ applied: name, spec } satisfies OnboardingApplyResponse)
     }
     if (req.method === "POST" && pathname === ROUTES.customProvider) {
       const body = await req.json().catch(() => null) as { id?: string; label?: string; baseURL?: string; billing?: "subscription" | "metered"; defaultModel?: string; key?: string } | null

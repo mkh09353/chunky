@@ -65,6 +65,7 @@ export interface SidekickSeat {
   provider: string
   model: string
   effort?: Effort
+  speed?: Speed
 }
 
 /** A named executor+sidekick+advisor trio (see /mode). The seats are part of the
@@ -135,6 +136,9 @@ export interface Settings {
   modes?: Record<string, ModeSpec>
   /** Builtin modes already seeded; deletion of one is permanent. */
   seededModes?: string[]
+  /** The exact spec each builtin mode was seeded with. A saved mode that still
+   *  deep-equals its snapshot was never edited, so a newer default may replace it. */
+  seededModeSpecs?: Record<string, ModeSpec>
   /** Name of the currently applied mode, when it was applied by the server. */
   activeMode?: string
   /** Global provider catalog overlays. Added ids supplement provider discovery;
@@ -510,8 +514,9 @@ export function saveMode(name: string, spec: ModeSpec): void {
   save({ ...s, modes: { ...(s.modes ?? {}), [name]: spec } })
 }
 
-export function markSeededModes(names: string[]): void {
-  save({ ...loadSettings(), seededModes: names })
+export function markSeededModes(names: string[], specs?: Record<string, ModeSpec>): void {
+  const s = loadSettings()
+  save({ ...s, seededModes: names, ...(specs ? { seededModeSpecs: { ...(s.seededModeSpecs ?? {}), ...specs } } : {}) })
 }
 
 /** Delete a mode; returns whether it existed. */

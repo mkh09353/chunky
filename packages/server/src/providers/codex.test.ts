@@ -8,7 +8,7 @@ describe("codex provider", () => {
   test("advertises every current GPT-5.6 Codex model", async () => {
     const ids = (await codexProvider.listModels()).map((model) => model.id)
 
-    expect(ids).toEqual(expect.arrayContaining(["gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]))
+    expect(ids).toEqual(expect.arrayContaining(["gpt-6-astra", "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna"]))
   })
 
   test("uses LangChain's stateless Responses mode", () => {

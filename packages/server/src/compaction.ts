@@ -11,6 +11,12 @@ export const COMPACTION_WARN_TOKENS = 150_000
 export const COMPACTION_KEEP_MESSAGES = 15
 export const MIN_SUMMARY_CHARS = 200
 export const CONTEXT_BUDGET_SOURCE = "chunky-context-budget"
+/** Codex grace-turn marker: the "window exhausted" fallback injected once at the
+ * trigger instead of compacting immediately, so the model can checkpoint first. */
+export const CONTEXT_FALLBACK_SOURCE = "chunky-context-fallback"
+/** Providers whose models are trained on Codex's history-notes surface get the
+ * Codex-flavored tools, prompts and grace-turn compaction lifecycle. */
+export const isCodexContextProvider = (provider: string | undefined) => provider === "codex"
 const RETRY_DELAY_MS = 25
 /** Forced compactions are keyed by LangGraph thread id: the lead's thread id equals
  * its session id (so the HTTP `compact` endpoint passes the session id), while a
@@ -31,7 +37,19 @@ export function contextBudgetReminder(total: number): string {
   return `<context_window_reminder>\nYour context is nearly full: roughly ${remaining} tokens remain before older messages are automatically summarized (approximate count; trigger at ${COMPACTION_TRIGGER_TOKENS}). Before that happens, write or append your persistent notes now (notes tool): goal, decisions, findings, why fixes failed, next steps, and recall keywords/turn numbers for evidence you will need. Notes are re-injected after compaction; the summary is lossy. When your notes are current you may call compact_context to compact early at a clean point.\n</context_window_reminder>`
 }
 
+/** Codex's token-budget reminder (models.json gpt-6-astra token_budget), with
+ * Codex's namespace calls mapped to our flat tool names. Tool results carry the
+ * `[id: …]` marker; user messages do not (v1), so they are located by role. */
+export function codexContextBudgetReminder(total: number): string {
+  const remaining = Math.max(0, COMPACTION_TRIGGER_TOKENS - total)
+  return `<context_window_reminder>\nYour current context window is nearly exhausted; only ${remaining} tokens remain. Before starting a new context window, save concise progress notes with the \`notes_write_file\` or \`notes_append_to_file\` tool with the goal, decisions, progress, learnings, next steps, and the window ID and item ID of every relevant user request still being solved, as well as important actions/tool calls for future reference. Note that every tool result has an item id \`[id: ...]\` that is immediately after its content; user messages do not — locate them with \`history_list_items\` (role=user). You should write or append notes in a way to best help you recover in a new context window. It is also a good idea to clean up your old notes if they become obsolete or irrelevant. Future context windows will not automatically include the current conversation. After saving your state, call \`new_context\` to continue in a fresh context window.\n</context_window_reminder>`
+}
+
+export const CODEX_CONTEXT_FALLBACK = `<context_window_reminder>\nThe current context window is exhausted. Do not continue the task or give a final answer in this window. The next window will not automatically include this conversation. Make exactly one write or append call to \`notes_write_file\` or \`notes_append_to_file\` now to save a concise checkpoint with the goal, decisions, progress, learnings, next steps, and the window ID and item ID of every relevant user request still being solved, as well as important actions/tool calls for future reference. Note that every tool result has an item id \`[id: ...]\` that is immediately after its content; user messages do not — cite them by window ID and locate them with \`history_list_items\` (role=user). After the notes result returns, call \`new_context\`; do not use any tools other than \`notes_*\` and \`new_context\`.\n</context_window_reminder>`
+
 const isBudgetMarker = (message: any) => message?.additional_kwargs?.lc_source === CONTEXT_BUDGET_SOURCE
+const isFallbackMarker = (message: any) => message?.additional_kwargs?.lc_source === CONTEXT_FALLBACK_SOURCE
+const isContextMarker = (message: any) => isBudgetMarker(message) || isFallbackMarker(message)
 
 export const CHUNKY_COMPACTION_PROMPT = `You are compacting a Chunky agent conversation for a successor assistant. Produce a faithful, tight summary that preserves the information needed to continue the work.
 
@@ -109,7 +127,8 @@ function tailBoundary(messages: any[]): number {
   return boundary
 }
 
-export function chunkyCompactionMiddleware({ model }: { model: any }) {
+export function chunkyCompactionMiddleware({ model, provider }: { model: any; provider?: string }) {
+  const codex = isCodexContextProvider(provider)
   return createMiddleware({
     name: "ChunkyCompactionMiddleware",
     beforeModel: async (state: { messages: any[] }, runtime: any) => {
@@ -124,9 +143,16 @@ export function chunkyCompactionMiddleware({ model }: { model: any }) {
         // Warn once per context window; compaction removes every message, so the
         // marker resets naturally (and is dropped from the retained tail below).
         if (total >= COMPACTION_WARN_TOKENS && !messages.some(isBudgetMarker)) {
-          return { messages: [new SystemMessage({ id: crypto.randomUUID(), content: contextBudgetReminder(total), additional_kwargs: { lc_source: CONTEXT_BUDGET_SOURCE } })] }
+          const content = codex ? codexContextBudgetReminder(total) : contextBudgetReminder(total)
+          return { messages: [new SystemMessage({ id: crypto.randomUUID(), content, additional_kwargs: { lc_source: CONTEXT_BUDGET_SOURCE } })] }
         }
         return
+      }
+      // Codex grace turn: at the trigger, hand the model one more call to checkpoint
+      // (Codex's "window exhausted" fallback) and let it call new_context; compact on
+      // the following call regardless, and never inject the fallback twice per window.
+      if (codex && !force && !messages.some(isFallbackMarker)) {
+        return { messages: [new SystemMessage({ id: crypto.randomUUID(), content: CODEX_CONTEXT_FALLBACK, additional_kwargs: { lc_source: CONTEXT_FALLBACK_SOURCE } })] }
       }
       const boundary = tailBoundary(messages)
       if (boundary <= 0) { if (threadId) pendingCompactions.delete(threadId); return }
@@ -155,7 +181,7 @@ export function chunkyCompactionMiddleware({ model }: { model: any }) {
       }
       if (threadId) pendingCompactions.delete(threadId)
       const summary = new HumanMessage({ id: crypto.randomUUID(), content: cleaned.text, additional_kwargs: { lc_source: "summarization" } })
-      const tail = messages.slice(boundary).filter((message) => !isBudgetMarker(message))
+      const tail = messages.slice(boundary).filter((message) => !isContextMarker(message))
       return { messages: [new RemoveMessage({ id: REMOVE_ALL_MESSAGES }), summary, ...stripInlineImages(tail, MAX_INLINE_IMAGE_BYTES)] }
     },
   })

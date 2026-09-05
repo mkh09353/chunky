@@ -29,6 +29,18 @@ export const CORE_TOOL_NAMES = Object.freeze([
   "notes",
   "get_context_remaining",
   "compact_context",
+  // Codex-flavored context surface (tools/codex-context.ts): the models trained on
+  // it expect these to be present, never behind tool search.
+  "notes_write_file",
+  "notes_append_to_file",
+  "notes_read_file",
+  "notes_list_files_by_prefix",
+  "notes_search_contents",
+  "history_list_windows",
+  "history_list_items",
+  "history_read_item",
+  "history_search_contents",
+  "new_context",
 ] as const)
 
 const CORE_TOOL_NAME_SET = new Set<string>(CORE_TOOL_NAMES)

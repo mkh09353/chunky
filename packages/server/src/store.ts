@@ -695,12 +695,12 @@ export const Store = {
     backend(sessionId).query(`INSERT INTO session_notes (session_id,thread_id,path,text,created_at,updated_at) VALUES (?,?,?,?,?,?)
       ON CONFLICT(session_id,thread_id,path) DO UPDATE SET text=excluded.text,updated_at=excluded.updated_at`).run(sessionId, threadId, path, text, now, now)
   },
-  listNotes(sessionId: string, threadId?: string): Array<{ threadId: string; path: string; bytes: number; lines: number; updatedAt: number }> {
+  listNotes(sessionId: string, threadId?: string): Array<{ threadId: string; path: string; bytes: number; lines: number; createdAt: number; updatedAt: number }> {
     const rows = (threadId === undefined
-      ? backend(sessionId).query("SELECT thread_id,path,text,updated_at FROM session_notes WHERE session_id=? ORDER BY updated_at DESC,path ASC").all(sessionId)
-      : backend(sessionId).query("SELECT thread_id,path,text,updated_at FROM session_notes WHERE session_id=? AND thread_id=? ORDER BY updated_at DESC,path ASC").all(sessionId, threadId)
-    ) as Array<{ thread_id: string; path: string; text: string; updated_at: number }>
-    return rows.map((row) => ({ threadId: row.thread_id, path: row.path, bytes: Buffer.byteLength(row.text), lines: row.text ? row.text.split(/\r?\n/).length : 0, updatedAt: row.updated_at }))
+      ? backend(sessionId).query("SELECT thread_id,path,text,created_at,updated_at FROM session_notes WHERE session_id=? ORDER BY updated_at DESC,path ASC").all(sessionId)
+      : backend(sessionId).query("SELECT thread_id,path,text,created_at,updated_at FROM session_notes WHERE session_id=? AND thread_id=? ORDER BY updated_at DESC,path ASC").all(sessionId, threadId)
+    ) as Array<{ thread_id: string; path: string; text: string; created_at: number; updated_at: number }>
+    return rows.map((row) => ({ threadId: row.thread_id, path: row.path, bytes: Buffer.byteLength(row.text), lines: row.text ? row.text.split(/\r?\n/).length : 0, createdAt: row.created_at, updatedAt: row.updated_at }))
   },
   deleteNote(sessionId: string, threadId: string, path: string): boolean {
     return backend(sessionId).query("DELETE FROM session_notes WHERE session_id=? AND thread_id=? AND path=?").run(sessionId, threadId, path).changes > 0
@@ -895,6 +895,11 @@ export const Store = {
 
   /** Read-only durable transcript rows, retaining their event sequence numbers.
    * Used by recall; unlike rewind, this never mutates events. */
+  /** Number of persisted context.compacted markers; the current context window is this + 1. */
+  countCompactions(sessionId: string): number {
+    const row = backend(sessionId).query(`SELECT COUNT(*) AS n FROM events WHERE session_id=? AND json LIKE '%"type":"context.compacted"%'`).get(sessionId) as { n: number } | null
+    return row?.n ?? 0
+  },
   historyWithSeq(sessionId: string): Array<{ seq: number; event: AgentEvent }> {
     const conn = isIncognitoSession(sessionId) ? memoryDb : db
     const rows = (isIncognitoSession(sessionId)

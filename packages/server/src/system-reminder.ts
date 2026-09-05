@@ -24,6 +24,34 @@ export interface LiveSessionState {
 }
 
 export const NOTES_REMINDER_CHAR_BUDGET = 24_000
+export const CONTEXT_WINDOW_RECENT_NOTES = 5
+
+export interface ContextWindowBlock {
+  agentName: string
+  /** 1-based index of the current window (count of persisted context.compacted events + 1). */
+  current: number
+  /** Present only after a reset; the window the compaction just closed. */
+  previous?: number
+  /** The thread's notes, most-recently-updated first; only the first 5 are listed. */
+  notes: ReminderNote[]
+}
+
+/** Codex's `<context_window>` developer block, emitted at the start of a fresh
+ * codex-mode thread and after every reset. Lists note metadata only: the model
+ * reads note contents itself with notes_read_file (Codex-faithful). */
+export function formatContextWindowBlock(block: ContextWindowBlock): string {
+  const lines = [
+    "<context_window>",
+    `Agent name: ${block.agentName}`,
+    "First context window id: w1",
+    `Current context window id: w${block.current}`,
+    ...(block.previous != null ? [`Previous context window id: w${block.previous}`] : []),
+    `Recent notes (up to ${CONTEXT_WINDOW_RECENT_NOTES}, most-recent first):`,
+    ...(block.notes.length ? block.notes.slice(0, CONTEXT_WINDOW_RECENT_NOTES).map((note) => `- ${note.path} (${note.lines} lines, ${note.bytes} UTF-8 bytes)`) : ["No notes."]),
+    "</context_window>",
+  ]
+  return lines.join("\n")
+}
 
 const oneLine = (value: string, max = 140) => {
   const text = value.replace(/\s+/g, " ").trim()

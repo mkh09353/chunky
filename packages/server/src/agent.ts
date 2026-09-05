@@ -12,8 +12,8 @@
 // only the agent-construction call differs.
 import { tool } from "@langchain/core/tools"
 import { z } from "zod"
-import { createAgent } from "langchain"
-import { chunkyCompactionMiddleware } from "./compaction.ts"
+import { createAgent, createMiddleware } from "langchain"
+import { chunkyCompactionMiddleware, isCodexContextProvider } from "./compaction.ts"
 import { stripInlineImages } from "./inline-images.ts"
 import { CODEX_DEFAULT_MODEL } from "./providers/codex.ts"
 import {
@@ -30,12 +30,12 @@ import {
 } from "./providers/registry.ts"
 import { sessionForThread, threadContextFor } from "./thread-context.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
-import { RemoveMessage, SystemMessage } from "@langchain/core/messages"
+import { RemoveMessage, SystemMessage, ToolMessage } from "@langchain/core/messages"
 import { Store } from "./store.ts"
 import { snapshotSessionTasks } from "./tasks.ts"
 import { runningDetachedSpawnSummaries } from "./detached-spawns.ts"
 import { todoSummary } from "./todos.ts"
-import { formatSystemReminder } from "./system-reminder.ts"
+import { formatContextWindowBlock, formatSystemReminder } from "./system-reminder.ts"
 import { activeSidekickSummaries, runningChildSummaries } from "./threads.ts"
 import { ADVISOR_SYSTEM_PROMPT, REVIEW_SYSTEM_PROMPT, sidekickSystemPrompt, buildRepoLessSystemPrompt, buildSystemPrompt, type EditToolName } from "./prompt.ts"
 import {
@@ -48,6 +48,7 @@ import { applyPatch } from "./tools/apply-patch.ts"
 import { bash } from "./tools/bash.ts"
 import { notes } from "./tools/notes.ts"
 import { compact_context, get_context_remaining } from "./tools/context.ts"
+import { codexContextTools } from "./tools/codex-context.ts"
 import { editTool } from "./tools/edit.ts"
 import { fffind, ffgrep } from "./tools/fff.ts"
 import { goto_definition, find_references } from "./tools/codegraph.ts"
@@ -104,8 +105,44 @@ export function editedFilesForSession(sessionId: string): string[] {
   return found.slice(-30)
 }
 
-export function makePostCompactionReminder(options: { notesOnly?: boolean } = {}) {
+/** Codex-mode `[id: …]` markers: appended to every tool result the MODEL sees so
+ * it can cite tool items in notes and read them back with history_read_item. This
+ * is a wrapModelCall request transform — agent state, the streamed ToolMessage
+ * (which run.ts persists as tool.end) and the compaction summarizer never see it. */
+export const toolResultIdMarker = (toolCallId: string) => `\n[id: ${toolCallId}]`
+export function markToolResultsForModel(messages: any[]): any[] {
+  return messages.map((message) => {
+    if (message?._getType?.() !== "tool" || typeof message.tool_call_id !== "string" || !message.tool_call_id) return message
+    const marker = toolResultIdMarker(message.tool_call_id)
+    const content = typeof message.content === "string" ? message.content + marker : Array.isArray(message.content) ? [...message.content, { type: "text", text: marker }] : undefined
+    if (content === undefined) return message
+    return new ToolMessage({ content, tool_call_id: message.tool_call_id, name: message.name, id: message.id, status: message.status, artifact: message.artifact, additional_kwargs: message.additional_kwargs, response_metadata: message.response_metadata })
+  })
+}
+export function codexToolResultMarkerMiddleware() {
+  return createMiddleware({
+    name: "CodexToolResultMarkers",
+    wrapModelCall: async (request, handler) => handler({ ...request, messages: markToolResultsForModel(request.messages) }),
+  })
+}
+
+/** The context-budget tools for a provider: Codex-trained models get the Codex
+ * history-notes surface (flat names); everyone else keeps the generic tools. */
+export function contextToolsFor(providerId: string) {
+  return isCodexContextProvider(providerId) ? codexContextTools : [notes, get_context_remaining, compact_context]
+}
+
+export const CONTEXT_WINDOW_MARKER = "lc_context_window"
+const hasContextWindowBlock = (message: any) => message?.additional_kwargs?.[CONTEXT_WINDOW_MARKER] === true
+/** The reminder records which summary it answered: agents are cached per selection
+ * and shared across threads, so "last handled id" alone would re-handle (and
+ * re-emit context.compacted for) a thread whose summary another thread's compaction
+ * displaced. In codex mode that would also skew the window ids. */
+const HANDLED_SUMMARY_KEY = "lc_for_summary"
+
+export function makePostCompactionReminder(options: { notesOnly?: boolean; codexContext?: boolean } = {}) {
   let handledSummaryId: string | undefined
+  const codex = options.codexContext === true
   return async function postCompactionReminder(
     state: { messages: any[] },
     runtime: { configurable?: { thread_id?: unknown; emitSessionEvent?: unknown } },
@@ -120,15 +157,24 @@ export function makePostCompactionReminder(options: { notesOnly?: boolean } = {}
         tasks: options.notesOnly ? undefined : snapshotSessionTasks(sessionId).map((task) => ({ taskId: task.taskId, status: task.status, command: task.command.split(/\r?\n/, 1)[0] })),
         todos: options.notesOnly ? undefined : Store.getTodos(sessionId).map((todo) => ({ id: todo.id, content: todo.content, status: todo.status, assignee: todo.assignee })),
         editedFiles: options.notesOnly ? undefined : editedFilesForSession(sessionId).map((path) => ({ path })),
-        notes: noteRows.map((note) => ({ path: note.path, lines: note.lines, bytes: note.bytes, text: Store.getNote(sessionId, note.threadId, note.path) ?? "" })),
+        // Codex mode never inlines note text: the model reads notes via notes_read_file.
+        notes: noteRows.map((note) => ({ path: note.path, lines: note.lines, bytes: note.bytes, ...(codex ? {} : { text: Store.getNote(sessionId, note.threadId, note.path) ?? "" }) })),
       }
     },
   ) {
-    const summary = state.messages.findLast((message) => message?.additional_kwargs?.lc_source === "summarization")
-    const summaryId = summary?.id
-    if (!summaryId || summaryId === handledSummaryId) return
     const threadId = runtime.configurable?.thread_id
     if (typeof threadId !== "string") return
+    const summary = state.messages.findLast((message) => message?.additional_kwargs?.lc_source === "summarization")
+    const summaryId = summary?.id
+    const handled = !!summaryId && (summaryId === handledSummaryId || state.messages.some((message) => message?.additional_kwargs?.[HANDLED_SUMMARY_KEY] === summaryId))
+    if (!summaryId || handled) {
+      // Fresh codex thread: emit Codex's <context_window> block once, before the
+      // first model call, so the model knows its window id from the start.
+      if (!codex || summaryId || state.messages.some(hasContextWindowBlock)) return
+      const sessionId = sessionForThread(threadId) ?? threadId
+      const block = formatContextWindowBlock({ agentName: agentNameFor(sessionId, threadId), current: Store.countCompactions(sessionId) + 1, notes: Store.listNotes(sessionId, threadId) })
+      return { messages: [new SystemMessage({ content: block, additional_kwargs: { lc_source: "chunky-system-reminder", [CONTEXT_WINDOW_MARKER]: true } })] }
+    }
     const sessionId = sessionForThread(threadId) ?? threadId
     handledSummaryId = summaryId
     const emitSessionEvent = runtime.configurable?.emitSessionEvent
@@ -138,14 +184,24 @@ export function makePostCompactionReminder(options: { notesOnly?: boolean } = {}
     const removals = state.messages
       .filter((message) => message?.additional_kwargs?.lc_source === "chunky-system-reminder" && message.id)
       .map((message) => new RemoveMessage({ id: message.id }))
-    const reminder = formatSystemReminder(collect(sessionId, threadId))
-    const recallLine = "Older context was summarized; the full unabridged transcript remains available via recall (list_windows shows each context window; window=-2 reads the previous one; cite seq_start/seq_end). Persistent working context is available via notes (read/list/search)."
-    const content = reminder
+    const live = collect(sessionId, threadId)
+    const reminder = formatSystemReminder(codex ? { ...live, notes: undefined } : live)
+    const recallLine = codex
+      ? "Older context was summarized into the message above. Read your checkpoint with notes_read_file and recover any missing details with the history_* tools."
+      : "Older context was summarized; the full unabridged transcript remains available via recall (list_windows shows each context window; window=-2 reads the previous one; cite seq_start/seq_end). Persistent working context is available via notes (read/list/search)."
+    let content = reminder
       ? reminder.replace("\n</system-reminder>", `\n${recallLine}\n</system-reminder>`)
       : `<system-reminder>\n${recallLine}\n</system-reminder>`
-    return { messages: [...removals, new SystemMessage({ content, additional_kwargs: { lc_source: "chunky-system-reminder" } })] }
+    if (codex) {
+      // The compaction just persisted one more context.compacted marker (Codex-mode
+      // windows are numbered from those markers, matching history_list_windows).
+      const compacted = Math.max(1, Store.countCompactions(sessionId))
+      content += `\n${formatContextWindowBlock({ agentName: agentNameFor(sessionId, threadId), current: compacted + 1, previous: compacted, notes: live.notes ?? [] })}`
+    }
+    return { messages: [...removals, new SystemMessage({ content, additional_kwargs: { lc_source: "chunky-system-reminder", [HANDLED_SUMMARY_KEY]: summaryId, ...(codex ? { [CONTEXT_WINDOW_MARKER]: true } : {}) } })] }
   }
 }
+const agentNameFor = (sessionId: string, threadId: string) => threadId === sessionId ? "lead" : threadId
 export const postCompactionReminder = makePostCompactionReminder()
 
 function responseItemsForCompaction(messages: any[]): any[] {
@@ -327,9 +383,7 @@ export function executorToolsFor(selection: AgentSelection, sessionId?: string) 
     dualTool(bash),
     monitor,
     recall,
-    notes,
-    get_context_remaining,
-    compact_context,
+    ...contextToolsFor(selection.provider),
     getTaskOutput,
     killTask,
     fffind,
@@ -432,6 +486,7 @@ export function buildAgent(
     systemPrompt: (repoLess ? buildRepoLessSystemPrompt : buildSystemPrompt)(plan.editToolName, plan.hasAdvisor, workspace, {
       fileToolProfile: resolveFileToolProfile(),
       nativeToolSearch: plan.nativeToolSearch,
+      codexContext: isCodexContextProvider(providerId),
       portableToolSearch: providerId === "grok",
       hasSidekick: plan.hasSidekick,
       hasReview: plan.hasReview,
@@ -450,14 +505,15 @@ export function buildAgent(
     // with tool-call/result pairs kept together; failed summaries leave state intact.
     middleware: [
       remoteCompactionMiddleware(providerId, modelId),
-      chunkyCompactionMiddleware({ model }),
+      chunkyCompactionMiddleware({ model, provider: providerId }),
       // The compaction middleware returns RemoveAll + summary + preserved messages.
       // This following hook observes that update and inserts the freshly collected
       // reminder at the only stable point, immediately after the generated summary.
       {
         name: "postCompactionReminder",
-        beforeModel: makePostCompactionReminder(),
+        beforeModel: makePostCompactionReminder({ codexContext: isCodexContextProvider(providerId) }),
       },
+      ...(isCodexContextProvider(providerId) ? [codexToolResultMarkerMiddleware()] : []),
       ...(toolSearchMw ? [toolSearchMw] : []),
     ],
   })
@@ -513,12 +569,13 @@ export function buildAdvisorAgent(selection: AgentSelection, sessionId?: string)
   const model = resolveModel(selection, sessionId)
   return createAgent({
     model,
-    tools: [resolveFileToolProfile() === "hashline" ? hashlineRead : read, bash, fffind, ffgrep, goto_definition, find_references, notes, get_context_remaining, compact_context],
+    tools: [resolveFileToolProfile() === "hashline" ? hashlineRead : read, bash, fffind, ffgrep, goto_definition, find_references, ...contextToolsFor(selection.provider)],
     systemPrompt: ADVISOR_SYSTEM_PROMPT,
     checkpointer: makeCheckpointer(),
     middleware: [
-      chunkyCompactionMiddleware({ model }),
-      { name: "postCompactionNotes", beforeModel: makePostCompactionReminder({ notesOnly: true }) },
+      chunkyCompactionMiddleware({ model, provider: selection.provider }),
+      { name: "postCompactionNotes", beforeModel: makePostCompactionReminder({ notesOnly: true, codexContext: isCodexContextProvider(selection.provider) }) },
+      ...(isCodexContextProvider(selection.provider) ? [codexToolResultMarkerMiddleware()] : []),
     ],
   })
 }
@@ -561,7 +618,7 @@ export function getAdvisorAgent(selection: AgentSelection = activeSelection(), s
  */
 export function sidekickToolsFor(selection: AgentSelection) {
   const [fileRead, fileEdit] = sidekickFileToolsFor(selection.model, selection.provider)
-  return [fileRead, fileEdit, bash, notes, recall, get_context_remaining, compact_context, fffind, ffgrep, goto_definition, find_references, write]
+  return [fileRead, fileEdit, bash, ...contextToolsFor(selection.provider), recall, fffind, ffgrep, goto_definition, find_references, write]
 }
 
 export function buildSidekickAgent(selection: AgentSelection, agentsMd?: string | null, sessionId?: string, repoMemory?: string | null) {
@@ -569,11 +626,12 @@ export function buildSidekickAgent(selection: AgentSelection, agentsMd?: string 
   return createAgent({
     model,
     tools: sidekickToolsFor(selection),
-    systemPrompt: sidekickSystemPrompt(agentsMd, resolveFileToolProfile(), repoMemory),
+    systemPrompt: sidekickSystemPrompt(agentsMd, resolveFileToolProfile(), repoMemory, { codexContext: isCodexContextProvider(selection.provider) }),
     checkpointer: makeCheckpointer(),
     middleware: [
-      chunkyCompactionMiddleware({ model }),
-      { name: "postCompactionNotes", beforeModel: makePostCompactionReminder({ notesOnly: true }) },
+      chunkyCompactionMiddleware({ model, provider: selection.provider }),
+      { name: "postCompactionNotes", beforeModel: makePostCompactionReminder({ notesOnly: true, codexContext: isCodexContextProvider(selection.provider) }) },
+      ...(isCodexContextProvider(selection.provider) ? [codexToolResultMarkerMiddleware()] : []),
     ],
   })
 }

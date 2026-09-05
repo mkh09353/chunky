@@ -28,6 +28,19 @@ describe("post-compaction reminder", () => {
     expect(reduced.filter((m) => m.additional_kwargs?.lc_source === "chunky-system-reminder")).toHaveLength(1)
     expect(reduced.some((m) => m.id === "r1" || m.id === "r2")).toBe(false)
   })
+  test("a reminder already answering the summary in state counts as handled across threads and rebuilt agents", async () => {
+    const middleware = makePostCompactionReminder()
+    const first = await middleware({ messages: [summary("sum-a")] }, { configurable: { thread_id: "a" } }, live)
+    const reminderA = first!.messages[0] as SystemMessage
+    expect(reminderA.additional_kwargs.lc_for_summary).toBe("sum-a")
+    // Another thread compacts on the same cached agent instance...
+    expect(await middleware({ messages: [summary("sum-b")] }, { configurable: { thread_id: "b" } }, live)).toBeDefined()
+    // ...then thread A calls again: its summary was already answered, so nothing is re-emitted.
+    let emitted = 0
+    expect(await middleware({ messages: [summary("sum-a"), reminderA] }, { configurable: { thread_id: "a", emitSessionEvent: () => { emitted++ } } }, live)).toBeUndefined()
+    expect(emitted).toBe(0)
+    expect(await makePostCompactionReminder()({ messages: [summary("sum-a"), reminderA] }, { configurable: { thread_id: "a" } }, live)).toBeUndefined()
+  })
   test("removes stale reminders and injects recall guidance when live state is empty", async () => {
     const middleware = makePostCompactionReminder()
     const result = await middleware({ messages: [summary("sum-empty"), stale("r-empty")] }, { configurable: { thread_id: "s" } }, () => ({}))

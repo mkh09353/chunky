@@ -4,7 +4,8 @@ import { createChunkySdkMcpServer } from "./anthropic-runner.ts"
 import { CORE_TOOL_NAMES } from "./tool-search.ts"
 import { ANTHROPIC_SIDEKICK_TOOLS } from "./threads.ts"
 
-const selection = { provider: "codex", model: "gpt-5.5" } as const
+// Non-codex selection: the codex provider exposes notes_* instead (codex-context-mode.test.ts).
+const selection = { provider: "zen", model: "claude-fable-5-1" } as const
 
 describe("notes registration", () => {
   test("lead and spawned-child executor catalog contains notes", () => {

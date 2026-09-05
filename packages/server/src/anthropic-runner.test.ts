@@ -102,9 +102,9 @@ async function main() {
   assert(!sidekickSchema.safeParse({ task: "frontend brief", detach: "yes" }).success, "Anthropic sidekick MCP schema must reject non-boolean detach")
   assert(
     JSON.stringify(registeredTools) === JSON.stringify([
-      "bash", "create_goal", "edit", "fffind", "ffgrep", "get_delegate_status", "get_goal", "get_task_output", "goal_blocked",
-      "goal_complete", "kill_task", "load_skill", "manage_models", "manage_providers", "manage_skill_repos", "monitor", "papercut", "rate_delegate", "read", "remember", "review", "search_skills",
-      "ship_goal", "sidekick", "spawn_thread", "stop_delegate", "workflow", "write",
+      "bash", "compact_context", "create_goal", "edit", "fffind", "ffgrep", "get_context_remaining", "get_delegate_status", "get_goal", "get_task_output", "goal_blocked",
+      "goal_complete", "kill_task", "load_skill", "manage_models", "manage_providers", "manage_skill_repos", "monitor", "notes", "papercut", "rate_delegate", "read", "recall", "remember", "review", "search_skills",
+      "ship_goal", "sidekick", "spawn_thread", "stop_delegate", "update_todos", "workflow", "write",
     ]),
     `SDK MCP registered tool set mismatch: ${registeredTools.join(", ")}`,
   )
@@ -204,6 +204,15 @@ async function main() {
       !String(err).includes("Claude subscription OAuth is not active")
   }
   assert(nativeAuthFailure, "missing subscription must not mask the SDK's native authentication failure")
+  const firstPartyWithoutSubscription = await runAnthropicAgent(accountRequest, accountDependencies(
+    { subscriptionType: null, apiProvider: "firstParty" },
+    [
+      { type: "system", subtype: "init", apiKeySource: "none", tools: ["mcp__chunky__read"] },
+      { type: "assistant", message: { content: [{ type: "text", text: "first-party account accepted" }] } },
+      { type: "result", subtype: "success", result: "first-party account accepted", usage: {} },
+    ],
+  ))
+  assert(firstPartyWithoutSubscription === "first-party account accepted", "first-party SDK accounts must not require an optional subscriptionType")
   let rejectedProvider = false
   try {
     await runAnthropicAgent(accountRequest, accountDependencies({ subscriptionType: "pro", apiProvider: "vertex" }))

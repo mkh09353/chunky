@@ -211,6 +211,7 @@ export type AgentEvent =
    * `message` is a short human line the TUI renders as a transcript marker. */
   | { type: "goal.update"; sessionId: string; goal: GoalSnapshot | null; message?: string }
   | { type: "todos.update"; sessionId: string; todos: TodoSnapshot[] }
+  | { type: "notes.update"; sessionId: string; threadId: string; path: string; lines: number; bytes: number; action: "write" | "append" }
   /** A dynamic-workflow phase boundary — groups the sub-agents that follow under
    *  `title` in the owning thread's transcript. `threadId` is the thread that ran
    *  the `workflow` tool (omitted for the main thread). The workflow's sub-agents
@@ -911,6 +912,8 @@ export const ROUTES = {
   goal: (id: string) => `/api/sessions/${id}/goal`,
   // GET -> TodoSnapshot[] — the session's current todo checklist (read-only).
   todos: (id: string) => `/api/sessions/${id}/todos`,
+  // GET -> all virtual note files and their text for this session (read-only).
+  notes: (id: string) => `/api/sessions/${id}/notes`,
   // POST ShipRequest -> 202. Ask THIS session to write a handoff brief and ship
   // it to a fresh workflows-mode goal session (via the ship_goal tool).
   ship: (id: string) => `/api/sessions/${id}/ship`,

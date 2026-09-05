@@ -12,6 +12,7 @@ const item = z.object({
   status: z.enum(["pending", "in_progress", "completed", "cancelled"]).optional(),
   assignee: z.string().optional(), activeForm: z.string().optional(),
 })
+export const updateTodosInputShape = { mode: z.enum(["replace", "merge"]).default("replace"), todos: z.array(item) }
 export const updateTodos = tool(
   async ({ mode, todos }: { mode: "replace" | "merge"; todos: TodoUpdate[] }, config?: unknown) => {
     const threadId = threadIdOf(config)
@@ -24,5 +25,5 @@ export const updateTodos = tool(
     emitToSession(sessionId, { type: "todos.update", sessionId, todos: result.todos! })
     return `Todos updated (${mode}).\n${todoSummary(result.todos!)}`
   },
-  { name: "update_todos", description: "Create or update the session todo list. Use replace for a complete list and merge for status or field updates by id.", schema: z.object({ mode: z.enum(["replace", "merge"]).default("replace"), todos: z.array(item) }) },
+  { name: "update_todos", description: "Create or update the session todo list. Use replace for a complete list and merge for status or field updates by id.", schema: z.object(updateTodosInputShape) },
 )

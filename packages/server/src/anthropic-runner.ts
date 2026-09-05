@@ -71,6 +71,10 @@ import { hashlineEditInputShape } from "./tools/hashline/types.ts"
 import { resolveFileToolProfile, loadSettings, type FileToolProfile } from "./settings.ts"
 import { readRepoMemory } from "./memory.ts"
 import { remember, rememberInputShape } from "./tools/remember.ts"
+import { recall, recallInputShape } from "./tools/recall.ts"
+import { updateTodos, updateTodosInputShape } from "./tools/todos.ts"
+import { notes, notesInputShape } from "./tools/notes.ts"
+import { compact_context, compactContextInputShape, get_context_remaining, getContextRemainingInputShape } from "./tools/context.ts"
 import { papercut, papercutInputShape } from "./tools/papercut.ts"
 import { review, reviewInputShape } from "./tools/review.ts"
 import { browserTools, open_app_browser } from "./tools/browser.ts"
@@ -79,7 +83,7 @@ import { getFreshAccessToken, isMcpAuthorized } from "./mcp-auth.ts"
 
 const SERVER_NAME = "chunky"
 const ALLOWED_TOOLS = [`mcp__${SERVER_NAME}__*`]
-const CHUNKY_TOOLS = [
+export const CHUNKY_TOOLS = [
   read,
   bash,
   monitor,
@@ -106,6 +110,11 @@ const CHUNKY_TOOLS = [
   goalBlockedTool,
   shipGoal,
   remember,
+  recall,
+  updateTodos,
+  notes,
+  get_context_remaining,
+  compact_context,
   papercut,
   review,
   ...browserTools,
@@ -207,6 +216,8 @@ export function createChunkySdkMcpServer(
   // session-scoped tools (spawn/goal) plus the run's workspace for fs/search tools.
   const runConfig = { configurable: {
     thread_id: callerThreadId,
+    // Marks SDK runs for tools whose behavior depends on the LangChain middleware stack (context budget/compaction).
+    runtime: "anthropic-sdk" as const,
     workspace,
     emitToolProgress: (toolCallId: string, chunk: string) => emit({ type: "tool.progress", id: toolCallId, chunk }),
   } }
@@ -285,6 +296,11 @@ export function createChunkySdkMcpServer(
         emit,
       ),
       wrapChunkyTool(remember.name, remember.description, rememberInputShape, (args) => remember.invoke(args, runConfig), emit),
+      wrapChunkyTool(recall.name, recall.description, recallInputShape, (args) => recall.invoke(args, runConfig), emit, readOnly),
+      wrapChunkyTool(updateTodos.name, updateTodos.description, updateTodosInputShape, (args) => updateTodos.invoke(args, runConfig), emit),
+      wrapChunkyTool(notes.name, notes.description, notesInputShape, (args) => notes.invoke(args, runConfig), emit),
+      wrapChunkyTool(get_context_remaining.name, get_context_remaining.description, getContextRemainingInputShape, (args) => get_context_remaining.invoke(args, runConfig), emit, readOnly),
+      wrapChunkyTool(compact_context.name, compact_context.description, compactContextInputShape, (args) => compact_context.invoke(args, runConfig), emit),
       wrapChunkyTool(papercut.name, papercut.description, papercutInputShape, (args) => papercut.invoke(args, runConfig), emit),
       ...wrappedRequestApiKey,
       ...wrappedAppBrowserTools,

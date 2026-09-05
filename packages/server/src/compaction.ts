@@ -1,16 +1,37 @@
-import { HumanMessage, RemoveMessage, ToolMessage, AIMessage } from "@langchain/core/messages"
+import { HumanMessage, RemoveMessage, SystemMessage, ToolMessage, AIMessage } from "@langchain/core/messages"
 import { REMOVE_ALL_MESSAGES } from "@langchain/langgraph"
 import { createMiddleware, countTokensApproximately } from "langchain"
 import { sessionForThread } from "./thread-context.ts"
 import { MAX_INLINE_IMAGE_BYTES, stripInlineImages } from "./inline-images.ts"
+import { Store } from "./store.ts"
+import { NOTES_REMINDER_CHAR_BUDGET } from "./system-reminder.ts"
 
 export const COMPACTION_TRIGGER_TOKENS = 175_000
+export const COMPACTION_WARN_TOKENS = 150_000
 export const COMPACTION_KEEP_MESSAGES = 15
 export const MIN_SUMMARY_CHARS = 200
+export const CONTEXT_BUDGET_SOURCE = "chunky-context-budget"
 const RETRY_DELAY_MS = 25
+/** Forced compactions are keyed by LangGraph thread id: the lead's thread id equals
+ * its session id (so the HTTP `compact` endpoint passes the session id), while a
+ * sidekick/advisor/child thread forcing its own compaction must not compact the lead. */
 const pendingCompactions = new Map<string, string | undefined>()
-export function requestCompaction(sessionId: string, hint?: string): void { pendingCompactions.set(sessionId, hint?.trim() || undefined) }
-export function pendingCompaction(sessionId: string): boolean { return pendingCompactions.has(sessionId) }
+export function requestCompaction(threadId: string, hint?: string): void { pendingCompactions.set(threadId, hint?.trim() || undefined) }
+export function pendingCompaction(threadId: string): boolean { return pendingCompactions.has(threadId) }
+
+export type ContextUsage = { total: number; at: number }
+/** Latest approximate prompt-token measurement per thread, taken before each model call. */
+const contextUsage = new Map<string, ContextUsage>()
+export function contextUsageFor(threadId: string | undefined): ContextUsage | undefined {
+  return threadId ? contextUsage.get(threadId) : undefined
+}
+
+export function contextBudgetReminder(total: number): string {
+  const remaining = Math.max(0, COMPACTION_TRIGGER_TOKENS - total)
+  return `<context_window_reminder>\nYour context is nearly full: roughly ${remaining} tokens remain before older messages are automatically summarized (approximate count; trigger at ${COMPACTION_TRIGGER_TOKENS}). Before that happens, write or append your persistent notes now (notes tool): goal, decisions, findings, why fixes failed, next steps, and recall keywords/turn numbers for evidence you will need. Notes are re-injected after compaction; the summary is lossy. When your notes are current you may call compact_context to compact early at a clean point.\n</context_window_reminder>`
+}
+
+const isBudgetMarker = (message: any) => message?.additional_kwargs?.lc_source === CONTEXT_BUDGET_SOURCE
 
 export const CHUNKY_COMPACTION_PROMPT = `You are compacting a Chunky agent conversation for a successor assistant. Produce a faithful, tight summary that preserves the information needed to continue the work.
 
@@ -30,6 +51,22 @@ Use every section below, writing "None" when empty:
 9. Next Step
 
 Do NOT call tools; respond with ONLY the <summary>...</summary> block.`
+
+export function persistentNotesForCompaction(sessionId: string | undefined, threadId: string | undefined): string {
+  if (!sessionId || !threadId) return ""
+  let remaining = NOTES_REMINDER_CHAR_BUDGET
+  const chunks: string[] = []
+  for (const note of Store.listNotes(sessionId, threadId)) {
+    if (remaining <= 0) break
+    const text = Store.getNote(sessionId, note.threadId, note.path) ?? ""
+    const chunk = `# ${note.path}\n${text}`
+    const included = chunk.slice(0, remaining)
+    chunks.push(included)
+    remaining -= included.length
+  }
+  if (!chunks.length) return ""
+  return `\n\nThe agent's persistent notes below survive compaction and will be re-injected verbatim after the summary; do NOT repeat their content — reference them ('see notes <path>') and cover only what they miss.\n<notes>\n${chunks.join("\n\n")}\n</notes>`
+}
 
 function contentOf(message: any): string {
   if (typeof message?.content === "string") return message.content
@@ -79,15 +116,24 @@ export function chunkyCompactionMiddleware({ model }: { model: any }) {
       const messages = state.messages
       const threadId = typeof runtime?.configurable?.thread_id === "string" ? runtime.configurable.thread_id : undefined
       const sessionId = sessionForThread(threadId) ?? threadId
-      const force = sessionId ? pendingCompactions.has(sessionId) : false
-      const hint = sessionId ? pendingCompactions.get(sessionId) : undefined
+      const force = threadId ? pendingCompactions.has(threadId) : false
+      const hint = threadId ? pendingCompactions.get(threadId) : undefined
       const total = await countTokensApproximately(messages)
-      if (total < COMPACTION_TRIGGER_TOKENS && !force) return
+      if (threadId) contextUsage.set(threadId, { total, at: Date.now() })
+      if (total < COMPACTION_TRIGGER_TOKENS && !force) {
+        // Warn once per context window; compaction removes every message, so the
+        // marker resets naturally (and is dropped from the retained tail below).
+        if (total >= COMPACTION_WARN_TOKENS && !messages.some(isBudgetMarker)) {
+          return { messages: [new SystemMessage({ id: crypto.randomUUID(), content: contextBudgetReminder(total), additional_kwargs: { lc_source: CONTEXT_BUDGET_SOURCE } })] }
+        }
+        return
+      }
       const boundary = tailBoundary(messages)
-      if (boundary <= 0) { if (sessionId) pendingCompactions.delete(sessionId); return }
+      if (boundary <= 0) { if (threadId) pendingCompactions.delete(threadId); return }
       const oldMessages = stripInlineImages(messages.slice(0, boundary), 0)
       const hintText = hint ? `\n\n**User-provided context for this compaction:** ${hint} — ensure it is prominently addressed in the relevant sections.` : ""
-      const prompt = `${CHUNKY_COMPACTION_PROMPT}${hintText}\n\n<messages>\n${oldMessages.map((m) => `${m._getType?.() ?? "message"}: ${contentOf(m)}`).join("\n")}\n</messages>`
+      const notesText = persistentNotesForCompaction(sessionId, threadId)
+      const prompt = `${CHUNKY_COMPACTION_PROMPT}${hintText}${notesText}\n\n<messages>\n${oldMessages.map((m) => `${m._getType?.() ?? "message"}: ${contentOf(m)}`).join("\n")}\n</messages>`
       let cleaned: { text: string; degenerate: boolean } | undefined
       let lastReason = "summary was empty or malformed"
       for (let attempt = 0; attempt < 2; attempt++) {
@@ -104,12 +150,13 @@ export function chunkyCompactionMiddleware({ model }: { model: any }) {
         const emit = runtime?.configurable?.emitSessionEvent
         if (typeof emit === "function" && typeof sessionId === "string") emit({ type: "context.compaction_failed", sessionId, reason: lastReason })
         console.warn(`[chunky] compaction failed: ${lastReason}`)
-        if (sessionId) pendingCompactions.delete(sessionId)
+        if (threadId) pendingCompactions.delete(threadId)
         return
       }
-      if (sessionId) pendingCompactions.delete(sessionId)
+      if (threadId) pendingCompactions.delete(threadId)
       const summary = new HumanMessage({ id: crypto.randomUUID(), content: cleaned.text, additional_kwargs: { lc_source: "summarization" } })
-      return { messages: [new RemoveMessage({ id: REMOVE_ALL_MESSAGES }), summary, ...stripInlineImages(messages.slice(boundary), MAX_INLINE_IMAGE_BYTES)] }
+      const tail = messages.slice(boundary).filter((message) => !isBudgetMarker(message))
+      return { messages: [new RemoveMessage({ id: REMOVE_ALL_MESSAGES }), summary, ...stripInlineImages(tail, MAX_INLINE_IMAGE_BYTES)] }
     },
   })
 }

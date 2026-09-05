@@ -268,3 +268,11 @@ describe("session archival", () => {
     expect(Store.exists(id)).toBe(false)
   })
 })
+
+test("archiving a session deletes its notes with other live session state", async () => {
+  const id = `notes-delete-${crypto.randomUUID()}`
+  Store.createSession(id, "Notes", "/workspace")
+  Store.putNote(id, id, "notes.md", "delete with session")
+  expect(await archiveSession(id)).toBe(true)
+  expect(Store.getNote(id, id, "notes.md")).toBeNull()
+})

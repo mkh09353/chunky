@@ -127,10 +127,18 @@ export async function runShipGoal(input: ShipGoalInput, callerThreadId: string |
   Store.createSession(newSessionId, title, workspace)
   Store.pinSelection(newSessionId, orchestrator)
 
+  // Carry the shipping LEAD's working notes (thread id == session id) into the
+  // new session under its own lead thread id so the orchestrator can read them.
+  // Delegate threads' notes stay behind: they belong to workers of this session.
+  const copiedNotes = Store.copyNotes(fromSessionId, newSessionId, { fromThreadId: fromSessionId, toThreadId: newSessionId }, fromSessionId)
+  const shippedObjective = copiedNotes > 0
+    ? `${objective}\n\nThe shipping session's working notes were carried over; run notes action=list to see them.`
+    : objective
+
   const now = Date.now()
   const goal: Goal = {
     sessionId: newSessionId,
-    objective,
+    objective: shippedObjective,
     status: "active",
     mode: "workflows",
     createdAt: now,
@@ -151,7 +159,7 @@ export async function runShipGoal(input: ShipGoalInput, callerThreadId: string |
   // workflows-mode kickoff prompt wrapping that same objective.
   const fromLabel = `shipped from ${sessionLabel(fromSessionId, Store.titleOf(fromSessionId))}`
   try {
-    deliverToSession(newSessionId, { prompt: goalKickoffPrompt(goal), shown: objective, from: fromLabel })
+    deliverToSession(newSessionId, { prompt: goalKickoffPrompt(goal), shown: shippedObjective, from: fromLabel })
   } catch (err) {
     return `error: created session ${newSessionId.slice(0, 8)} with the goal, but could not start it: ${(err as Error).message}`
   }

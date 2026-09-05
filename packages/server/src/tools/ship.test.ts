@@ -140,6 +140,26 @@ async function main() {
   assert(pinned2!.provider === expected.provider, "provider still defaults to advisor/active when not overridden")
   Store.clearGoal(created2.sessionId)
 
+  console.log("\n--- 3b. notes carry-over ---")
+  Store.putNote(FROM, FROM, "notes.md", "lead checkpoint: relay fix plan")
+  Store.putNote(FROM, `${FROM}:sidekick`, "notes.md", "worker scratch")
+  const before3 = new Set(Store.list().map((s) => s.sessionId))
+  const deliveredBefore = delivered.length
+  const result3 = await runShipGoal({ title: "With notes", objective: BRIEF }, FROM)
+  assert(result3.startsWith("Shipped."), "ship with notes succeeds")
+  const created3 = Store.list().find((s) => !before3.has(s.sessionId))!
+  const carried = Store.listNotes(created3.sessionId)
+  assert(carried.length === 1 && carried[0]!.threadId === created3.sessionId && carried[0]!.path === "notes.md", "only the LEAD note is copied, under the new lead thread id")
+  assert(Store.getNote(created3.sessionId, created3.sessionId, "notes.md") === "lead checkpoint: relay fix plan", "carried note text is intact")
+  const goal3 = Store.getGoal(created3.sessionId)!
+  const carriedSentence = "The shipping session's working notes were carried over; run notes action=list to see them."
+  assert(goal3.objective.startsWith(BRIEF) && goal3.objective.endsWith(carriedSentence), "objective gains the carried-over sentence when notes were copied")
+  assert(delivered.length === deliveredBefore + 1 && delivered[delivered.length - 1]!.shown.endsWith(carriedSentence), "visible brief carries the same sentence")
+  assert(!goal.objective.includes(carriedSentence), "earlier ship without notes did not gain the sentence")
+  Store.clearGoal(created3.sessionId)
+  Store.deleteNote(FROM, FROM, "notes.md")
+  Store.deleteNote(FROM, `${FROM}:sidekick`, "notes.md")
+
   console.log("\n--- 4. handoff prompt ---")
   const plain = shipHandoffPrompt()
   assert(plain.startsWith("[shipit]") && plain.includes("ship_goal"), "handoff prompt instructs a brief + ship_goal call")

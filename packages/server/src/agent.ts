@@ -46,6 +46,8 @@ import {
 } from "./tool-search.ts"
 import { applyPatch } from "./tools/apply-patch.ts"
 import { bash } from "./tools/bash.ts"
+import { notes } from "./tools/notes.ts"
+import { compact_context, get_context_remaining } from "./tools/context.ts"
 import { editTool } from "./tools/edit.ts"
 import { fffind, ffgrep } from "./tools/fff.ts"
 import { goto_definition, find_references } from "./tools/codegraph.ts"
@@ -102,29 +104,32 @@ export function editedFilesForSession(sessionId: string): string[] {
   return found.slice(-30)
 }
 
-export function makePostCompactionReminder() {
+export function makePostCompactionReminder(options: { notesOnly?: boolean } = {}) {
   let handledSummaryId: string | undefined
   return async function postCompactionReminder(
     state: { messages: any[] },
     runtime: { configurable?: { thread_id?: unknown; emitSessionEvent?: unknown } },
-    collect: (sessionId: string) => Parameters<typeof formatSystemReminder>[0] = (sessionId) => {
-      const goal = Store.getGoal(sessionId)
+    collect: (sessionId: string, threadId: string) => Parameters<typeof formatSystemReminder>[0] = (sessionId, threadId) => {
+      const goal = options.notesOnly ? null : Store.getGoal(sessionId)
+      const noteRows = Store.listNotes(sessionId, threadId)
       return {
         goal: goal ? { objective: goal.objective, status: goal.status, mode: goal.mode ?? "direct", turns: goal.turns, maxTurns: goal.maxTurns } : undefined,
-        sidekicks: activeSidekickSummaries(sessionId),
-        children: runningChildSummaries(sessionId),
-        detachedSpawns: runningDetachedSpawnSummaries(sessionId),
-        tasks: snapshotSessionTasks(sessionId).map((task) => ({ taskId: task.taskId, status: task.status, command: task.command.split(/\r?\n/, 1)[0] })),
-        todos: Store.getTodos(sessionId).map((todo) => ({ id: todo.id, content: todo.content, status: todo.status, assignee: todo.assignee })),
-        editedFiles: editedFilesForSession(sessionId).map((path) => ({ path })),
+        sidekicks: options.notesOnly ? undefined : activeSidekickSummaries(sessionId),
+        children: options.notesOnly ? undefined : runningChildSummaries(sessionId),
+        detachedSpawns: options.notesOnly ? undefined : runningDetachedSpawnSummaries(sessionId),
+        tasks: options.notesOnly ? undefined : snapshotSessionTasks(sessionId).map((task) => ({ taskId: task.taskId, status: task.status, command: task.command.split(/\r?\n/, 1)[0] })),
+        todos: options.notesOnly ? undefined : Store.getTodos(sessionId).map((todo) => ({ id: todo.id, content: todo.content, status: todo.status, assignee: todo.assignee })),
+        editedFiles: options.notesOnly ? undefined : editedFilesForSession(sessionId).map((path) => ({ path })),
+        notes: noteRows.map((note) => ({ path: note.path, lines: note.lines, bytes: note.bytes, text: Store.getNote(sessionId, note.threadId, note.path) ?? "" })),
       }
     },
   ) {
     const summary = state.messages.findLast((message) => message?.additional_kwargs?.lc_source === "summarization")
     const summaryId = summary?.id
     if (!summaryId || summaryId === handledSummaryId) return
-    const sessionId = runtime.configurable?.thread_id
-    if (typeof sessionId !== "string") return
+    const threadId = runtime.configurable?.thread_id
+    if (typeof threadId !== "string") return
+    const sessionId = sessionForThread(threadId) ?? threadId
     handledSummaryId = summaryId
     const emitSessionEvent = runtime.configurable?.emitSessionEvent
     // run.ts supplies emitSessionEvent: emit; the server emitter persists context.compacted
@@ -133,8 +138,8 @@ export function makePostCompactionReminder() {
     const removals = state.messages
       .filter((message) => message?.additional_kwargs?.lc_source === "chunky-system-reminder" && message.id)
       .map((message) => new RemoveMessage({ id: message.id }))
-    const reminder = formatSystemReminder(collect(sessionId))
-    const recallLine = "Older context was summarized; the full unabridged transcript remains available via recall. Search by keyword or read seq ranges."
+    const reminder = formatSystemReminder(collect(sessionId, threadId))
+    const recallLine = "Older context was summarized; the full unabridged transcript remains available via recall (list_windows shows each context window; window=-2 reads the previous one; cite seq_start/seq_end). Persistent working context is available via notes (read/list/search)."
     const content = reminder
       ? reminder.replace("\n</system-reminder>", `\n${recallLine}\n</system-reminder>`)
       : `<system-reminder>\n${recallLine}\n</system-reminder>`
@@ -322,6 +327,9 @@ export function executorToolsFor(selection: AgentSelection, sessionId?: string) 
     dualTool(bash),
     monitor,
     recall,
+    notes,
+    get_context_remaining,
+    compact_context,
     getTaskOutput,
     killTask,
     fffind,
@@ -505,11 +513,12 @@ export function buildAdvisorAgent(selection: AgentSelection, sessionId?: string)
   const model = resolveModel(selection, sessionId)
   return createAgent({
     model,
-    tools: [resolveFileToolProfile() === "hashline" ? hashlineRead : read, bash, fffind, ffgrep, goto_definition, find_references],
+    tools: [resolveFileToolProfile() === "hashline" ? hashlineRead : read, bash, fffind, ffgrep, goto_definition, find_references, notes, get_context_remaining, compact_context],
     systemPrompt: ADVISOR_SYSTEM_PROMPT,
     checkpointer: makeCheckpointer(),
     middleware: [
       chunkyCompactionMiddleware({ model }),
+      { name: "postCompactionNotes", beforeModel: makePostCompactionReminder({ notesOnly: true }) },
     ],
   })
 }
@@ -550,16 +559,21 @@ export function getAdvisorAgent(selection: AgentSelection = activeSelection(), s
  * persistent side thread on a stable thread_id, so the checkpointer gives it
  * continuity across handoffs — that's what makes follow-up briefs cheap.
  */
+export function sidekickToolsFor(selection: AgentSelection) {
+  const [fileRead, fileEdit] = sidekickFileToolsFor(selection.model, selection.provider)
+  return [fileRead, fileEdit, bash, notes, recall, get_context_remaining, compact_context, fffind, ffgrep, goto_definition, find_references, write]
+}
+
 export function buildSidekickAgent(selection: AgentSelection, agentsMd?: string | null, sessionId?: string, repoMemory?: string | null) {
   const model = resolveModel(selection, sessionId)
-  const [fileRead, fileEdit] = sidekickFileToolsFor(selection.model, selection.provider)
   return createAgent({
     model,
-    tools: [fileRead, fileEdit, bash, fffind, ffgrep, goto_definition, find_references, write],
+    tools: sidekickToolsFor(selection),
     systemPrompt: sidekickSystemPrompt(agentsMd, resolveFileToolProfile(), repoMemory),
     checkpointer: makeCheckpointer(),
     middleware: [
       chunkyCompactionMiddleware({ model }),
+      { name: "postCompactionNotes", beforeModel: makePostCompactionReminder({ notesOnly: true }) },
     ],
   })
 }

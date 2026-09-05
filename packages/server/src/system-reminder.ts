@@ -11,6 +11,7 @@ export interface ReminderChild { threadId: string; title: string }
 export interface ReminderDetachedSpawn { id: string; title: string; status: string }
 export interface ReminderTodo { id: string; content: string; status: string; assignee?: string }
 export interface ReminderEditedFile { path: string }
+export interface ReminderNote { path: string; lines: number; bytes: number; text?: string }
 export interface LiveSessionState {
   goal?: ReminderGoal
   sidekicks?: ReminderSidekick[]
@@ -19,13 +20,31 @@ export interface LiveSessionState {
   tasks?: ReminderTask[]
   todos?: ReminderTodo[]
   editedFiles?: ReminderEditedFile[]
+  notes?: ReminderNote[]
 }
+
+export const NOTES_REMINDER_CHAR_BUDGET = 24_000
 
 const oneLine = (value: string, max = 140) => {
   const text = value.replace(/\s+/g, " ").trim()
   return text.length > max ? text.slice(0, max - 1) + "…" : text
 }
 const safe = (value: string, max?: number) => oneLine(value, max).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;")
+
+function formatNotes(notes: ReminderNote[]): string[] {
+  if (!notes.length) return []
+  const lines = ["## Session Notes (persist across compaction; maintain with the notes tool)"]
+  let remaining = NOTES_REMINDER_CHAR_BUDGET
+  for (const note of notes) {
+    if (note.text !== undefined && note.text.length <= remaining) {
+      lines.push(`### ${note.path} (${note.lines} lines, ${note.bytes} bytes)`, note.text)
+      remaining -= note.text.length
+    } else {
+      lines.push(`- ${note.path} (${note.lines} lines, ${note.bytes} bytes) — notes action=read`)
+    }
+  }
+  return lines
+}
 
 /** Pure live-state rendering. Callers own collection and session identity. */
 export function formatSystemReminder(state: LiveSessionState): string | null {
@@ -40,6 +59,7 @@ export function formatSystemReminder(state: LiveSessionState): string | null {
   if (state.detachedSpawns?.length) lines.push("## Detached Child Threads", ...state.detachedSpawns.map((c) => `- ${safe(c.id, 80)} (${safe(c.status)}) — ${safe(c.title)}`))
   if (state.tasks?.length) lines.push("## Background Tasks", ...state.tasks.map((t) => `- ${safe(t.taskId, 80)} (${safe(t.status)}) — ${safe(t.command)}`))
   if (state.editedFiles?.length) lines.push("## Files edited this session:", ...state.editedFiles.map((f) => `- ${safe(f.path, 500)}`))
-  if (!lines.length) return null
-  return `<system-reminder>\n${lines.slice(0, 38).join("\n")}\n</system-reminder>`
+  const notes = formatNotes(state.notes ?? [])
+  if (!lines.length && !notes.length) return null
+  return `<system-reminder>\n${[...lines.slice(0, 38), ...notes].join("\n")}\n</system-reminder>`
 }

@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test"
-import { HumanMessage, AIMessage, ToolMessage, RemoveMessage } from "@langchain/core/messages"
-import { cleanSummary, CHUNKY_COMPACTION_PROMPT, MIN_SUMMARY_CHARS, COMPACTION_TRIGGER_TOKENS, COMPACTION_KEEP_MESSAGES, chunkyCompactionMiddleware, requestCompaction, pendingCompaction } from "./compaction.ts"
+import { HumanMessage, AIMessage, ToolMessage, RemoveMessage, SystemMessage } from "@langchain/core/messages"
+import { cleanSummary, CHUNKY_COMPACTION_PROMPT, MIN_SUMMARY_CHARS, COMPACTION_TRIGGER_TOKENS, COMPACTION_KEEP_MESSAGES, COMPACTION_WARN_TOKENS, CONTEXT_BUDGET_SOURCE, chunkyCompactionMiddleware, requestCompaction, pendingCompaction, contextUsageFor, contextBudgetReminder } from "./compaction.ts"
+import { Store } from "./store.ts"
+import { registerThread, unregisterThread } from "./thread-context.ts"
 
 const good = `<summary>${"A useful compacted conversation record. ".repeat(12)}</summary>`
 const big = (count: number, prefix = "message", chars = 44_000) => Array.from({ length: count }, (_, i) => new HumanMessage(`${prefix} ${i} ${"x".repeat(chars)}`))
@@ -23,6 +25,18 @@ describe("Chunky compaction", () => {
     await run({ invoke: async (value: string) => { prompt = value; return { content: good } } }, big(16), { configurable: { thread_id: "force-session" } })
     expect(prompt).toContain("**User-provided context for this compaction:** focus on deployment")
     expect(pendingCompaction("force-session")).toBe(false)
+  })
+
+  test("includes persistent notes with do-not-duplicate guidance", async () => {
+    const sessionId = `compact-notes-${crypto.randomUUID()}`
+    Store.createSession(sessionId)
+    Store.putNote(sessionId, sessionId, "checkpoint.md", "decision: preserve this exact note")
+    requestCompaction(sessionId)
+    let prompt = ""
+    await run({ invoke: async (value: string) => { prompt = value; return { content: good } } }, big(16), { configurable: { thread_id: sessionId } })
+    expect(prompt).toContain("<notes>\n# checkpoint.md\ndecision: preserve this exact note\n</notes>")
+    expect(prompt).toContain("do NOT repeat their content")
+    expect(prompt.indexOf("<notes>")).toBeLessThan(prompt.indexOf("<messages>"))
   })
 
   test("forced compaction skips trivial history and clears pending state", async () => {
@@ -96,5 +110,71 @@ describe("Chunky compaction", () => {
     expect(result.messages[0]).toBeInstanceOf(RemoveMessage)
     expect(result.messages.some((m: any) => m.additional_kwargs?.lc_source === "summarization")).toBe(true)
     expect(result.messages).toHaveLength(17)
+  })
+})
+
+describe("Chunky context budget", () => {
+  test("warns once between the warn and trigger thresholds and records usage", async () => {
+    let calls = 0
+    const model = { invoke: async () => { calls++; return { content: good } } }
+    const threadId = `budget-${crypto.randomUUID()}`
+    const runtime = { configurable: { thread_id: threadId } }
+    expect(COMPACTION_WARN_TOKENS).toBe(150_000)
+    expect(await run(model, big(16, "quiet", 36_000), runtime)).toBeUndefined()
+    const quiet = contextUsageFor(threadId)!
+    expect(quiet.total).toBeLessThan(COMPACTION_WARN_TOKENS)
+
+    const messages: any[] = big(16, "warn", 40_000)
+    const first: any = await run(model, messages, runtime)
+    expect(calls).toBe(0)
+    expect(first.messages).toHaveLength(1)
+    expect(first.messages[0]).toBeInstanceOf(SystemMessage)
+    expect(first.messages[0].additional_kwargs.lc_source).toBe(CONTEXT_BUDGET_SOURCE)
+    expect(first.messages[0].content).toBe(contextBudgetReminder(contextUsageFor(threadId)!.total))
+    expect(first.messages[0].content).toContain("<context_window_reminder>")
+    expect(first.messages[0].content).toContain("notes")
+    expect(first.messages[0].content).toContain("compact_context")
+    expect(first.messages[0].content).toContain(`trigger at ${COMPACTION_TRIGGER_TOKENS}`)
+    const usage = contextUsageFor(threadId)!
+    expect(usage.total).toBeGreaterThanOrEqual(COMPACTION_WARN_TOKENS)
+    expect(usage.total).toBeLessThan(COMPACTION_TRIGGER_TOKENS)
+    expect(usage.at).toBeGreaterThanOrEqual(quiet.at)
+
+    messages.push(first.messages[0])
+    expect(await run(model, messages, runtime)).toBeUndefined()
+    expect(calls).toBe(0)
+  })
+
+  test("compaction drops the budget marker from the retained tail", async () => {
+    const messages: any[] = big(16, "full")
+    const marker = new SystemMessage({ id: "budget-marker", content: contextBudgetReminder(160_000), additional_kwargs: { lc_source: CONTEXT_BUDGET_SOURCE } })
+    messages.splice(14, 0, marker)
+    const result: any = await run({ invoke: async () => ({ content: good }) }, messages)
+    expect(result.messages[0]).toBeInstanceOf(RemoveMessage)
+    expect(result.messages).not.toContain(marker)
+    expect(result.messages.some((m: any) => m.additional_kwargs?.lc_source === CONTEXT_BUDGET_SOURCE)).toBe(false)
+    // The marker occupied one of the 15 retained tail slots; it is dropped, leaving 14 messages + the summary.
+    expect(result.messages.filter((m: any) => !(m instanceof RemoveMessage))).toHaveLength(COMPACTION_KEEP_MESSAGES)
+  })
+
+  test("forced compaction is keyed per thread: a sidekick request never compacts the lead", async () => {
+    const lead = `lead-${crypto.randomUUID()}`
+    const sidekick = `${lead}:sidekick`
+    registerThread(sidekick, { sessionId: lead } as any)
+    try {
+      let calls = 0
+      const model = { invoke: async () => { calls++; return { content: good } } }
+      requestCompaction(sidekick, "wrap up the brief")
+      expect(await run(model, big(16, "lead", 30_000), { configurable: { thread_id: lead } })).toBeUndefined()
+      expect(calls).toBe(0)
+      expect(pendingCompaction(sidekick)).toBe(true)
+      expect(pendingCompaction(lead)).toBe(false)
+      const result: any = await run(model, big(16, "sidekick", 30_000), { configurable: { thread_id: sidekick } })
+      expect(calls).toBe(1)
+      expect(result.messages[0]).toBeInstanceOf(RemoveMessage)
+      expect(pendingCompaction(sidekick)).toBe(false)
+    } finally {
+      unregisterThread(sidekick)
+    }
   })
 })

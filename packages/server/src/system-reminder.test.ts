@@ -12,3 +12,25 @@ describe("system reminder formatter", () => {
     expect(result.split("\n").length).toBeLessThanOrEqual(40)
   })
 })
+
+test("notes bypass the 38-line state cap", () => {
+  const noteText = Array.from({ length: 60 }, (_, i) => `note line ${i}`).join("\n")
+  const result = formatSystemReminder({
+    tasks: Array.from({ length: 100 }, (_, i) => ({ taskId: `${i}`, status: "running", command: "state" })),
+    notes: [{ path: "notes.md", lines: 60, bytes: Buffer.byteLength(noteText), text: noteText }],
+  })!
+  expect(result).toContain("note line 59")
+  expect(result).toContain("## Session Notes (persist across compaction; maintain with the notes tool)")
+})
+
+test("notes inline whole files within 24k and index remaining files", () => {
+  const inline = "a".repeat(23_990)
+  const indexed = "secret-index-only"
+  const result = formatSystemReminder({ notes: [
+    { path: "recent.md", lines: 1, bytes: inline.length, text: inline },
+    { path: "older.md", lines: 1, bytes: indexed.length, text: indexed },
+  ] })!
+  expect(result).toContain(inline)
+  expect(result).not.toContain(indexed)
+  expect(result).toContain("- older.md (1 lines, 17 bytes) — notes action=read")
+})

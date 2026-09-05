@@ -2058,7 +2058,7 @@ const server = Bun.serve(withRequestLog(withCors({
     }
 
     // Match /api/sessions/:id/(events|history|messages|interrupt|goal|ship|cache)
-    const m = pathname.match(/^\/api\/sessions\/([^/]+)\/(events|history|messages|interrupt|stop-delegate|delegates|compact|goal|todos|ship|cache|rewind-points|rewind|fork|agent-config)$/)
+    const m = pathname.match(/^\/api\/sessions\/([^/]+)\/(events|history|messages|interrupt|stop-delegate|delegates|compact|goal|todos|notes|ship|cache|rewind-points|rewind|fork|agent-config)$/)
     if (m) {
       const [, sessionId, kind] = m
       // An interrupted restore may already have recreated the session row while
@@ -2556,6 +2556,7 @@ const server = Bun.serve(withRequestLog(withCors({
         }
       }
       if (kind === "todos" && req.method === "GET") return json(Store.getTodos(sessionId))
+      if (kind === "notes" && req.method === "GET") return json(Store.listNotes(sessionId).map((note) => ({ ...note, text: Store.getNote(sessionId, note.threadId, note.path) ?? "" })))
     }
 
     return new Response("not found", { status: 404, headers: corsHeaders(req) })

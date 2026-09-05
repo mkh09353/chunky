@@ -61,6 +61,17 @@ import { discardSidekickCandidate, recordSidekickComplete, recordSidekickStart, 
 
 /** Reasoning-effort cap for `big`-tier workflow agents: keep a lower configured
  *  effort, clamp anything at/above medium (or unset) to medium. */
+export const ANTHROPIC_SIDEKICK_TOOLS = [
+  "mcp__chunky__read",
+  "mcp__chunky__bash",
+  "mcp__chunky__fffind",
+  "mcp__chunky__ffgrep",
+  "mcp__chunky__write",
+  "mcp__chunky__edit",
+  "mcp__chunky__notes",
+  "mcp__chunky__recall",
+] as const
+
 const EFFORT_RANK: Record<string, number> = { low: 0, medium: 1, high: 2, xhigh: 3, max: 4 }
 export function capEffortAtMedium(effort: string | undefined): "low" | "medium" {
   return effort && (EFFORT_RANK[effort] ?? 1) < 1 ? (effort as "low") : "medium"
@@ -990,6 +1001,7 @@ export class ThreadManager implements ThreadSpawner {
     }
 
     const advisorThreadId = `${this.rootId}:advisor`
+    registerThread(advisorThreadId, this)
     if (isIncognitoSession(this.rootId)) registerIncognitoThread(this.rootId)
     const content = opts.pointers
       ? `${opts.question}\n\nWhere to look / context:\n${opts.pointers}`
@@ -1056,6 +1068,7 @@ export class ThreadManager implements ThreadSpawner {
     } finally {
       dog.dispose()
       unregisterLiveDelegate(live)
+      unregisterThread(advisorThreadId)
       resolveLive()
       this.emit({ type: "thread.status", threadId: advisorThreadId, status: terminalThreadStatus(finalText), title: "Advisor" })
     }
@@ -1217,6 +1230,7 @@ export class ThreadManager implements ThreadSpawner {
     }
 
     if (isIncognitoSession(this.rootId)) registerIncognitoThread(this.rootId)
+    registerThread(sidekickThreadId, this)
     const title = isNamedSeat ? `Sidekick (${seat})` : "Sidekick"
     const sidekickKey = isNamedSeat ? seat! : "default"
     let sessionSidekicks = activeSidekicks.get(this.rootId)
@@ -1257,14 +1271,7 @@ export class ThreadManager implements ThreadSpawner {
             emit: dog.emit,
             eventThreadId: sidekickThreadId,
             systemPrompt: sidekickSystemPrompt(agentsMd, "standard", repoMemory),
-            allowedTools: [
-              "mcp__chunky__read",
-              "mcp__chunky__bash",
-              "mcp__chunky__fffind",
-              "mcp__chunky__ffgrep",
-              "mcp__chunky__write",
-              "mcp__chunky__edit",
-            ],
+            allowedTools: [...ANTHROPIC_SIDEKICK_TOOLS],
             workspace: this.workspace,
             agentsMd,
             abort: dog.abort,
@@ -1336,6 +1343,7 @@ export class ThreadManager implements ThreadSpawner {
       dog.dispose()
       rememberTerminalSidekick(this.rootId, sidekickKey, sidekickThreadId, cancelled ? "cancelled" : ok ? "completed" : "failed")
       unregisterLiveDelegate(live)
+      unregisterThread(sidekickThreadId)
       resolveLive()
       this.emit({ type: "thread.status", threadId: sidekickThreadId, status: terminalThreadStatus(finalText), title })
       sessionSidekicks.delete(sidekickKey)

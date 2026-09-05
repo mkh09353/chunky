@@ -63,7 +63,7 @@ export async function archiveSession(sessionId: string): Promise<boolean> {
   renameSync(temp, target)
   retrySqliteTransaction(db, () => {
     db.query("INSERT OR REPLACE INTO archived_sessions (id,title,workspace,created_at,last_activity,archived_at,byte_length,sha256) VALUES (?,?,?,?,?,?,?,?)").run(sessionId, session.title, session.workspace, session.created_at, session.last_activity, Date.now(), byteLength, sha256)
-    for (const table of ["events", "session_turns", "goals", "todos", "session_compaction_artifacts"]) db.query(`DELETE FROM ${table} WHERE session_id=?`).run(sessionId)
+    for (const table of ["events", "session_turns", "goals", "todos", "session_notes", "session_compaction_artifacts"]) db.query(`DELETE FROM ${table} WHERE session_id=?`).run(sessionId)
     db.query("DELETE FROM sessions WHERE id=?").run(sessionId)
   })
   // The session list stream resolves this id against live rows only, so the

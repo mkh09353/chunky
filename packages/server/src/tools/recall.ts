@@ -51,6 +51,8 @@ export function recallEventText(event: AgentEvent): { speaker: string; text: str
       return { speaker: "workflow", text: event.message }
     case "context.compacted":
       return { speaker: "system", text: "Context compacted — older messages summarized." }
+    case "notes.update":
+      return { speaker: "notes", text: `${event.action}: ${event.path} (${event.lines} lines, ${event.bytes} bytes)` }
     default:
       return null
   }
@@ -102,6 +104,44 @@ export function renderRecallEvents(rows: TranscriptRow[], searchMode: boolean): 
   return lines.length ? lines.join("\n") : "No readable transcript events matched."
 }
 
+/** A context window is the span of durable events between consecutive
+ * `context.compacted` markers; the marker closes the window it ends. Window 1
+ * starts at the first event; the last window (after the final compaction, or the
+ * only window when nothing was compacted) is the current one. */
+export type RecallWindow = { index: number; seqStart: number; seqEnd: number; current: boolean }
+
+export function recallWindows(history: Array<{ seq: number; event: AgentEvent }>): RecallWindow[] {
+  const compactSeqs = history.flatMap((row) => row.event.type === "context.compacted" ? [row.seq] : [])
+  const firstSeq = history[0]?.seq ?? 0
+  const lastSeq = history.at(-1)?.seq ?? firstSeq
+  const starts = [firstSeq, ...compactSeqs.map((seq) => seq + 1)]
+  const ends = [...compactSeqs, lastSeq]
+  return starts.map((seqStart, i) => ({ index: i + 1, seqStart, seqEnd: Math.max(seqStart, ends[i]!), current: i === starts.length - 1 }))
+}
+
+/** Positive `window` counts from the first window; negative counts from the end
+ * (-1 = current, -2 = the window before the latest compaction). */
+export function resolveRecallWindow(windows: RecallWindow[], window: number): RecallWindow | undefined {
+  if (!Number.isInteger(window) || window === 0) return undefined
+  return window > 0 ? windows[window - 1] : windows[windows.length + window]
+}
+
+export function describeRecallWindows(
+  history: Array<{ seq: number; event: AgentEvent }>,
+  turns: Array<{ turnIndex: number; startEventSeq: number }>,
+  windows: RecallWindow[] = recallWindows(history),
+): string {
+  return windows.map((window) => {
+    const rows = history.filter((row) => row.seq >= window.seqStart && row.seq <= window.seqEnd)
+    const toolCalls = rows.filter((row) => row.event.type === "tool.start").length
+    const turnIndexes = turns.filter((turn) => turn.startEventSeq >= window.seqStart && turn.startEventSeq <= window.seqEnd).map((turn) => turn.turnIndex)
+    const turnText = !turnIndexes.length ? "no turns" : turnIndexes.length === 1 ? `turn ${turnIndexes[0]}` : `turns ${Math.min(...turnIndexes)}–${Math.max(...turnIndexes)}`
+    const firstUser = rows.find((row) => row.event.type === "message.user" && !row.event.from)
+    const firstText = firstUser?.event.type === "message.user" ? JSON.stringify(shorten(firstUser.event.text, 80)) : "(none)"
+    return `window ${window.index}${window.current ? " (current)" : ""}: seq ${window.seqStart}–${window.seqEnd}, ${turnText}, ${rows.length} events, ${toolCalls} tool calls, first user message: ${firstText}`
+  }).join("\n")
+}
+
 export function recallMatcher(query: string): (text: string) => boolean {
   // Regex-lite: accept a normal JS regexp when valid, otherwise treat the query
   // literally. Reset lastIndex makes global/sticky patterns deterministic.
@@ -140,14 +180,30 @@ export function filterRecallEvents(
   return rows
 }
 
+export const recallInputShape = {
+  query: z.string().optional().describe("Case-insensitive text or regex-lite search query."),
+  seq_start: z.number().int().nonnegative().optional().describe("First event sequence number to read (inclusive)."),
+  seq_end: z.number().int().nonnegative().optional().describe("Last event sequence number to read (inclusive)."),
+  session_id: z.string().optional().describe("Session id; defaults to the current session."),
+  limit: z.number().int().positive().optional().describe(`Maximum events returned (default ${DEFAULT_LIMIT}, max ${MAX_LIMIT}).`),
+  tool: z.string().optional().describe("Match tool.start/tool.end by tool name."),
+  speaker: z.enum(["user", "assistant", "reasoning", "tool"]).optional(),
+  turn_start: z.number().int().positive().optional(),
+  turn_end: z.number().int().positive().optional(),
+  before_compaction: z.boolean().optional().describe("Only events before the latest persisted context.compacted marker."),
+  window: z.number().int().optional().describe("Restrict to one context window: 1-based from the first, negative from the end (-1 = current, -2 = previous)."),
+  list_windows: z.boolean().optional().describe("List every context window with its seq range, turns, event counts, and first user message; ignores other filters."),
+}
+
 export const recall = tool(
   async (
-    { query, seq_start, seq_end, session_id, limit, tool, speaker, turn_start, turn_end, before_compaction }: {
-      query?: string; seq_start?: number; seq_end?: number; session_id?: string; limit?: number; tool?: string; speaker?: string; turn_start?: number; turn_end?: number; before_compaction?: boolean
+    { query, seq_start, seq_end, session_id, limit, tool, speaker, turn_start, turn_end, before_compaction, window, list_windows }: {
+      query?: string; seq_start?: number; seq_end?: number; session_id?: string; limit?: number; tool?: string; speaker?: string; turn_start?: number; turn_end?: number; before_compaction?: boolean; window?: number; list_windows?: boolean
     },
     config?: unknown,
   ) => {
-    if (!query?.trim() && seq_start == null) return "error: provide query or seq_start."
+    if (!list_windows && !query?.trim() && seq_start == null && window == null) return "error: provide query, seq_start, window, or list_windows."
+    if (window != null && (!Number.isInteger(window) || window === 0)) return "error: window must be a non-zero integer (positive from the first window, negative from the current one)."
     if (seq_start != null && (!Number.isInteger(seq_start) || seq_start < 0)) return "error: seq_start must be a non-negative integer."
     if (seq_end != null && (!Number.isInteger(seq_end) || seq_end < 0)) return "error: seq_end must be a non-negative integer."
     if (seq_start != null && seq_end != null && seq_end < seq_start) return "error: seq_end must be greater than or equal to seq_start."
@@ -162,32 +218,33 @@ export const recall = tool(
     const history = Store.historyWithSeq(targetSession)
     const compactSeq = history.findLast((row) => row.event.type === "context.compacted")?.seq
     const turns = Store.turns(targetSession)
+    const windows = recallWindows(history)
+    if (list_windows) return `Context windows for session ${targetSession} (${windows.length}):\n${describeRecallWindows(history, turns, windows)}`
     const turnStartSeq = turn_start != null ? turns.find((t: any) => t.turnIndex === turn_start)?.startEventSeq : undefined
     const turnEndSeq = turn_end != null ? turns.find((t: any) => t.turnIndex === turn_end)?.endEventSeq : undefined
-    let rows = filterRecallEvents(history, { query, seqStart: turnStartSeq ?? seq_start, seqEnd: turnEndSeq ?? seq_end, tool, speaker, beforeSeq: before_compaction ? compactSeq : undefined })
+    let seqStart = turnStartSeq ?? seq_start
+    let seqEnd = turnEndSeq ?? seq_end
+    if (window != null) {
+      const selected = resolveRecallWindow(windows, window)
+      if (!selected) return `error: window ${window} does not exist; this session has ${windows.length} window(s) — use list_windows.`
+      seqStart = Math.max(seqStart ?? selected.seqStart, selected.seqStart)
+      seqEnd = Math.min(seqEnd ?? selected.seqEnd, selected.seqEnd)
+    }
+    let rows = filterRecallEvents(history, { query, seqStart, seqEnd, tool, speaker, beforeSeq: before_compaction ? compactSeq : undefined })
     const total = rows.length
     rows = rows.slice(0, pageSize)
     const mode = query?.trim() ? "Search results" : "Transcript"
+    const scope = window != null ? ` (window ${window > 0 ? window : windows.length + 1 + window} of ${windows.length}, seq ${seqStart}–${seqEnd})` : ""
     const suffix = total > rows.length ? `\n\n[${total - rows.length} more matching events; use seq_start/seq_end to page by the seq numbers above.]` : ""
-    return `${mode} for session ${targetSession}:\n${renderRecallEvents(rows, !!query?.trim())}${suffix}`
+    return `${mode} for session ${targetSession}${scope}:\n${renderRecallEvents(rows, !!query?.trim())}${suffix}`
   },
   {
     name: "recall",
     description:
       "Search or page the durable session transcript, especially to retrieve context from before compaction. " +
-      "Use query for case-insensitive substring/regex-lite search; results include seq numbers, then use seq_start and seq_end to read a range. " +
+      "Use query for case-insensitive substring/regex-lite search; every result line starts with its seq number, then use seq_start and seq_end to read a range (cite those seqs in notes). " +
+      "Context windows are the spans between compactions: list_windows summarizes each (seq range, turns, first user message, current marked); window=N or window=-2 (previous window; -1 = current) restricts the seq range. " +
       "Optionally filter by tool, speaker, turn_start/turn_end, or before_compaction; filters compose with query and seq ranges. Output is capped; narrow queries/ranges for more detail.",
-    schema: z.object({
-      query: z.string().optional().describe("Case-insensitive text or regex-lite search query."),
-      seq_start: z.number().int().nonnegative().optional().describe("First event sequence number to read (inclusive)."),
-      seq_end: z.number().int().nonnegative().optional().describe("Last event sequence number to read (inclusive)."),
-      session_id: z.string().optional().describe("Session id; defaults to the current session."),
-      limit: z.number().int().positive().optional().describe(`Maximum events returned (default ${DEFAULT_LIMIT}, max ${MAX_LIMIT}).`),
-      tool: z.string().optional().describe("Match tool.start/tool.end by tool name."),
-      speaker: z.enum(["user", "assistant", "reasoning", "tool"]).optional(),
-      turn_start: z.number().int().positive().optional(),
-      turn_end: z.number().int().positive().optional(),
-      before_compaction: z.boolean().optional().describe("Only events before the latest persisted context.compacted marker."),
-    }).refine((value) => !!value.query?.trim() || value.seq_start != null, { message: "Provide query or seq_start." }),
+    schema: z.object(recallInputShape).refine((value) => !!value.query?.trim() || value.seq_start != null || value.window != null || !!value.list_windows, { message: "Provide query, seq_start, window, or list_windows." }),
   },
 )

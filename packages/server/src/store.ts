@@ -102,6 +102,16 @@ db.exec(`
     session_id TEXT PRIMARY KEY,
     json TEXT NOT NULL
   );
+  CREATE TABLE IF NOT EXISTS session_notes (
+    session_id TEXT NOT NULL,
+    thread_id TEXT NOT NULL,
+    path TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY(session_id, thread_id, path)
+  );
+  CREATE INDEX IF NOT EXISTS session_notes_updated ON session_notes(session_id, updated_at DESC);
   CREATE TABLE IF NOT EXISTS session_turns (
     session_id TEXT NOT NULL, turn_index INTEGER NOT NULL, start_event_seq INTEGER NOT NULL,
     end_event_seq INTEGER, snapshot_commit TEXT, anchor_checkpoint_id TEXT, user_text TEXT NOT NULL,
@@ -676,6 +686,59 @@ export const Store = {
   },
   putTodos(sessionId: string, todos: TodoSnapshot[]): void { backend(sessionId).query("INSERT INTO todos (session_id,json) VALUES (?,?) ON CONFLICT(session_id) DO UPDATE SET json=excluded.json").run(sessionId, JSON.stringify(todos)) },
   clearTodos(sessionId: string): void { backend(sessionId).query("DELETE FROM todos WHERE session_id=?").run(sessionId) },
+  getNote(sessionId: string, threadId: string, path: string): string | null {
+    const row = backend(sessionId).query("SELECT text FROM session_notes WHERE session_id=? AND thread_id=? AND path=?").get(sessionId, threadId, path) as { text: string } | null
+    return row?.text ?? null
+  },
+  putNote(sessionId: string, threadId: string, path: string, text: string): void {
+    const now = Date.now()
+    backend(sessionId).query(`INSERT INTO session_notes (session_id,thread_id,path,text,created_at,updated_at) VALUES (?,?,?,?,?,?)
+      ON CONFLICT(session_id,thread_id,path) DO UPDATE SET text=excluded.text,updated_at=excluded.updated_at`).run(sessionId, threadId, path, text, now, now)
+  },
+  listNotes(sessionId: string, threadId?: string): Array<{ threadId: string; path: string; bytes: number; lines: number; updatedAt: number }> {
+    const rows = (threadId === undefined
+      ? backend(sessionId).query("SELECT thread_id,path,text,updated_at FROM session_notes WHERE session_id=? ORDER BY updated_at DESC,path ASC").all(sessionId)
+      : backend(sessionId).query("SELECT thread_id,path,text,updated_at FROM session_notes WHERE session_id=? AND thread_id=? ORDER BY updated_at DESC,path ASC").all(sessionId, threadId)
+    ) as Array<{ thread_id: string; path: string; text: string; updated_at: number }>
+    return rows.map((row) => ({ threadId: row.thread_id, path: row.path, bytes: Buffer.byteLength(row.text), lines: row.text ? row.text.split(/\r?\n/).length : 0, updatedAt: row.updated_at }))
+  },
+  deleteNote(sessionId: string, threadId: string, path: string): boolean {
+    return backend(sessionId).query("DELETE FROM session_notes WHERE session_id=? AND thread_id=? AND path=?").run(sessionId, threadId, path).changes > 0
+  },
+  searchNotes(sessionId: string, threadId: string | undefined, query: string): Array<{ threadId: string; path: string; line: number; text: string }> {
+    const needle = query.toLocaleLowerCase()
+    const notes = Store.listNotes(sessionId, threadId)
+    const matches: Array<{ threadId: string; path: string; line: number; text: string }> = []
+    for (const note of notes) {
+      const text = Store.getNote(sessionId, note.threadId, note.path) ?? ""
+      for (const [index, line] of text.split(/\r?\n/).entries()) {
+        if (line.toLocaleLowerCase().includes(needle)) matches.push({ threadId: note.threadId, path: note.path, line: index + 1, text: line })
+      }
+    }
+    return matches
+  },
+  /** Copy every note of `fromSessionId` into `toSessionId`, remapping one thread id
+   * (typically the lead: the source session id becomes the target session id) and
+   * leaving other thread ids as they are. When `onlyThreadId` is set, only that
+   * thread's notes are copied. Existing notes at the same path are overwritten.
+   * Returns the number of notes copied. */
+  copyNotes(fromSessionId: string, toSessionId: string, remap: { fromThreadId: string; toThreadId: string }, onlyThreadId?: string): number {
+    const rows = (onlyThreadId === undefined
+      ? backend(fromSessionId).query("SELECT thread_id,path,text,created_at,updated_at FROM session_notes WHERE session_id=? ORDER BY updated_at ASC,path ASC").all(fromSessionId)
+      : backend(fromSessionId).query("SELECT thread_id,path,text,created_at,updated_at FROM session_notes WHERE session_id=? AND thread_id=? ORDER BY updated_at ASC,path ASC").all(fromSessionId, onlyThreadId)
+    ) as Array<{ thread_id: string; path: string; text: string; created_at: number; updated_at: number }>
+    if (rows.length === 0) return 0
+    const target = backend(toSessionId)
+    const insert = target.query(`INSERT INTO session_notes (session_id,thread_id,path,text,created_at,updated_at) VALUES (?,?,?,?,?,?)
+      ON CONFLICT(session_id,thread_id,path) DO UPDATE SET text=excluded.text,created_at=excluded.created_at,updated_at=excluded.updated_at`)
+    retrySqliteTransaction(target, () => {
+      for (const row of rows) {
+        const threadId = row.thread_id === remap.fromThreadId ? remap.toThreadId : row.thread_id
+        insert.run(toSessionId, threadId, row.path, row.text, row.created_at, row.updated_at)
+      }
+    })
+    return rows.length
+  },
   createSession(id: string, title = "New session", workspace: string | null = LAUNCH_WORKSPACE, repositoryScope: "repository" | "none" = "repository"): void {
     const now = Date.now()
     if (isIncognitoSession(id)) {
@@ -1225,6 +1288,10 @@ export const Store = {
       stmtBranch.run(childId, parentId, last.n ?? -1, kind, directive ?? null, now)
       if (kind === "worktree" && worktree) stmtWorktree.run(childId, workspace, worktree.gitCommonDir, worktree.branch, parentId, now)
     })
+    // Working notes travel with the transcript; the lead's notes move to the
+    // child's lead thread id. Runs after the fork transaction commits because
+    // copyNotes opens its own (non-nestable) transaction.
+    Store.copyNotes(parentId, childId, { fromThreadId: parentId, toThreadId: childId })
     notifySessionChanged(childId)
   },
 

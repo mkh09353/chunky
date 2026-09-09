@@ -20,7 +20,8 @@ import { buildRepoLessSystemPrompt, buildSystemPrompt } from "./prompt.ts"
 import { appBrowserTier } from "./app-browser.ts"
 import { hasAppZoo } from "./app-zoo.ts"
 import { effectiveSidekickConfig, effectiveSidekickSeats, listSidekickSeats, resolveReviewSelection, sidekickFor, type AgentSelection } from "./providers/registry.ts"
-import { ANTHROPIC_SDK_ISOLATION_OPTIONS, anthropicOAuthEnvironment } from "./providers/anthropic-sdk.ts"
+import { ANTHROPIC_SDK_ISOLATION_OPTIONS, anthropicAuthFailureState, anthropicOAuthEnvironment, describeAnthropicAuthFailure, setAnthropicAuthState } from "./providers/anthropic-sdk.ts"
+import { isProviderAuthFailure, ProviderAuthError, providerAuthLabel } from "./providers/auth-error.ts"
 import { promptTokensOf, usageForAnthropicCache, usageFromAnthropicAssistant, usageFromAnthropicResult } from "./usage.ts"
 import { cacheModelKey, noteRequest } from "./cache-watch.ts"
 import type { CacheContext, InputImage } from "./run.ts"
@@ -543,6 +544,21 @@ export async function translateAnthropicMessages(
   // surfacing the failure as a thrown error (instead of returning "") is the
   // only way a delegating caller (sidekick/advisor/spawn) learns what happened.
   let lastErrorDetail: string | null = null
+  // One sign-in failure produces up to three SDK signals (assistant error code,
+  // failed result, thrown stream error). Surface exactly ONE actionable bubble,
+  // remember the verified failure for /api/auth status, and mark the thrown
+  // error so callers don't add a generic duplicate.
+  let authFailure: string | null = null
+  // The assistant error CODE precedes the result whose text is more specific
+  // ("Not logged in" vs "token invalid"); hold it until the result or the end.
+  let pendingAuthCode: string | null = null
+  const noteAuthFailure = (text: string): string => {
+    if (authFailure) return authFailure
+    authFailure = describeAnthropicAuthFailure(text)
+    setAnthropicAuthState(anthropicAuthFailureState(authFailure), authFailure)
+    emit({ type: "error", code: "provider-auth", provider: "anthropic", message: `${providerAuthLabel("anthropic")}: ${authFailure}` })
+    return authFailure
+  }
   // Last SINGLE-request usage seen this turn ≈ the live context size. The
   // `result` totals are cumulative across the whole tool loop and would
   // overstate the context many-fold on tool-heavy turns.
@@ -629,18 +645,23 @@ export async function translateAnthropicMessages(
       if (message.type === "assistant" && message.error) {
         closeAssistant()
         lastErrorDetail = String(message.error)
-        emit({ type: "error", message: `Anthropic request failed: ${message.error}` })
+        if (isProviderAuthFailure(lastErrorDetail)) pendingAuthCode = lastErrorDetail
+        else emit({ type: "error", message: `Anthropic request failed: ${message.error}` })
         continue
       }
 
       if (message.type === "result") {
         closeAssistant()
-        if (message.subtype === "success") {
+        if (message.subtype === "success" && !message.is_error) {
           if (textChunks.length === 0 && message.result) appendText(message.result)
         } else {
-          const detail = message.errors.join("; ") || message.subtype
+          // A "success" result with is_error carries the API error text in
+          // `result` (e.g. "Not logged in · Please run /login"); never show it
+          // as assistant prose.
+          const detail = (message.subtype === "success" ? message.result : message.errors.join("; ")) || pendingAuthCode || message.subtype
           lastErrorDetail = detail
-          emit({ type: "error", message: `Anthropic Agent SDK failed: ${detail}` })
+          if (isProviderAuthFailure(detail) || pendingAuthCode) noteAuthFailure(isProviderAuthFailure(detail) ? detail : pendingAuthCode!)
+          else emit({ type: "error", message: `Anthropic Agent SDK failed: ${detail}` })
         }
         // Result carries the turn's usage; arm the cache watch with its prompt
         // size so the next turn can detect a cold cache. Works on subscription
@@ -663,15 +684,26 @@ export async function translateAnthropicMessages(
     }
   } catch (error) {
     closeAssistant((error as Error)?.name === "AbortError" ? "interrupted" : "error")
+    // The SDK throws "Claude Code returned an error result: …" after a failed
+    // result: same failure, already reported (or report it now, once).
+    const text = (error as Error)?.message ?? String(error)
+    if (authFailure || ((error as Error)?.name !== "AbortError" && (isProviderAuthFailure(text) || pendingAuthCode))) {
+      throw new ProviderAuthError("anthropic", noteAuthFailure(isProviderAuthFailure(text) ? text : pendingAuthCode ?? text), { emitted: true, cause: error })
+    }
     throw error
   } finally {
     closeAssistant()
   }
 
+  // An assistant auth code with no result to refine it is still an auth failure.
+  if (pendingAuthCode && !authFailure) noteAuthFailure(pendingAuthCode)
   if (!sawInit) throw new Error("anthropic: Agent SDK stream ended before initialization")
   const text = textChunks.join("")
   // A run that produced no text at all is a failure, not a report — throw so the
   // caller returns a real error string instead of a silent empty result.
+  if (text.trim() === "" && authFailure) {
+    throw new ProviderAuthError("anthropic", `Anthropic Agent SDK run produced no output: ${lastErrorDetail ?? authFailure}`, { emitted: true })
+  }
   if (text.trim() === "" && lastErrorDetail) {
     throw new Error(`Anthropic Agent SDK run produced no output: ${lastErrorDetail}`)
   }

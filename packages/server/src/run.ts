@@ -8,7 +8,8 @@
 import type { MessageEndReason, UsageDelta } from "@chunky/protocol"
 import { getAgent, RECURSION_LIMIT } from "./agent.ts"
 import { taggedEmitter, type Emit } from "./event-emitter.ts"
-import { activeSelection, getProvider, providerRuntime } from "./providers/registry.ts"
+import { activeSelection, getProvider, providerAuthErrorEvent, providerRuntime } from "./providers/registry.ts"
+import { isReportedProviderAuthError } from "./providers/auth-error.ts"
 import { composePortablePrompt } from "./portable-handoff.ts"
 import { ThreadManager } from "./threads.ts"
 import { usageFromLangChainMessage, promptTokensOf } from "./usage.ts"
@@ -426,11 +427,7 @@ export async function runAgent(
   try {
     await getProvider(selection.provider)?.ensureAuth?.()
   } catch (err) {
-    const detail = (err as Error)?.message ?? String(err)
-    emit({
-      type: "error",
-      message: `${selection.provider}: sign-in expired — run /login to re-authenticate. (${detail})`,
-    })
+    emit(providerAuthErrorEvent(selection.provider, err))
     emit({ type: "session.status", sessionId, status: "idle" })
     return
   }
@@ -565,7 +562,9 @@ export async function runAgent(
       pauseGoal(sessionId, emit, "⏸ Goal paused (interrupted). Use /goal resume to keep going.")
     } else {
       const message = (err as Error)?.message ?? String(err)
-      emit({ type: "error", message })
+      // A provider-auth failure was already surfaced by the runner as its one
+      // actionable bubble; a second generic bubble would only add noise.
+      if (!isReportedProviderAuthError(err)) emit({ type: "error", message })
       // Usage/rate-limit failures are "resume later", not "something broke" —
       // the distinction sets the right expectation in the pause marker.
       pauseGoal(

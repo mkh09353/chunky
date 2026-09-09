@@ -10,7 +10,8 @@
 // persisted via ./settings so it survives a restart.
 import type { BaseChatModel } from "@langchain/core/language_models/chat_models"
 import { ChatOpenAI } from "@langchain/openai"
-import type { LoginInitiation } from "@chunky/protocol"
+import type { AgentEvent, LoginInitiation, ProviderAuthInfo } from "@chunky/protocol"
+import { providerAuthLabel } from "./auth-error.ts"
 import { enrichModels, type ModelInfo } from "./models-catalog.ts"
 import { chatOptionsFor } from "./model-options.ts"
 import { assertSelectionAllowed, incognitoAllowlistFor, isIncognitoSession, providerScope } from "../incognito.ts"
@@ -88,8 +89,41 @@ interface ProviderBase {
    * instead of hanging inside the streaming request. No-op for API-key providers.
    */
   ensureAuth?: () => Promise<void>
+  /** Cached verified sign-in state (never probes). Providers without it are
+   *  synthesized from `ready()` by providerAuthInfo(). */
+  authInfo?: () => ProviderAuthInfo
   /** Initiate a login flow (OAuth providers only). Optional method: "device" | "browser". */
   login?: (method?: string) => Promise<LoginInitiation>
+  /** Provider-owned sign-out (e.g. `claude auth logout`) run in addition to AuthStore removal. */
+  logout?: () => Promise<void>
+}
+
+/** Verified sign-in state for any provider: the provider's own cached view when
+ *  it has one, else "ok"/"missing" from credential presence. */
+export function providerAuthInfo(provider: Pick<ProviderDef, "ready" | "authInfo" | "login">): ProviderAuthInfo {
+  if (provider.authInfo) return provider.authInfo()
+  return provider.ready()
+    ? { state: "ok", canLogin: Boolean(provider.login) }
+    : { state: "missing", canLogin: Boolean(provider.login) }
+}
+
+/** The single actionable `error` event for a failed sign-in preflight
+ *  (ensureAuth threw): clients key on `code`/`provider` to offer re-login. */
+export function providerAuthErrorEvent(provider: string, error: unknown): Extract<AgentEvent, { type: "error" }> {
+  const detail = (error as Error)?.message ?? String(error)
+  return {
+    type: "error",
+    code: "provider-auth",
+    provider,
+    message: `${providerAuthLabel(provider, getProvider(provider)?.label)}: ${detail}`,
+  }
+}
+
+/** `ready` for list/status rows: a verified failure overrides credential presence. */
+export function providerReady(provider: Pick<ProviderDef, "ready">, auth: ProviderAuthInfo): boolean {
+  if (auth.state === "ok") return true
+  if (auth.state === "expired" || auth.state === "missing") return false
+  return provider.ready()
 }
 
 /** LangChain providers build a chat model; alternate providers own the whole

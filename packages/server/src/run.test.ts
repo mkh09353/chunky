@@ -3,6 +3,7 @@ import { effectiveSessionSelection, mergeInterjectionBoundaries, onFirstStreamCh
 import { appendTaskOutput, createTask, finishTask, peekTaskReminders, resetTasks, taskSpillPath } from "./tasks.ts"
 import { activeSelection, getProvider, registerProvider, setActiveProviderId, setSelection } from "./providers/registry.ts"
 import { Store } from "./store.ts"
+import type { AgentEvent } from "@chunky/protocol"
 
 describe("translateStream", () => {
   test("submission callback waits for the first provider stream chunk", async () => {
@@ -117,8 +118,14 @@ test("failed provider preflight leaves background-task reminders pending", async
   finishTask(task, 0)
 
   try {
-    await runAgent(sessionId, "hello", () => {})
+    const events: AgentEvent[] = []
+    await runAgent(sessionId, "hello", (event) => events.push(event))
     expect(peekTaskReminders(sessionId).ids).toEqual([task.taskId])
+    // Exactly one actionable provider-auth bubble, then a clean idle.
+    expect(events.filter((event) => event.type === "error")).toEqual([
+      { type: "error", code: "provider-auth", provider: "grok", message: "Test preflight failure: expired" },
+    ])
+    expect(events.at(-1)).toEqual({ type: "session.status", sessionId, status: "idle" })
   } finally {
     Store.pinSelection(sessionId, null)
     registerProvider(originalProvider)

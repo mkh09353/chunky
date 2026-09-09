@@ -13,7 +13,8 @@ import {
   translateAnthropicMessages,
   type AnthropicRunnerDependencies,
 } from "./anthropic-runner.ts"
-import { anthropicOAuthEnvironment } from "./providers/anthropic-sdk.ts"
+import { anthropicAuthInfo, anthropicOAuthEnvironment, resetAnthropicAuthState } from "./providers/anthropic-sdk.ts"
+import { isReportedProviderAuthError, ProviderAuthError } from "./providers/auth-error.ts"
 import { AuthStore } from "./providers/auth-store.ts"
 import type { AgentSelection } from "./providers/registry.ts"
 import { join } from "node:path"
@@ -204,6 +205,91 @@ async function main() {
       !String(err).includes("Claude subscription OAuth is not active")
   }
   assert(nativeAuthFailure, "missing subscription must not mask the SDK's native authentication failure")
+
+  // One sign-in failure → exactly one actionable provider-auth bubble, even
+  // though the SDK reports it three times (assistant error code, failed
+  // result, thrown stream error) and the runner adds a "no output" failure.
+  {
+    const authEvents: AgentEvent[] = []
+    let thrown: unknown
+    async function* failingStream(): AsyncGenerator<SDKMessage> {
+      yield { type: "system", subtype: "init", apiKeySource: "none", tools: ["mcp__chunky__read"] } as SDKMessage
+      yield { type: "assistant", error: "authentication_failed", message: { content: [] } } as unknown as SDKMessage
+      yield { type: "result", subtype: "error_during_execution", errors: ["Failed to authenticate. API Error: 401 OAuth access token is invalid."] } as unknown as SDKMessage
+      throw new Error("Claude Code returned an error result: Failed to authenticate. API Error: 401 OAuth access token is invalid.")
+    }
+    try {
+      await translateAnthropicMessages(failingStream(), "sidekick-thread", (event) => authEvents.push(event))
+    } catch (err) { thrown = err }
+    const errors = authEvents.filter((event) => event.type === "error")
+    assert(errors.length === 1, `auth failure must emit exactly one error event, got ${errors.length}: ${JSON.stringify(errors)}`)
+    const only = errors[0] as Extract<AgentEvent, { type: "error" }>
+    assert(only.code === "provider-auth" && only.provider === "anthropic", "auth error must be tagged provider-auth/anthropic")
+    assert(only.threadId === "sidekick-thread", "auth error must stay on the delegate thread")
+    assert(only.message === "Claude: Failed to authenticate. API Error: 401 OAuth access token is invalid.", `auth error must prefer the result's specific text, got ${only.message}`)
+    assert(thrown instanceof ProviderAuthError && thrown.emitted && thrown.provider === "anthropic", "runner must throw a marked ProviderAuthError so callers skip the duplicate bubble")
+    assert(isReportedProviderAuthError(thrown), "thrown auth error must read as already reported")
+    assert(anthropicAuthInfo({ isReady: () => true }).state === "expired", "a live auth failure must be remembered as expired for /api/auth status")
+    resetAnthropicAuthState()
+
+    // A failed result with no thrown stream error still ends in ONE bubble and
+    // a marked "no output" error.
+    const resultOnly: AgentEvent[] = []
+    let resultThrown: unknown
+    try {
+      await translateAnthropicMessages(messages([
+        { type: "system", subtype: "init", apiKeySource: "none", tools: ["mcp__chunky__read"] },
+        { type: "result", subtype: "error", errors: ["Failed to authenticate: OAuth session expired and could not be refreshed"] },
+      ]), undefined, (event) => resultOnly.push(event))
+    } catch (err) { resultThrown = err }
+    assert(resultOnly.filter((event) => event.type === "error").length === 1, "result-only auth failure must emit one error event")
+    assert(isReportedProviderAuthError(resultThrown) && String(resultThrown).includes("OAuth session expired and could not be refreshed"), "no-output auth failure must be marked and keep the detail")
+    resetAnthropicAuthState()
+
+    // The real SDK shape for a signed-out CLI: assistant code, then a "success"
+    // result with is_error carrying the text, then the SDK's thrown wrapper.
+    const signedOut: AgentEvent[] = []
+    let signedOutThrown: unknown
+    async function* signedOutStream(): AsyncGenerator<SDKMessage> {
+      yield { type: "system", subtype: "init", apiKeySource: "none", tools: ["mcp__chunky__read"] } as SDKMessage
+      yield { type: "assistant", error: "authentication_failed", message: { content: [] } } as unknown as SDKMessage
+      yield { type: "result", subtype: "success", is_error: true, result: "Not logged in · Please run /login" } as unknown as SDKMessage
+      throw new Error("Claude Code returned an error result: Not logged in · Please run /login")
+    }
+    try { await translateAnthropicMessages(signedOutStream(), undefined, (event) => signedOut.push(event)) } catch (err) { signedOutThrown = err }
+    const signedOutErrors = signedOut.filter((event) => event.type === "error") as Extract<AgentEvent, { type: "error" }>[]
+    assert(signedOutErrors.length === 1 && signedOutErrors[0]!.message === "Claude: Not logged in to Claude", `signed-out CLI must emit one human bubble, got ${JSON.stringify(signedOutErrors)}`)
+    assert(!signedOut.some((event) => event.type === "message.delta"), "the is_error result text must never render as assistant prose")
+    assert(isReportedProviderAuthError(signedOutThrown), "signed-out failure must throw a marked error")
+    assert(anthropicAuthInfo({ isReady: () => false }).state === "missing", "a signed-out CLI must be remembered as missing")
+    resetAnthropicAuthState()
+
+    // An assistant auth code that never gets a result is still one bubble.
+    const codeOnly: AgentEvent[] = []
+    let codeThrown: unknown
+    try {
+      await translateAnthropicMessages(messages([
+        { type: "system", subtype: "init", apiKeySource: "none", tools: ["mcp__chunky__read"] },
+        { type: "assistant", error: "authentication_failed", message: { content: [] } },
+      ]), undefined, (event) => codeOnly.push(event))
+    } catch (err) { codeThrown = err }
+    const codeErrors = codeOnly.filter((event) => event.type === "error") as Extract<AgentEvent, { type: "error" }>[]
+    assert(codeErrors.length === 1 && codeErrors[0]!.code === "provider-auth" && /expired or invalid/.test(codeErrors[0]!.message), "assistant-only auth code must emit one human bubble")
+    assert(isReportedProviderAuthError(codeThrown), "assistant-only auth code must throw a marked error")
+    resetAnthropicAuthState()
+
+    // Non-auth failures keep the existing generic bubbles.
+    const generic: AgentEvent[] = []
+    try {
+      await translateAnthropicMessages(messages([
+        { type: "system", subtype: "init", apiKeySource: "none", tools: ["mcp__chunky__read"] },
+        { type: "assistant", error: "rate_limit", message: { content: [] } },
+        { type: "result", subtype: "error", errors: ["API Error: 429 rate limited"] },
+      ]), undefined, (event) => generic.push(event))
+    } catch (err) { assert(!(err instanceof ProviderAuthError), "rate limits are not auth failures") }
+    assert(generic.filter((event) => event.type === "error").length === 2, "non-auth failures keep their existing error events")
+    assert(anthropicAuthInfo({ isReady: () => true }).state === "ok", "non-auth failures must not touch the verified auth state")
+  }
   const firstPartyWithoutSubscription = await runAnthropicAgent(accountRequest, accountDependencies(
     { subscriptionType: null, apiProvider: "firstParty" },
     [

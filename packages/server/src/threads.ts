@@ -20,6 +20,7 @@ import {
   childSelection,
   getProvider,
   listSidekickSeats,
+  providerAuthErrorEvent,
   providerRuntime,
   resolveAdvisorSelection,
   resolveReviewSelection,
@@ -29,6 +30,7 @@ import {
   type AgentSelectionOverride,
 } from "./providers/registry.ts"
 import { registerThread, unregisterThread, type ThreadSpawner } from "./thread-context.ts"
+import { isReportedProviderAuthError, ProviderAuthError } from "./providers/auth-error.ts"
 import { LAUNCH_WORKSPACE } from "./workspace.ts"
 import { assertSelectionAllowed, isIncognitoSession } from "./incognito.ts"
 import { notifySessionChanged } from "./session-changes.ts"
@@ -213,8 +215,22 @@ function completeDelegationFromReport(id: string, text: string): void {
   else Store.completeDelegation(id, reportIsOk(text))
 }
 
-function emitDelegateFailure(emit: Emit, threadId: string, message: string, cancelled: boolean): void {
+/** ensureAuth preflight that surfaces the one actionable provider-auth bubble
+ *  and rethrows a marked error so the surrounding catch stays quiet. */
+async function preflightProviderAuth(provider: string, emit: Emit): Promise<void> {
+  try {
+    await getProvider(provider)?.ensureAuth?.()
+  } catch (err) {
+    const event = providerAuthErrorEvent(provider, err)
+    emit(event)
+    throw new ProviderAuthError(provider, event.message, { emitted: true, cause: err })
+  }
+}
+
+function emitDelegateFailure(emit: Emit, threadId: string, message: string, cancelled: boolean, error?: unknown): void {
   if (cancelled) return
+  // The runner already emitted the one actionable provider-auth bubble.
+  if (isReportedProviderAuthError(error)) return
   emit({ type: "error", message, threadId } as AgentEvent)
 }
 
@@ -652,8 +668,9 @@ export class ThreadManager implements ThreadSpawner {
       try {
         await getProvider(selection.provider)?.ensureAuth?.()
       } catch (err) {
-        const detail = (err as Error)?.message ?? String(err)
-        return `error: provider "${selection.provider}" sign-in expired — run /login to re-authenticate. (${detail})`
+        const event = providerAuthErrorEvent(selection.provider, err)
+        this.emit(event)
+        return `error: ${event.message} — the user must re-authenticate this provider before it can be used.`
       }
     }
 
@@ -745,7 +762,7 @@ export class ThreadManager implements ThreadSpawner {
           transient: isTransientDelegateFailure(err, dog, { userAborted }),
           userAborted,
         })) {
-          emitDelegateFailure(this.emit, childThreadId, message, cancelled)
+          emitDelegateFailure(this.emit, childThreadId, message, cancelled, err)
           result = cancelled ? message : `error: ${message}`
         } else {
           this.emit({
@@ -838,7 +855,7 @@ export class ThreadManager implements ThreadSpawner {
     let report = ""
     const dog = createDelegateWatchdog({ emit, label: `detached child thread "${record.title}"`, parent: record.abort })
     try {
-      if (preflightAgentProvider) await getProvider(selection.provider)?.ensureAuth?.()
+      if (preflightAgentProvider) await preflightProviderAuth(selection.provider, emit)
       if (providerRuntime(selection.provider) === "anthropic-sdk") {
         const { runAnthropicAgent } = await import("./anthropic-runner.ts")
         report = await runAnthropicAgent({
@@ -861,7 +878,7 @@ export class ThreadManager implements ThreadSpawner {
       const message = dog.timedOut() ? dog.timeoutMessage() : cancelled
         ? (record.abort.signal.reason instanceof Error ? record.abort.signal.reason.message : String(record.abort.signal.reason ?? "cancelled by user"))
         : ((err as Error)?.message ?? String(err))
-      emitDelegateFailure(emit, record.childThreadId, message, cancelled)
+      emitDelegateFailure(emit, record.childThreadId, message, cancelled, err)
       report = cancelled ? message : `error: ${message}`
     } finally {
       dog.dispose()
@@ -995,8 +1012,9 @@ export class ThreadManager implements ThreadSpawner {
       try {
         await getProvider(advisorSel.provider)?.ensureAuth?.()
       } catch (err) {
-        const detail = (err as Error)?.message ?? String(err)
-        return `error: advisor provider "${advisorSel.provider}" sign-in expired — run /login to re-authenticate. (${detail})`
+        const event = providerAuthErrorEvent(advisorSel.provider, err)
+        this.emit(event)
+        return `error: advisor unavailable — ${event.message}. The user must re-authenticate this provider.`
       }
     }
 
@@ -1101,7 +1119,7 @@ export class ThreadManager implements ThreadSpawner {
     let ok = false
     const dog = createDelegateWatchdog({ emit: this.emit, label: "review", parent: this.abort })
     try {
-      if (this.preflightReviewProvider) await getProvider(selection.provider)?.ensureAuth?.()
+      if (this.preflightReviewProvider) await preflightProviderAuth(selection.provider, this.emit)
       if (providerRuntime(selection.provider) === "anthropic-sdk") {
         const { runAnthropicAgent } = await import("./anthropic-runner.ts")
         report = await runAnthropicAgent({
@@ -1123,7 +1141,7 @@ export class ThreadManager implements ThreadSpawner {
       ok = !report.startsWith("error:")
     } catch (err) {
       const message = dog.timedOut() ? dog.timeoutMessage() : ((err as Error)?.message ?? String(err))
-      this.emit({ type: "error", message, threadId: reviewThreadId } as AgentEvent)
+      if (!isReportedProviderAuthError(err)) this.emit({ type: "error", message, threadId: reviewThreadId } as AgentEvent)
       report = `error: ${message}`
     } finally {
       dog.dispose()
@@ -1216,8 +1234,9 @@ export class ThreadManager implements ThreadSpawner {
       try {
         await getProvider(sidekickSel.provider)?.ensureAuth?.()
       } catch (err) {
-        const detail = (err as Error)?.message ?? String(err)
-        const message = `error: sidekick provider "${sidekickSel.provider}" sign-in expired — run /login to re-authenticate. (${detail})`
+        const event = providerAuthErrorEvent(sidekickSel.provider, err)
+        this.emit(event)
+        const message = `error: sidekick unavailable — ${event.message}. The user must re-authenticate this provider.`
         recordSidekickComplete({
           delegationId,
           sessionId: this.rootId,
@@ -1308,7 +1327,7 @@ export class ThreadManager implements ThreadSpawner {
           transient: isTransientDelegateFailure(err, dog, { userAborted }),
           userAborted,
         })) {
-          emitDelegateFailure(this.emit, sidekickThreadId, message, cancelled)
+          emitDelegateFailure(this.emit, sidekickThreadId, message, cancelled, err)
           finalText = cancelled ? message : `error: ${message}`
         } else {
           this.emit({

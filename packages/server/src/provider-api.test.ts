@@ -57,4 +57,43 @@ describe("provider setup API", () => {
     expect(response.status).toBe(200)
     expect(await response.json()).toEqual({ ok: false, error: "Broken Custom models endpoint returned 401" })
   })
+
+  test("provider rows and auth status carry verified sign-in state", async () => {
+    const list = await request("/api/providers", { method: "GET", headers })
+    expect(list.status).toBe(200)
+    const { providers } = await list.json() as { providers: Array<{ id: string; ready: boolean; auth: { state: string; canLogin: boolean; detail?: string; checkedAt?: number } }> }
+    const custom = providers.find((row) => row.id === "broken-custom")
+    expect(custom).toMatchObject({ ready: true, auth: { state: "ok", canLogin: false } })
+    const anthropic = providers.find((row) => row.id === "anthropic")
+    expect(anthropic?.auth.canLogin).toBe(true)
+    expect(["ok", "expired", "missing", "unknown"]).toContain(anthropic?.auth.state ?? "absent")
+
+    const status = await request(ROUTES.authStatus("broken-custom"), { method: "GET", headers })
+    expect(status.status).toBe(200)
+    expect(await status.json()).toEqual({ ready: true, auth: { state: "ok", canLogin: false } })
+
+    // Anthropic status is the cached verified view: no probe runs here.
+    const claude = await request(ROUTES.authStatus("anthropic"), { method: "GET", headers })
+    expect(claude.status).toBe(200)
+    const claudeStatus = await claude.json() as { ready: boolean; auth: { state: string; canLogin: boolean } }
+    expect(typeof claudeStatus.ready).toBe("boolean")
+    expect(claudeStatus.auth.canLogin).toBe(true)
+    expect(claudeStatus.ready).toBe(claudeStatus.auth.state === "ok")
+
+    const unknown = await request(ROUTES.authStatus("nope"), { method: "GET", headers })
+    expect(unknown.status).toBe(404)
+  })
+
+  test("logout removes stored credentials and reports missing", async () => {
+    const stored = await request(ROUTES.providerKey("logout-provider"), { method: "POST", headers, body: JSON.stringify({ key: "logout-secret" }) })
+    expect(stored.status).toBe(200)
+    const logout = await request(ROUTES.authLogout("broken-custom"), { method: "POST", headers })
+    expect(logout.status).toBe(200)
+    expect(await logout.json()).toEqual({ ok: true })
+    expect(JSON.parse(readFileSync(authPath, "utf8"))["broken-custom"]).toBeUndefined()
+    const status = await request(ROUTES.authStatus("broken-custom"), { method: "GET", headers })
+    expect(await status.json()).toEqual({ ready: false, auth: { state: "missing", canLogin: false } })
+    const test = await request(ROUTES.authTest("broken-custom"), { method: "POST", headers })
+    expect(await test.json()).toEqual({ ok: false, error: "Missing API key for broken-custom" })
+  })
 })

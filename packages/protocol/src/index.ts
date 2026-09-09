@@ -220,7 +220,10 @@ export type AgentEvent =
   /** A narrator line from a running workflow (start/finish, and each log() call),
    *  rendered in the owning thread's transcript. */
   | { type: "workflow.log"; runId: string; threadId?: string; message: string }
-  | { type: "error"; message: string; threadId?: string }
+  /** `code: "provider-auth"` marks a provider sign-in failure (expired/missing
+   *  OAuth session) that a client can resolve by re-running that provider's
+   *  login flow; `provider` is the provider id to (re)authenticate. */
+  | { type: "error"; message: string; threadId?: string; code?: "provider-auth"; provider?: string }
 
 /** Lifecycle of a session goal. `active` runs the continuation loop; `paused`
  *  stops it (turn budget hit, interrupted, or user-paused) but keeps the goal;
@@ -759,6 +762,34 @@ export interface AuthTestResult {
   error?: string
 }
 
+/** Verified sign-in state of a provider. `ok`/`expired` come from a real
+ *  credential probe; `missing` means no credential is present; `unknown` means
+ *  the last probe was inconclusive (network/timeout) or none has run yet. */
+export type ProviderAuthState = "ok" | "expired" | "missing" | "unknown"
+export interface ProviderAuthInfo {
+  state: ProviderAuthState
+  /** Human-readable reason when state !== "ok" (e.g. "OAuth session expired and could not be refreshed"). */
+  detail?: string
+  /** Epoch ms of the last real verification, if any. */
+  checkedAt?: number
+  /** Whether POST /api/auth/:id/login can (re)authenticate this provider. */
+  canLogin: boolean
+}
+/** GET /api/auth/:id/status. `ready` is kept for older clients; `auth` is the
+ *  cached verified state (no probe — POST ROUTES.authTest forces one). */
+export interface ProviderAuthStatusResponse { ready: boolean; auth: ProviderAuthInfo }
+
+/** One row of GET /api/providers. */
+export interface ProviderListRow {
+  id: string
+  label: string
+  billing: string
+  ready: boolean
+  active: boolean
+  auth: ProviderAuthInfo
+}
+export interface ProvidersListResponse { providers: ProviderListRow[] }
+
 /** Result of POST ROUTES.authLogout after persisted provider credentials are removed. */
 export interface AuthLogoutResult {
   ok: boolean
@@ -826,8 +857,10 @@ export const ROUTES = {
   relay: `/api/relay`,
   relayBegin: `/api/relay/begin`,
   relayPoll: `/api/relay/poll`,
-  // POST -> AuthTestResult. Preflight provider credentials (OAuth refresh where needed).
+  // POST -> AuthTestResult. Preflight provider credentials (OAuth refresh where needed); always runs a real probe.
   authTest: (provider: string) => `/api/auth/${encodeURIComponent(provider)}/test`,
+  // GET -> ProviderAuthStatusResponse. Cached verified sign-in state (no probe).
+  authStatus: (provider: string) => `/api/auth/${encodeURIComponent(provider)}/status`,
   // POST -> AuthLogoutResult. Remove the provider’s persisted credentials.
   authLogout: (provider: string) => `/api/auth/${encodeURIComponent(provider)}/logout`,
   mcpServers: `/api/mcp/servers`,

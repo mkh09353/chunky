@@ -4,8 +4,9 @@
 // and the Anthropic runner resumes the same session. User interrupts, auth
 // failures, and stale-runtime crashes are not transport and must not retry.
 import { isStaleRuntimeError } from "./staleRuntime.ts"
+import { isProviderAuthFailure, ProviderAuthError } from "./providers/auth-error.ts"
 
-const AUTH_FAILURE = /sign-in expired|\brun \/login\b|\b401\b/i
+const AUTH_FAILURE = /sign-in expired|\brun \/login\b|\b401\b|provider-auth/i
 const CONNECTION_REFUSED = /ECONNREFUSED/i
 const TRANSIENT_FAILURE = /empty response|socket connection was closed|fetch failed|ECONNRESET|Premature close|\bterminated\b/i
 const ABORTED = /\baborted\b/i
@@ -47,8 +48,9 @@ export function isTransientDelegateFailure(
 ): boolean {
   if (opts?.userAborted) return false
   if (isStaleRuntimeError(error)) return false
+  if (error instanceof ProviderAuthError) return false
   const text = errorText(error)
-  if (AUTH_FAILURE.test(text) || CONNECTION_REFUSED.test(text)) return false
+  if (AUTH_FAILURE.test(text) || isProviderAuthFailure(text) || CONNECTION_REFUSED.test(text)) return false
   if (dog?.timedOut()) return true
   if (TRANSIENT_FAILURE.test(text)) return true
   if (ABORTED.test(text)) {

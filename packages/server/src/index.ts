@@ -34,6 +34,9 @@ import {
   type AppZooResponse,
   type AuthTestResult,
   type AuthLogoutResult,
+  type ProviderAuthStatusResponse,
+  type ProviderListRow,
+  type ProvidersListResponse,
   type ProviderKeyRequest,
   type ProviderKeyResponse,
   type McpServersResponse,
@@ -92,6 +95,8 @@ import {
   listAllKnownModelsFor,
   listModelsFor,
   listProviders,
+  providerAuthInfo,
+  providerReady,
   resolveAdvisorSelection,
   isSolo,
   resolveReviewSelection,
@@ -106,6 +111,7 @@ import {
   type Speed,
 } from "./providers/registry.ts"
 import { AuthStore } from "./providers/auth-store.ts"
+import { ensureAnthropicAuth } from "./providers/anthropic-sdk.ts"
 import { submitProviderKey } from "./provider-key-requests.ts"
 import { providerQuotas } from "./provider-quotas.ts"
 import { requestCompaction } from "./compaction.ts"
@@ -1000,18 +1006,22 @@ const server = Bun.serve(withRequestLog(withCors({
       return json({ onboardedAt: setOnboardedAt() })
     }
 
-    // GET /api/providers -> { providers: [{ id, label, ready, active }] }
+    // GET /api/providers -> ProvidersListResponse ({ id, label, billing, ready, active, auth })
     if (req.method === "GET" && pathname === "/api/providers") {
       const active = activeProviderId()
       return json({
-        providers: listProviders(new URL(req.url).searchParams.get("session")).map((p) => ({
-          id: p.id,
-          label: p.label,
-          billing: p.billing,
-          ready: p.ready(),
-          active: p.id === active,
-        })),
-      })
+        providers: listProviders(new URL(req.url).searchParams.get("session")).map((p): ProviderListRow => {
+          const auth = providerAuthInfo(p)
+          return {
+            id: p.id,
+            label: p.label,
+            billing: p.billing,
+            ready: providerReady(p, auth),
+            active: p.id === active,
+            auth,
+          }
+        }),
+      } satisfies ProvidersListResponse)
     }
 
     if (req.method === "GET" && pathname === ROUTES.providerQuotas) {
@@ -1148,7 +1158,8 @@ const server = Bun.serve(withRequestLog(withCors({
     }
 
     // POST /api/auth/:id/test -> AuthTestResult. OAuth providers refresh/probe
-    // through ensureAuth; key-only providers report their existing readiness.
+    // through ensureAuth (always a real probe: Anthropic bypasses its success
+    // cache here); key-only providers report their existing readiness.
     const testMatch = pathname.match(/^\/api\/auth\/([^/]+)\/test$/)
     if (testMatch && req.method === "POST") {
       const id = testMatch[1]!
@@ -1156,10 +1167,12 @@ const server = Bun.serve(withRequestLog(withCors({
       if (!provider) return json({ ok: false, error: `unknown provider "${id}"` } satisfies AuthTestResult, 404)
       try {
         await Promise.race([
-          provider.ensureAuth ? provider.ensureAuth() : Promise.resolve(),
-          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timed out")), 15_000)),
+          id === "anthropic" ? ensureAnthropicAuth({ force: true }) : provider.ensureAuth ? provider.ensureAuth() : Promise.resolve(),
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error("timed out")), 20_000)),
         ])
-        if (!provider.ready()) return json({ ok: false, error: `provider "${id}" is not ready` } satisfies AuthTestResult)
+        const auth = providerAuthInfo(provider)
+        if (auth.state === "expired" || auth.state === "missing") return json({ ok: false, error: auth.detail ?? `provider "${id}" is not ready` } satisfies AuthTestResult)
+        if (!providerReady(provider, auth)) return json({ ok: false, error: `provider "${id}" is not ready` } satisfies AuthTestResult)
         return json({ ok: true } satisfies AuthTestResult)
       } catch (err) {
         return json({ ok: false, error: (err as Error)?.message ?? String(err) } satisfies AuthTestResult)
@@ -1168,21 +1181,27 @@ const server = Bun.serve(withRequestLog(withCors({
 
     // POST /api/auth/:id/logout -> AuthLogoutResult. ready() is intentionally
     // unchanged; its normal AuthStore lookup immediately reflects this removal.
+    // Providers with their own credential store (Claude OAuth) also run their
+    // provider-owned sign-out.
     const logoutMatch = pathname.match(/^\/api\/auth\/([^/]+)\/logout$/)
     if (logoutMatch && req.method === "POST") {
       const id = logoutMatch[1]!
-      if (!getProvider(id)) return json({ error: `unknown provider "${id}"` }, 404)
+      const provider = getProvider(id)
+      if (!provider) return json({ error: `unknown provider "${id}"` }, 404)
       AuthStore.remove(id)
+      try { await provider.logout?.() } catch { /* best effort; AuthStore removal already happened */ }
       return json({ ok: true } satisfies AuthLogoutResult)
     }
 
-    // GET /api/auth/:id/status -> { ready }
+    // GET /api/auth/:id/status -> ProviderAuthStatusResponse (cached verified
+    // state; never probes — POST /test does).
     const statusMatch = pathname.match(/^\/api\/auth\/([^/]+)\/status$/)
     if (statusMatch && req.method === "GET") {
       const id = statusMatch[1]!
       const provider = getProvider(id)
       if (!provider) return json({ error: `unknown provider "${id}"` }, 404)
-      return json({ ready: provider.ready() })
+      const auth = providerAuthInfo(provider)
+      return json({ ready: providerReady(provider, auth), auth } satisfies ProviderAuthStatusResponse)
     }
 
     // POST /api/providers/:id/select -> { active } (set active provider for new sessions)

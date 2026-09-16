@@ -21,7 +21,7 @@ writeFileSync(settingsPath, JSON.stringify({
   serverToken: token,
   customProviders: [{ id: "broken-custom", label: "Broken Custom", baseURL: `http://127.0.0.1:${provider.port}/v1` }],
 }))
-writeFileSync(authPath, JSON.stringify({ "broken-custom": { type: "api", key: "bad-key" } }))
+writeFileSync(authPath, JSON.stringify({ "broken-custom": { type: "api", key: "bad-key" }, telnyx: { type: "api", key: "telnyx-test-key" } }))
 
 const server = reserveIntegrationServer({ prefix: "chunky-provider-api-", root, port, env: { ...process.env, CHUNKY_PORT: String(port), CHUNKY_SETTINGS: settingsPath, CHUNKY_AUTH: authPath, CHUNKY_DB: join(root, "chunky.db"), CHUNKY_RELAY: "0" } })
 const baseUrl = `http://127.0.0.1:${port}`
@@ -79,6 +79,47 @@ describe("provider setup API", () => {
     const enable = await request(path, { method: "PUT", headers, body: JSON.stringify({ enabled: true }) })
     expect(enable.status).toBe(200)
     expect(JSON.parse(readFileSync(settingsPath, "utf8")).disabledProviders).not.toContain("broken-custom")
+  })
+
+  test("remembered thread model survives a fresh session while existing pins stay isolated", async () => {
+    const create = async () => (await (await request("/api/sessions", { method: "POST", headers, body: "{}" })).json()).sessionId as string
+    const select = async (sessionId: string, model: string, remember?: boolean) => request("/api/model/select", {
+      method: "POST", headers, body: JSON.stringify({ sessionId, provider: "telnyx", model, remember }),
+    })
+    const previous = await create()
+    expect((await select(previous, "previous-model")).status).toBe(200)
+    const current = await create()
+    expect((await select(current, "chosen-model", true)).status).toBe(200)
+    const saved = JSON.parse(readFileSync(settingsPath, "utf8"))
+    expect(saved.provider).toBe("telnyx")
+    expect(saved.selections.telnyx.model).toBe("chosen-model")
+    expect(saved.activeMode).toBeUndefined()
+    const fresh = await create() // /clear creates a new session the same way.
+    for (const id of [current, fresh]) {
+      const selected = await (await request(`/api/model?sessionId=${id}`, { method: "GET", headers })).json()
+      expect(selected).toMatchObject({ provider: "telnyx", model: "chosen-model", solo: true })
+    }
+    expect(await (await request(`/api/model?sessionId=${previous}`, { method: "GET", headers })).json()).toMatchObject({ model: "previous-model" })
+    expect((await select(previous, "private-to-thread", false)).status).toBe(200)
+    expect(JSON.parse(readFileSync(settingsPath, "utf8")).selections.telnyx.model).toBe("chosen-model")
+  })
+
+  test("incognito selections never become normal defaults even when remember is requested", async () => {
+    const before = readFileSync(settingsPath, "utf8")
+    const createdMode = await request("/api/modes", { method: "POST", headers, body: JSON.stringify({ name: "private-choice", spec: { provider: "telnyx", model: "private-start", solo: true, incognito: { allow: ["telnyx"] } } }) })
+    expect(createdMode.status).toBe(200)
+    const applied = await request("/api/modes/private-choice/apply", { method: "POST", headers })
+    expect(applied.status).toBe(200)
+    const created = await (await request("/api/sessions", { method: "POST", headers, body: "{}" })).json()
+    expect(created.incognito).toBe(true)
+    const normalBefore = readFileSync(settingsPath, "utf8")
+    const selected = await request("/api/model/select", { method: "POST", headers, body: JSON.stringify({ sessionId: created.sessionId, provider: "telnyx", model: "private-new", remember: true }) })
+    expect(selected.status).toBe(200)
+    expect((await selected.json()).model).toBe("private-new")
+    expect(readFileSync(settingsPath, "utf8")).toBe(normalBefore)
+    // Restore the normal default through the public route.
+    const saved = JSON.parse(before)
+    await request("/api/model/select", { method: "POST", headers, body: JSON.stringify({ provider: saved.provider, ...saved.selections[saved.provider] }) })
   })
 
   test("custom-provider auth test reports authenticated models endpoint failure", async () => {

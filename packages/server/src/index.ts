@@ -1356,17 +1356,18 @@ const server = Bun.serve(withRequestLog(withCors({
       return json({ provider, model: sel.model ?? null, effort: sel.effort ?? null, speed: sel.speed ?? null, solo: getSolo() })
     }
 
-    // POST /api/model/select { provider, model, effort?, speed? }
+    // POST /api/model/select { provider, model, effort?, speed?, sessionId?, remember? }
     //   -> persists the selection, makes that provider active, invalidates the
     //      agent cache (so the next turn rebuilds with the new model/knobs), and
     //      returns the now-active selection.
     if (req.method === "POST" && pathname === "/api/model/select") {
-      let body: { provider?: unknown; model?: unknown; effort?: unknown; speed?: unknown; sessionId?: unknown }
+      let body: { provider?: unknown; model?: unknown; effort?: unknown; speed?: unknown; sessionId?: unknown; remember?: unknown }
       try {
         body = (await req.json()) as typeof body
       } catch {
         return json({ error: "invalid JSON body" }, 400)
       }
+      if (body.remember !== undefined && typeof body.remember !== "boolean") return json({ error: "remember must be a boolean" }, 400)
       const provider = typeof body.provider === "string" ? body.provider : ""
       if (!getProvider(provider)) return json({ error: `unknown provider "${provider}"` }, 404)
       const model = typeof body.model === "string" && body.model.length > 0 ? body.model : undefined
@@ -1383,8 +1384,17 @@ const server = Bun.serve(withRequestLog(withCors({
       const speed =
         typeof body.speed === "string" && SPEEDS.includes(body.speed) ? (body.speed as Speed) : undefined
 
+      if (sessionId && !Store.exists(sessionId)) return json({ error: "unknown session" }, 404)
+      // TUI selections can also become the next conversation's default. Keep
+      // explicit session-only callers and incognito choices isolated.
+      if (!sessionId || (body.remember === true && !isIncognitoSession(sessionId))) {
+        setActiveProviderId(provider)
+        setSelection(provider, { model, effort, speed })
+        Store.invalidateGlobalCompactionArtifacts(provider, model)
+        setActiveMode(undefined)
+        setSolo(true)
+      }
       if (sessionId) {
-        if (!Store.exists(sessionId)) return json({ error: "unknown session" }, 404)
         // A raw model choice supersedes a complete mode pin for this session.
         Store.setAgentConfig(sessionId, null)
         Store.pinSelection(sessionId, { provider, model, effort, speed, solo: true })
@@ -1392,11 +1402,6 @@ const server = Bun.serve(withRequestLog(withCors({
         const sel = effectiveSessionSelection(sessionId)
         return json({ provider: sel.provider, model: sel.model ?? null, effort: sel.effort ?? null, speed: sel.speed ?? null, solo: isSolo(sessionId), pinned: true })
       }
-      setActiveProviderId(provider)
-      setSelection(provider, { model, effort, speed })
-      Store.invalidateGlobalCompactionArtifacts(provider, model)
-      setActiveMode(undefined)
-      setSolo(true)
       invalidateAgent()
       const sel = selectionOf(provider)
       return json({ provider, model: sel.model ?? null, effort: sel.effort ?? null, speed: sel.speed ?? null, solo: true })

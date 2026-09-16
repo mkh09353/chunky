@@ -181,7 +181,7 @@ export function ModelPicker({ baseUrl, sessionId, onDone, onCancel }: Props) {
       const res = await fetch(baseUrl + "/api/model/select", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify(sessionId ? { ...payload, sessionId } : payload),
+        body: JSON.stringify(sessionId ? { ...payload, sessionId, remember: true } : payload),
       })
       const body = (await res.json()) as { error?: string; provider?: string; model?: string; solo?: boolean }
       if (body.error) {

@@ -666,11 +666,12 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
 
   // ---- live: load the current model selection so the status line is accurate ----
   useEffect(() => {
-    if (mode !== "live") return
+    if (mode !== "live" || !activeSessionId) return
     let cancelled = false
     ;(async () => {
       try {
-        const res = await fetch(baseUrl + "/api/model")
+        const res = await fetch(baseUrl + `/api/model?sessionId=${encodeURIComponent(activeSessionId)}`)
+        if (!res.ok) throw new Error("Could not read the session model")
         const body = (await res.json()) as CurrentSelection
         if (!cancelled) updateCurrentSel(body)
       } catch {
@@ -680,7 +681,7 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
     return () => {
       cancelled = true
     }
-  }, [mode, baseUrl, updateCurrentSel])
+  }, [mode, baseUrl, activeSessionId, updateCurrentSel])
 
   // ---- live: load the advisor config so the status line shows it (and after /advisor) ----
   const refreshAdvisor = useCallback(async () => {

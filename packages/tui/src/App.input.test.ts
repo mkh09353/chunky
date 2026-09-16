@@ -97,3 +97,34 @@ test("provider settings own input, persist disable, and the model picker exclude
     expect(session.text()).not.toContain("[login needed]")
   } finally { session.stop(); await session.process.exited; server.stop(true); rmSync(cwd, { recursive: true, force: true }) }
 }, 15_000)
+
+test("welcome model follows the attached session on startup and after clear", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "chunky-clear-model-"))
+  const settings = join(cwd, "settings.json")
+  writeFileSync(settings, JSON.stringify({ theme: "dark" }))
+  let created = 0
+  const queries: string[] = []
+  const server = Bun.serve({ port: 0, fetch(req) {
+    const url = new URL(req.url), path = url.pathname
+    if (path === "/api/onboarding") return Response.json({ onboardedAt: 1 })
+    if (path === "/api/sessions" && req.method === "POST") return Response.json({ sessionId: `thread-${++created}` })
+    if (path === "/api/model") {
+      const id = url.searchParams.get("sessionId")
+      queries.push(id ?? "global")
+      return Response.json({ provider: "telnyx", model: id === "thread-1" ? "session-one" : id === "thread-2" ? "session-two" : null })
+    }
+    if (path.endsWith("/events")) return new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(": ready\n\n")) } }), { headers: { "content-type": "text/event-stream" } })
+    return Response.json({ workspace: cwd })
+  } })
+  const session = new Session([process.execPath, "run", join(import.meta.dir, "index.tsx"), "--live"], {
+    cwd, cols: 110, rows: 36, env: { CHUNKY_PORT: String(server.port), CHUNKY_SETTINGS: settings, CHUNKY_HOME: cwd },
+  })
+  async function send(text: string) { session.send(new TextEncoder().encode(text)); await Bun.sleep(100) }
+  try {
+    await session.waitForText("Session One")
+    await send("/clear"); await send("\r")
+    await session.waitForText("Session Two")
+    expect(queries).toEqual(["thread-1", "thread-2"])
+    expect(session.text()).not.toContain("Session One")
+  } finally { session.stop(); await session.process.exited; server.stop(true); rmSync(cwd, { recursive: true, force: true }) }
+}, 15_000)

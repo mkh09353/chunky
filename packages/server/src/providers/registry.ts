@@ -317,7 +317,10 @@ let activeOverride: string | undefined
 /** The currently selected provider id. */
 export function activeProviderId(): string {
   ensureCustomProviders()
-  const choices = [activeOverride, persistedProvider(), process.env.CHUNKY_PROVIDER]
+  // A choice made explicitly in this process must not be replaced by auth
+  // fallback (for example while applying a mode or reconnecting its provider).
+  if (activeOverride && providers[activeOverride] && isProviderEnabled(activeOverride)) return activeOverride
+  const choices = [persistedProvider(), process.env.CHUNKY_PROVIDER]
     .filter((id): id is string => Boolean(id && providers[id] && isProviderEnabled(id)))
   const connected = (id: string) => providerReady(providers[id]!, providerAuthInfo(providers[id]!))
   const chosen = choices.find(connected)

@@ -116,3 +116,22 @@ test.each([["telnyx", "Telnyx"], ["opencode-go", "OpenCode Go"]])("selecting %s 
     expect(saved).toHaveLength(2)
   } finally { await act(async () => ui.renderer.destroy()); server.stop(true) }
 })
+
+test("choosing a model asks the server to remember it for new conversations", async () => {
+  let selected: unknown
+  let completed = false
+  const server = Bun.serve({ port: 0, async fetch(req) {
+    const path = new URL(req.url).pathname
+    if (path === "/api/providers") return Response.json({ providers: [{ id: "telnyx", ready: true }] })
+    if (path.endsWith("/models")) return Response.json({ models: [{ id: "chosen-model", name: "Chosen", reasoning: false }] })
+    selected = await req.json()
+    return Response.json({ provider: "telnyx", model: "chosen-model", solo: true })
+  } })
+  const ui = await testRender(<ModelPicker baseUrl={server.url.origin} sessionId="thread" onDone={() => { completed = true }} onCancel={() => {}} />, { width: 100, height: 15 })
+  try {
+    await ui.waitForFrame((frame) => frame.includes("telnyx/chosen-model"))
+    await act(async () => { ui.mockInput.pressEnter(); await Bun.sleep(30) })
+    expect(selected).toEqual({ provider: "telnyx", model: "chosen-model", sessionId: "thread", remember: true })
+    expect(completed).toBe(true)
+  } finally { await act(async () => ui.renderer.destroy()); server.stop(true) }
+})

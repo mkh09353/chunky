@@ -12,6 +12,7 @@
     "@anthropic-ai/claude-agent-sdk": "^0.3.258",
     "@chunky/protocol": "workspace:*",
     "@ff-labs/fff-bun": "0.10.5",
+    "@langchain/anthropic": "1.5.10",
     "@langchain/core": "1.2.10",
     "@langchain/langgraph": "^1.4.7",
     "@langchain/langgraph-checkpoint": "^1.1.3",

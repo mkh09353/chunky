@@ -19,6 +19,9 @@ TUI (Ink) ──SSE──▶ server (Bun) ──▶ LangChain agent ──▶ Ze
 Requires Bun. Zen config is in `.env` (gitignored): `ZEN_BASE_URL`, `ZEN_MODEL`, `ZEN_API_KEY`, `CHUNKY_PORT`.
 
 Telnyx ships as a built-in API-key provider. Open `/onboard`, select **Telnyx**, and paste your key from the Telnyx portal; no custom URL is needed. The key is verified and stored in the private auth store. `TELNYX_API_KEY` is also supported. Then use `/model` to choose from your account's current chat models, fetched from `https://api.telnyx.com/v2/ai/openai/models` whenever the catalog is opened. Embedding models are excluded; reasoning uses the model's default. See the [Telnyx model API](https://developers.telnyx.com/api-reference/openai-chat/get-available-models-openai-compatible).
+
+OpenCode Go is a separate built-in subscription provider. Open `/onboard`, select **OpenCode Go**, and paste your Go API key, or set `OPENCODE_GO_API_KEY`. It uses its own saved credentials and the Go endpoint (`https://opencode.ai/zen/go/v1`); Zen credentials are never reused. `/model` fetches the live Go catalog. Go uses Chat Completions, Responses, or Anthropic Messages according to the model, with a stable `x-opencode-session` for the conversation and Chunky’s User-Agent on every request. Model reasoning uses provider defaults. The public catalog cannot validate a key; account access is checked on the first model request. See [OpenCode Go](https://opencode.ai/docs/go/).
+
 For Anthropic subscription OAuth, authenticate the real Claude CLI once with `claude auth login --claudeai`; Chunky reuses that OAuth session through `@anthropic-ai/claude-agent-sdk`.
 
 ```bash

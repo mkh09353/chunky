@@ -39,6 +39,7 @@ import {
 } from "../settings.ts"
 import { AuthStore } from "./auth-store.ts"
 import { telnyxProvider } from "./telnyx.ts"
+import { opencodeGoProvider } from "./opencode-go.ts"
 import { Store } from "../store.ts"
 
 export type { LoginInitiation } from "@chunky/protocol"
@@ -510,11 +511,12 @@ import { anthropicProvider } from "./anthropic-sdk.ts"
 registerProvider(grokProvider)
 registerProvider(codexProvider)
 registerProvider(anthropicProvider)
+registerProvider(opencodeGoProvider)
 
 // Settings are deliberately consulted on first use, not while this module is
 // being evaluated. Tests (and embedders) commonly select CHUNKY_SETTINGS after
 // importing the registry, and settings are user-editable between requests.
-const BUILT_INS = new Set(["zen", "codex", "grok", "anthropic", "telnyx"])
+const BUILT_INS = new Set(["zen", "codex", "grok", "anthropic", "telnyx", "opencode-go"])
 let loadedCustomSignature = ""
 function ensureCustomProviders(): void {
   const custom = loadSettings().customProviders ?? []

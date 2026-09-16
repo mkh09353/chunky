@@ -52,6 +52,17 @@ describe("provider setup API", () => {
     expect(JSON.parse(readFileSync(authPath, "utf8"))["route-provider"]).toEqual({ type: "api", key: "route-secret" })
   })
 
+  test("Go key setup stores credentials under its own provider without echoing them", async () => {
+    const response = await request(ROUTES.providerKey("opencode-go"), {
+      method: "POST", headers, body: JSON.stringify({ key: "go-route-secret" }),
+    })
+    expect(response.status).toBe(200)
+    expect(await response.json()).toEqual({ ok: true })
+    const auth = JSON.parse(readFileSync(authPath, "utf8"))
+    expect(auth["opencode-go"]).toEqual({ type: "api", key: "go-route-secret" })
+    expect(auth["zen"]).toBeUndefined()
+  })
+
   test("custom-provider auth test reports authenticated models endpoint failure", async () => {
     const response = await request(ROUTES.authTest("broken-custom"), { method: "POST", headers })
     expect(response.status).toBe(200)

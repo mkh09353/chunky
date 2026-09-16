@@ -2,10 +2,10 @@ import { describe, expect, test } from "bun:test"
 import { initialSpeedOption, providerSetupNote } from "./ModelPicker.tsx"
 
 describe("model picker provider setup guidance", () => {
-  test("directs Telnyx to API-key setup", () => {
-    expect(providerSetupNote("telnyx", false)).toContain("/onboard")
-    expect(providerSetupNote("telnyx", false)).not.toContain("/login")
-    expect(providerSetupNote("telnyx", true)).toBe("")
+  test.each(["telnyx", "opencode-go"])("directs %s to API-key setup", (provider) => {
+    expect(providerSetupNote(provider, false)).toContain("/onboard")
+    expect(providerSetupNote(provider, false)).not.toContain("/login")
+    expect(providerSetupNote(provider, true)).toBe("")
   })
   test("does not direct unconfigured Zen to OAuth login", () => {
     expect(providerSetupNote("zen", false)).toContain("ZEN_API_KEY")

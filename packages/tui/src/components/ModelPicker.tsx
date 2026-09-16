@@ -54,6 +54,7 @@ interface Props {
 export function providerSetupNote(provider: string, ready: boolean): string {
   if (ready) return ""
   if (provider === "zen") return "\n(note: zen isn't configured — set ZEN_API_KEY and ZEN_BASE_URL.)"
+  if (provider === "opencode-go") return "\n(note: add your OpenCode Go API key in /onboard or set OPENCODE_GO_API_KEY.)"
   if (provider === "telnyx") return "\n(note: add your Telnyx API key in /onboard or set TELNYX_API_KEY.)"
   return `\n(note: ${provider} isn't logged in yet — run /login to authorize it.)`
 }

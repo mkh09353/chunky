@@ -1,3 +1,4 @@
+import { ProviderKeyPrompt, hasKeySetup, type KeyProvider } from "./ProviderKeyPrompt.js"
 import { ThemeText } from "./ThemeText.js"
 import { useEffect, useState } from "react"
 import { TextAttributes } from "@opentui/core"
@@ -19,6 +20,7 @@ export function ProviderPicker({ baseUrl, onDone, onCancel }: Props) {
   const [providers, setProviders] = useState<Provider[]>([])
   const [models, setModels] = useState<Model[]>([])
   const [selected, setSelected] = useState(new Set<string>())
+  const [keyProvider, setKeyProvider] = useState<KeyProvider | null>(null)
   const [provider, setProvider] = useState<Provider | null>(null)
   const [sel, setSel] = useState(0)
   const [loading, setLoading] = useState(true)
@@ -36,6 +38,7 @@ export function ProviderPicker({ baseUrl, onDone, onCancel }: Props) {
 
   async function choose(p: Provider) {
     if (p.enabled === false) { setError("Enable this provider with Space first."); return }
+    if (!p.ready && hasKeySetup(p.id)) { setError(null); setKeyProvider(p.id); return }
     if (!p.ready) { setError("Connect this provider with /onboard before choosing models."); return }
     setLoading(true); setError(null)
     try {
@@ -85,17 +88,34 @@ export function ProviderPicker({ baseUrl, onDone, onCancel }: Props) {
     }
     if (key.upArrow) return setSel((s) => Math.max(0, s - 1))
     if (key.downArrow) return setSel((s) => Math.min(Math.max(0, count - 1), s + 1))
+    if (!provider && _input === "k") {
+      const p = providers[sel]
+      if (p && hasKeySetup(p.id) && p.enabled !== false) { setError(null); setKeyProvider(p.id) }
+      return
+    }
     if (!provider && _input === " ") { const p = providers[sel]; if (p) void toggleProvider(p); return }
     if (provider && _input === " ") {
       const model = models[sel]; if (model) setSelected((s) => toggleModel(s, model.id)); return
     }
     if (key.return) { if (provider) void save(); else { const p = providers[sel]; if (p) void choose(p) } }
-  }, { isActive: true })
+  }, { isActive: keyProvider === null })
+
+  if (keyProvider) return <ProviderKeyPrompt baseUrl={baseUrl} providerId={keyProvider}
+    onCancel={() => setKeyProvider(null)}
+    onSaved={async () => {
+      const response = await fetch(baseUrl + "/api/providers", { signal: AbortSignal.timeout(10_000) })
+      if (!response.ok) throw new Error("Could not refresh providers")
+      const body = await response.json() as { providers: Provider[] }
+      setProviders(body.providers)
+      const connected = body.providers.find((p) => p.id === keyProvider)
+      setKeyProvider(null)
+      if (connected) await choose(connected)
+    }} />
 
   const rows = provider ? models : providers
   const start = Math.max(0, Math.min(sel - Math.floor(WINDOW / 2), Math.max(0, rows.length - WINDOW)))
   return <box flexDirection="column" border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
-    <ThemeText attributes={TextAttributes.DIM}>{provider ? `${provider.id} models — ↑/↓ move · space toggle · enter save · esc back` : "Provider settings — ↑/↓ move · space on/off · enter models · esc close"}</ThemeText>
+    <ThemeText attributes={TextAttributes.DIM}>{provider ? `${provider.id} models — ↑/↓ move · space toggle · enter save · esc back` : "Provider settings — ↑/↓ move · space on/off · enter connect/models · k change key · esc close"}</ThemeText>
     {loading ? <ThemeText attributes={TextAttributes.DIM}>Loading…</ThemeText> : rows.length === 0 ? <ThemeText attributes={TextAttributes.DIM}>No models available.</ThemeText> : rows.slice(start, start + WINDOW).map((row, i) => {
       const index = start + i, on = index === sel
       return <box key={row.id} flexDirection="row"><ThemeText fg={on ? ACCENT : undefined}>{on ? "❯ " : "  "}</ThemeText>
@@ -104,7 +124,7 @@ export function ProviderPicker({ baseUrl, onDone, onCancel }: Props) {
         <ThemeText attributes={TextAttributes.DIM}>{provider ? ` — ${(row as Model).name}${(row as Model).custom ? " [custom]" : ""}` : ` — ${(row as Provider).label}${(row as Provider).enabled === false ? " [disabled]" : (row as Provider).ready ? " [connected]" : " [not connected]"}`}</ThemeText>
       </box>
     })}
-    {!provider && <ThemeText attributes={TextAttributes.DIM}>Changes save immediately. Credentials are kept. Connect providers with /onboard.</ThemeText>}
+    {!provider && <ThemeText attributes={TextAttributes.DIM}>Changes save immediately. Enter connects API-key providers; /onboard handles other sign-ins.</ThemeText>}
     {error && <ThemeText fg={ERROR}>{error}</ThemeText>}
     {busy && <ThemeText attributes={TextAttributes.DIM}>Saving…</ThemeText>}
   </box>

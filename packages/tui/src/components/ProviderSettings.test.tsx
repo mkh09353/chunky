@@ -70,3 +70,49 @@ test("provider settings persist toggles, retain state on failure, and do not bro
     expect(enabled).toBe(true)
   } finally { await act(async () => ui.renderer.destroy()); server.stop(true) }
 })
+
+test.each([["telnyx", "Telnyx"], ["opencode-go", "OpenCode Go"]])("selecting %s prompts for a masked key, saves it, and opens its models", async (id, name) => {
+  let ready = false, reject = true
+  const saved: unknown[] = []
+  const catalogs: string[] = []
+  const server = Bun.serve({ port: 0, async fetch(req) {
+    const path = new URL(req.url).pathname
+    if (path === `/api/providers/${id}/key`) {
+      saved.push(await req.json())
+      if (reject) return Response.json({ error: "invalid" }, { status: 400 })
+      ready = true
+      return Response.json({ ok: true })
+    }
+    if (path.endsWith("/availability")) {
+      catalogs.push(path)
+      return Response.json({ models: [{ id: "chat-test", name: "Chat test" }], available: ["chat-test"] })
+    }
+    return Response.json({ providers: [{ id, label: name, enabled: true, ready }] })
+  } })
+  const ui = await testRender(<ProviderPicker baseUrl={server.url.origin} onDone={() => {}} onCancel={() => {}} />, { width: 110, height: 15 })
+  try {
+    await ui.waitForFrame((frame) => frame.includes("[not connected]"))
+    await act(async () => ui.mockInput.pressEnter())
+    await ui.waitForFrame((frame) => frame.includes(`Connect ${name}`))
+    await act(async () => { await ui.mockInput.pasteBracketedText(" secret-key\n") })
+    await ui.waitForFrame((frame) => frame.includes("API key: •"))
+    expect(ui.captureCharFrame()).not.toContain("secret-key")
+    expect(ui.captureCharFrame()).toContain("API key: •")
+    expect(catalogs).toEqual([])
+    await act(async () => { ui.mockInput.pressEnter(); await Bun.sleep(30) })
+    await ui.waitForFrame((frame) => frame.includes(`Could not complete ${name} setup`))
+    reject = false
+    await act(async () => { ui.mockInput.pressEnter(); await Bun.sleep(30) })
+    await ui.waitForFrame((frame) => frame.includes("chat-test"))
+    expect(saved).toEqual([{ key: "secret-key" }, { key: "secret-key" }])
+    expect(catalogs).toEqual([`/api/providers/${id}/models/availability`])
+    await act(async () => { ui.mockInput.pressEscape(); await Bun.sleep(40) })
+    await ui.waitForFrame((frame) => frame.includes("[connected]"))
+    await act(async () => { ui.mockInput.typeText("k") })
+    await ui.waitForFrame((frame) => frame.includes(`Connect ${name}`))
+    expect(ui.captureCharFrame()).not.toContain("•")
+    await act(async () => { ui.mockInput.pressEscape(); await Bun.sleep(40) })
+    await ui.waitForFrame((frame) => frame.includes("Provider settings"))
+    expect(saved).toHaveLength(2)
+  } finally { await act(async () => ui.renderer.destroy()); server.stop(true) }
+})

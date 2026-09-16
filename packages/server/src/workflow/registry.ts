@@ -2,6 +2,7 @@
 // user `~/.chunky/workflows/*.workflow.js` on the same kebab-case name.
 // Scan is on-demand (no cache). Malformed files are skipped with a warning.
 import { existsSync, readdirSync, readFileSync } from "node:fs"
+import { installationDir } from "../installation.ts"
 import { homedir } from "node:os"
 import { join } from "node:path"
 import { stripExports } from "./runtime.ts"
@@ -35,7 +36,7 @@ export function filenameToWorkflowName(filename: string): string | undefined {
   return isValidWorkflowName(stem) ? stem : undefined
 }
 
-export function userWorkflowsDir(home = process.env.CHUNKY_HOME || join(homedir(), ".chunky")): string {
+export function userWorkflowsDir(home = process.env.CHUNKY_DIR ? installationDir() : process.env.CHUNKY_HOME || join(homedir(), ".chunky")): string {
   return join(home, "workflows")
 }
 

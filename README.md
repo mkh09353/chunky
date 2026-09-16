@@ -58,9 +58,28 @@ Install the latest release (no prerequisites — if [Bun](https://bun.sh) isn't 
 curl -fsSL https://chunky.to/install | bash
 ```
 
+### Separate CLI installations
+
+Install another copy with its own command and directory:
+
+```bash
+bash scripts/install.sh --name baa_chunky --dir "$HOME/.baa_chunky"
+baa_chunky
+```
+
+The release installer accepts the same options (`bash scripts/get.sh --name baa_chunky --dir "$HOME/.baa_chunky"`). When using the hosted installer, pass options after `bash -s --`.
+
+`--dir` is the installation root: code lives in `app/`, databases, credentials, settings, logs and caches in `state/`, user skills in `skills/`, and saved user workflows in `workflows/`. The launcher remembers the absolute directory and command name; running it from a project still uses that project as the workspace. Reinstalling with `--dir` alone remembers the command name. Without options, installation remains `~/.chunky` with the `chunky` command. Use different names and directories for separate installations.
+
+Environment equivalents are `CHUNKY_DIR` and `CHUNKY_COMMAND`; `CHUNKY_BIN_DIR` selects the launcher directory (default `~/.local/bin`). Flags take precedence. `CHUNKY_HOME` retains its existing meaning as a state-directory override when running the source directly; installed launchers pin it to their own `state/`.
+
+Other skill discovery (`~/.agents`, `~/.claude`, `~/.codex`, and project skills) and provider authentication behavior are unchanged. This is separate application storage, not a filesystem sandbox or a provider policy. Desktop configuration is unchanged.
+
 ## Updating
 
 Run `chunky update` to install the latest release, or `chunky update --version vX.Y.Z` to pin one. `chunky update --check` reports availability without changing files. Chunky checks for updates in the background at most once every 24 hours; network failures are ignored. The previous app is retained for one rollback: `chunky update --rollback`. Runtime state remains in `~/.chunky/state` and is never replaced by updates.
+
+For the custom installation, use `baa_chunky update`, `baa_chunky update --check`, or `baa_chunky update --rollback`. These target its own `app/` and leave its command, state, and the default installation intact. Updating the default installation still uses `chunky update`.
 
 ## License
 

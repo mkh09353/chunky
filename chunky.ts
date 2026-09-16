@@ -6,11 +6,10 @@
 //   - the server's stdout goes to a log file so it can't fight the TUI's rendering.
 // The app code is resolved relative to THIS file, so the same launcher works both
 // from the repo (dev) and from an installed ~/.chunky/app copy.
-try { process.title = "chunky" } catch {} // Helps ps/top on platforms that honor it.
+try { process.title = process.env.CHUNKY_COMMAND || "chunky" } catch {} // Helps ps/top on platforms that honor it.
 import { spawn } from "node:child_process"
 import { createServer } from "node:net"
 import { closeSync, existsSync, mkdirSync, openSync, readFileSync } from "node:fs"
-import { homedir } from "node:os"
 import { dirname, join } from "node:path"
 import { randomUUID } from "node:crypto"
 import { fileURLToPath } from "node:url"
@@ -24,6 +23,7 @@ import {
   type LauncherServerIdentity,
 } from "./packages/server/src/launcher-discovery.ts"
 import { getServerToken } from "./packages/server/src/settings.ts"
+import { installationDir } from "./packages/server/src/installation.ts"
 import { runPapercutsCli } from "./packages/server/src/papercuts-cli.ts"
 
 const APP = dirname(fileURLToPath(import.meta.url))
@@ -53,7 +53,8 @@ if (process.argv[2] === "papercuts") {
   process.exit()
 }
 
-const STATE = process.env.CHUNKY_HOME || join(homedir(), ".chunky", "state")
+const STATE = process.env.CHUNKY_HOME || join(installationDir(), "state")
+if (process.env.CHUNKY_DIR) process.env.CHUNKY_HOME = STATE
 const SETTINGS = join(STATE, "settings.json")
 process.env.CHUNKY_SETTINGS = SETTINGS
 const WORKSPACE = canonicalWorkspace(process.cwd())
@@ -103,7 +104,7 @@ async function startServer(identity: LauncherServerIdentity): Promise<{ pid: num
   const log = openSync(join(STATE, "server.log"), "a")
   try {
     const child = spawn("bun", ["run", join(APP, "packages/server/src/index.ts")], {
-      argv0: "chunky-server", // named in ps/top/Activity Monitor instead of "bun"
+      argv0: `${process.env.CHUNKY_COMMAND || "chunky"}-server`, // named in ps/top/Activity Monitor instead of "bun"
       cwd: STATE,
       detached: true,
       stdio: ["ignore", log, log],
@@ -155,7 +156,7 @@ leaseHeartbeat.unref()
 // Hand the terminal to the TUI (child #2), pointed at our server. cwd is your
 // project so the transcript shows the right path; it connects over CHUNKY_PORT.
 const tui = spawn("bun", ["run", join(APP, "packages/tui/src/index.tsx"), "--live"], {
-  argv0: "chunky-tui", // named in ps/top/Activity Monitor instead of "bun"
+  argv0: `${process.env.CHUNKY_COMMAND || "chunky"}-tui`, // named in ps/top/Activity Monitor instead of "bun"
   cwd: WORKSPACE,
   stdio: "inherit",
   env: { ...process.env, CHUNKY_PORT: String(PORT), CHUNKY_SETTINGS: SETTINGS },

@@ -6,6 +6,7 @@ import { readdir } from "node:fs/promises"
 import { execFile } from "node:child_process"
 import { promisify } from "node:util"
 import { dirname, extname, join, relative, resolve } from "node:path"
+import { stateDir } from "../repos.ts"
 import { QUERIES, TYPESCRIPT_BASE, TYPESCRIPT_JSX } from "./queries.ts"
 
 const exec = promisify(execFile)
@@ -149,7 +150,7 @@ class Manager {
   }
   dispose() { this.disposed = true; this.watcher?.close(); clearTimeout(this.debounceTimer); clearTimeout(this.saveTimer); void this.save(true) }
 }
-function cachePath(root: string) { let hash = 5381; for (const char of root) hash = (hash * 33 + char.charCodeAt(0)) | 0; return join(process.env.HOME || root, ".chunky/state/codegraph", `b${(hash >>> 0).toString(36)}.json`) }
+function cachePath(root: string) { let hash = 5381; for (const char of root) hash = (hash * 33 + char.charCodeAt(0)) | 0; return join(stateDir(), "codegraph", `b${(hash >>> 0).toString(36)}.json`) }
 const managers = new Map<string, Manager>()
 export function getCodegraph(root: string) { root = resolve(root); let manager = managers.get(root); if (!manager) { manager = new Manager(root); managers.set(root, manager) } return manager }
 export function destroyCodegraphs() { for (const manager of managers.values()) manager.dispose(); managers.clear() }

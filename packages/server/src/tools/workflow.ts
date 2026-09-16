@@ -8,6 +8,7 @@ import { z } from "zod"
 import { threadContextFor } from "../thread-context.ts"
 import { workspaceFromConfig } from "../workspace.ts"
 import {
+  userWorkflowsDir,
   formatAvailableWorkflows,
   resolveSavedWorkflow,
   scanSavedWorkflows,
@@ -28,7 +29,7 @@ Pass exactly one of script (inline JS) or name (saved workflow); omit both to li
 
 Do NOT use workflow for ordinary features/fixes, short tasks, questions, serial debugging, or anything a direct answer or one sidekick/spawn_thread brief covers. Without a concrete list of independent items, scout or delegate instead. Only return enters your context. Runs are concurrency-capped and deterministic (no Date.now/Math.random). Prefer semantic tags (general, fast, research, frontend, design, premium); use provider/model only for a requested override.`
 
-const WORKFLOW_DOCS = `Full workflow docs: saved files are .chunky/workflows/<name>.workflow.js in the project (wins collisions) or ~/.chunky/workflows/<name>.workflow.js. Optional metadata is an exported meta object or leading metadata comment with name, description, and when_to_use; name is kebab-case and missing metadata falls back to the filename. Default execution waits for return. detach=true is fire-and-forget immediately (skipping the STEER-detach race); completion or workflow error arrives as a wake/reminder. Without explicit detach, steering may detach an awaited run. Failed non-incognito runs keep a same-process journal: resume_from_run_id requires identical script/name and args, replays committed agent() results, may rerun an uncommitted call, does not survive restart, and diverges if a saved file changed.`
+const WORKFLOW_DOCS = `Full workflow docs: saved files are .chunky/workflows/<name>.workflow.js in the project (wins collisions) or ${userWorkflowsDir()}/<name>.workflow.js. Optional metadata is an exported meta object or leading metadata comment with name, description, and when_to_use; name is kebab-case and missing metadata falls back to the filename. Default execution waits for return. detach=true is fire-and-forget immediately (skipping the STEER-detach race); completion or workflow error arrives as a wake/reminder. Without explicit detach, steering may detach an awaited run. Failed non-incognito runs keep a same-process journal: resume_from_run_id requires identical script/name and args, replays committed agent() results, may rerun an uncommitted call, does not survive restart, and diverges if a saved file changed.`
 export const workflowInputShape = {
   script: z
     .string()
@@ -38,7 +39,7 @@ export const workflowInputShape = {
     .string()
     .optional()
     .describe(
-      "Saved workflow name (kebab-case). Loads .chunky/workflows/<name>.workflow.js from the project (wins) or ~/.chunky/workflows/. Exactly one of script or name.",
+      `Saved workflow name (kebab-case). Loads .chunky/workflows/<name>.workflow.js from the project (wins) or ${userWorkflowsDir()}/. Exactly one of script or name.`,
     ),
   args: z
     .any()

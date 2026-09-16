@@ -1,10 +1,10 @@
 import { createHash } from "node:crypto"
 import { existsSync, mkdirSync, readFileSync, rmSync, renameSync, writeFileSync } from "node:fs"
-import { homedir } from "node:os"
+import { installationDir } from "../installation.ts"
 import { join } from "node:path"
 
 export const GITHUB_REPOSITORY = "mkh09353/chunky"
-export const CHUNKY_DIR = process.env.CHUNKY_DIR || join(homedir(), ".chunky")
+export const CHUNKY_DIR = installationDir()
 export const APP_DIR = join(CHUNKY_DIR, "app")
 const STATE_DIR = join(CHUNKY_DIR, "state")
 

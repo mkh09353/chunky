@@ -88,6 +88,20 @@ describe("launcher server discovery", () => {
     expect([first.started, second.started].sort()).toEqual([false, true])
   })
 
+  test("different installation states never reuse each other's workspace server", async () => {
+    const h = harness(tempDir())
+    const other = { ...h.config, stateDir: tempDir() }
+    const [personal, work] = await Promise.all([
+      ensureWorkspaceServer(h.config, h.deps),
+      ensureWorkspaceServer(other, h.deps),
+    ])
+    expect(h.starts).toBe(2)
+    expect(personal.record.port).not.toBe(work.record.port)
+    expect((await ensureWorkspaceServer(other, h.deps)).record.port).toBe(work.record.port)
+    expect((await ensureWorkspaceServer(h.config, h.deps)).record.port).toBe(personal.record.port)
+    expect(h.starts).toBe(2)
+  })
+
   test("reuses a healthy record and replaces a stale one", async () => {
     const h = harness(tempDir())
     const first = await ensureWorkspaceServer(h.config, h.deps)

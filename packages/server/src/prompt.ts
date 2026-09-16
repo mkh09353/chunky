@@ -130,7 +130,7 @@ export function buildSystemPrompt(
 ${editListLine}
 - write: create or overwrite a file${sidekickListLine}
 - remember: append a short, durable repository lesson after a real repeatable failure or quirk
-- search_skills / load_skill: discover and on-demand load Agent Skills (SKILL.md packages under ~/.chunky|agents|claude|codex/skills, managed skill-repos, and project .agents|.claude|.chunky|.codex/skills). Bodies are never in the prompt — search first, load only when a description matches
+- search_skills / load_skill: discover and on-demand load Agent Skills (SKILL.md packages under this installation’s skills/ directory and ~/.agents|claude|codex/skills, managed skill-repos, and project .agents|.claude|.chunky|.codex/skills). Bodies are never in the prompt — search first, load only when a description matches
 ${portableToolSearch ? "- search_tools / call_deferred_tool: discover deferred tools by capability, then invoke one using its returned name and input schema\n" : ""}
 
 Additional tools (threads, workflows, goals, sessions, model catalog, skill repos, and advisor when configured) are deferred behind ${portableToolSearch ? "search_tools" : "native tool search"} — use tool search to discover them when needed; do not assume a fixed full list in this prompt.`
@@ -151,7 +151,7 @@ ${editListLine}
 - get_goal / create_goal / goal_complete / goal_blocked: goal-mode tools — relevant when a goal is set via /goal, or when the user explicitly asks for autonomous work-until-done (create_goal)
 - ship_goal: hand the plan agreed in THIS conversation off to a fresh, context-clean session that pursues it as an autonomous workflow-orchestrated goal — use when the user says to ship or hand off the plan (/shipit); write a distilled handoff brief as the objective
 - list_sessions / send_to_session: see and message the OTHER live sessions on this server (parallel repos/tasks) — hand off follow-ups or ask questions; a busy target processes your message after its current turn
-- search_skills / load_skill: discover and on-demand load Agent Skills (SKILL.md packages under ~/.chunky|agents|claude|codex/skills, managed skill-repos, and project .agents|.claude|.chunky|.codex/skills). Bodies are never in the prompt — search first, load only when a description matches
+- search_skills / load_skill: discover and on-demand load Agent Skills (SKILL.md packages under this installation’s skills/ directory and ~/.agents|claude|codex/skills, managed skill-repos, and project .agents|.claude|.chunky|.codex/skills). Bodies are never in the prompt — search first, load only when a description matches
 - manage_skill_repos: add/remove/update/list git remotes that supply skill packs (only when the user asks to install or manage skills)`
 
   // Delegation posture (the Fusion pattern): answer directly by default; hand

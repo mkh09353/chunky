@@ -17,7 +17,8 @@ import {
   statSync,
 } from "node:fs"
 import { homedir } from "node:os"
-import { basename, dirname, join, resolve, sep } from "node:path"
+import { basename, dirname, join, resolve, sep, relative } from "node:path"
+import { installationDir } from "./installation.ts"
 import { managedSkillRoots } from "./skill-repos.ts"
 import { getSkillBinding, loadSettings, saveDisabledSkills } from "./settings.ts"
 import { MAX_BYTES, MAX_LINES, truncateOutput } from "./tools/fs-util.ts"
@@ -28,7 +29,6 @@ const SKILL_FILENAME = "SKILL.md"
 
 /** Relative skill roots under home (user) and under each project ancestor. */
 const USER_SKILL_ROOTS = [
-  ".chunky/skills",
   ".agents/skills",
   ".claude/skills",
   ".codex/skills",
@@ -319,9 +319,8 @@ export function discoverSkills(workspace: string, options: { includeDisabled?: b
   }
 
   const home = homedir()
-  for (const rel of USER_SKILL_ROOTS) {
-    const root = join(home, rel)
-    const label = homeLabel(rel)
+  for (const root of [join(installationDir(), "skills"), ...USER_SKILL_ROOTS.map((rel) => join(home, rel))]) {
+    const label = root.startsWith(home + sep) ? homeLabel(relative(home, root)) : root
     for (const file of findSkillFiles(root)) {
       const meta = loadMetaFromFile(file, "user", label)
       if (meta && !options.includeDisabled && (loadSettings().disabledSkills ?? []).includes(meta.name)) continue
@@ -347,6 +346,8 @@ export function discoverSkills(workspace: string, options: { includeDisabled?: b
     const dir = ancestors[i]
     for (const rel of PROJECT_SKILL_ROOTS) {
       const root = join(dir, rel)
+      // The home-level Chunky directory is user scope, already handled above.
+      if (dir === home && rel === ".chunky/skills") continue
       // Label relative to workspace when under it; else basename of root.
       const label = rel
       for (const file of findSkillFiles(root)) {
@@ -453,7 +454,7 @@ export function formatSearchResults(skills: SkillMeta[], query?: string): string
     const q = (query ?? "").trim()
     return q
       ? `No skills matching "${q}". Try a broader query or call search_skills with no query to list all.`
-      : "No skills discovered. Install Agent Skills under ~/.chunky/skills, ~/.agents/skills, ~/.claude/skills, project .agents/skills / .claude/skills / .chunky/skills, or add a managed skill repo via manage_skill_repos / /skills add <git-url> (each skill is a dir with SKILL.md)."
+      : `No skills discovered. Install Agent Skills under ${join(installationDir(), "skills")}, ~/.agents/skills, ~/.claude/skills, project .agents/skills / .claude/skills / .chunky/skills, or add a managed skill repo via manage_skill_repos / /skills add <git-url> (each skill is a dir with SKILL.md).`
   }
   const lines = skills.map((s) => {
     const desc = s.description.replace(/\s+/g, " ").trim()

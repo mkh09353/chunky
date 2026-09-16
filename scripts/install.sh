@@ -5,9 +5,34 @@
 set -euo pipefail
 
 SRC="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-APP="$HOME/.chunky/app"
-STATE="$HOME/.chunky/state"
-BIN="${CHUNKY_BIN_DIR:-$HOME/.local/bin}"
+# Both installers deliberately keep this bootstrap self-contained (get.sh is piped to bash).
+CHUNKY="${CHUNKY_DIR:-$HOME/.chunky}"
+NAME="${CHUNKY_COMMAND:-}"
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --dir|--name)
+      [ "$#" -ge 2 ] && [ -n "$2" ] || { echo "error: $1 requires a value" >&2; exit 1; }
+      case "$1" in --dir) CHUNKY="$2" ;; --name) NAME="$2" ;; esac
+      shift 2 ;;
+    --help|-h)
+      echo 'Usage: bash install.sh [--name COMMAND] [--dir DIRECTORY]'
+      echo 'Defaults: chunky, ~/.chunky. Also accepts CHUNKY_COMMAND, CHUNKY_DIR, CHUNKY_BIN_DIR.'
+      exit 0 ;;
+    *) echo "error: unknown option: $1" >&2; exit 1 ;;
+  esac
+done
+# Resolve paths once; launchers must work from any working directory.
+case "$CHUNKY" in '~') CHUNKY="$HOME" ;; '~/'*) CHUNKY="$HOME/${CHUNKY#\~/}" ;; esac
+[ -n "$NAME" ] || { [ ! -f "$CHUNKY/command-name" ] || NAME="$(cat "$CHUNKY/command-name")"; }
+NAME="${NAME:-chunky}"
+[[ "$NAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9_-]*$ ]] || { echo "error: invalid command name: $NAME" >&2; exit 1; }
+mkdir -p "$CHUNKY"
+CHUNKY="$(cd "$CHUNKY" && pwd -P)"
+[ "$CHUNKY" != / ] && [ "$CHUNKY" != "$(cd "$HOME" && pwd -P)" ] || { echo 'error: use a dedicated installation directory' >&2; exit 1; }
+APP="$CHUNKY/app"; STATE="$CHUNKY/state"; BIN="${CHUNKY_BIN_DIR:-$HOME/.local/bin}"
+mkdir -p "$BIN"
+BIN="$(cd "$BIN" && pwd -P)"
+case "$CHUNKY/" in "$SRC/"*) echo 'error: install outside the source tree' >&2; exit 1 ;; esac
 
 command -v bun >/dev/null 2>&1 || { echo "error: 'bun' is required on your PATH (Chunky runs on Bun)." >&2; exit 1; }
 
@@ -64,19 +89,27 @@ if [ -f "$STATE/.env" ] && grep -qE '^\s*CHUNKY_' "$STATE/.env"; then
   echo "   scrubbed CHUNKY_* from state/.env (launcher manages the port)"
 fi
 
-echo "→ installing launcher at $BIN/chunky"
-cat > "$BIN/chunky" <<SH
-#!/bin/sh
-# Chunky launcher — runs the pinned app in ~/.chunky/app against your current dir.
-exec bun run "$APP/chunky.ts" "\$@"
-SH
-chmod +x "$BIN/chunky"
+echo "→ installing launcher at $BIN/$NAME"
+# Persist the identity outside app/, which updates replace wholesale.
+printf '%s\n' "$NAME" > "$CHUNKY/command-name"
+# Bash %q safely quotes paths containing spaces, quotes, dollar signs, or backticks.
+{
+  echo '#!/usr/bin/env bash'
+  printf 'export CHUNKY_DIR=%q\n' "$CHUNKY"
+  printf 'export CHUNKY_HOME=%q\n' "$STATE"
+  printf 'export CHUNKY_COMMAND=%q\n' "$NAME"
+  echo 'BUN="$(command -v bun || true)"'
+  printf '[ -n "$BUN" ] || BUN=%q\n' "$CHUNKY/bun/bin/bun"
+  echo 'export PATH="$(dirname "$BUN"):$PATH"'
+  printf 'exec "$BUN" run %q "$@"\n' "$APP/chunky.ts"
+} > "$BIN/$NAME"
+chmod +x "$BIN/$NAME"
 
 echo
 echo "✓ Installed."
 case ":$PATH:" in
-  *":$BIN:"*) echo "  Run it from any project directory:  chunky" ;;
-  *) echo "  Add $BIN to your PATH, then run:  chunky"
+  *":$BIN:"*) echo "  Run it from any project directory:  $NAME" ;;
+  *) echo "  Add $BIN to your PATH, then run:  $NAME"
      echo "  e.g.  echo 'export PATH=\"$BIN:\$PATH\"' >> ~/.zshrc && source ~/.zshrc" ;;
 esac
 echo "  State + logs live in $STATE  (server.log for troubleshooting)."

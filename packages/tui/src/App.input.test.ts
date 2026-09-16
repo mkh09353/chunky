@@ -1,0 +1,60 @@
+import { expect, test } from "bun:test"
+import { mkdtempSync, rmSync, writeFileSync } from "node:fs"
+import { tmpdir } from "node:os"
+import { join } from "node:path"
+import { Session } from "../../termctrl/src/session.js"
+
+test("provider setup owns keyboard input and returns it to the prompt on close", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "chunky-onboarding-input-"))
+  const settings = join(cwd, "settings.json")
+  writeFileSync(settings, JSON.stringify({ theme: "dark" }))
+  const server = Bun.serve({
+    port: 0,
+    fetch(req) {
+      const path = new URL(req.url).pathname
+      if (path === "/api/onboarding") return Response.json({ providers: [
+        { id: "claude", label: "Claude", status: "inherited" },
+        { id: "codex", label: "Codex", status: "missing" },
+      ] })
+      if (path === "/api/sessions" && req.method === "POST") return Response.json({ sessionId: "test" })
+      if (path.endsWith("/events")) return new Response(new ReadableStream({
+        start(controller) { controller.enqueue(new TextEncoder().encode(": ready\n\n")) },
+      }), { headers: { "content-type": "text/event-stream" } })
+      return Response.json({ workspace: cwd })
+    },
+  })
+  const session = new Session([process.execPath, "run", join(import.meta.dir, "index.tsx"), "--live"], {
+    cwd, cols: 100, rows: 36,
+    env: { CHUNKY_PORT: String(server.port), CHUNKY_SETTINGS: settings, CHUNKY_HOME: cwd },
+  })
+  async function send(text: string) {
+    session.send(new TextEncoder().encode(text))
+    await Bun.sleep(100)
+  }
+  try {
+    await session.waitForText("connect a provider")
+    await send("\x1b[B")
+    expect(session.text()).toContain("❯ ✗ Codex")
+    await send("c")
+    await session.waitForText("Custom OpenAI-compatible provider")
+    await send("test-provider")
+    expect(session.text()).toContain("id: test-provider")
+    // The wizard and composer are both mounted: only the wizard may edit text.
+    expect(session.text()).toContain('Try "fix lint errors"')
+    for (const value of ["Test label", "https://example.invalid", "test-secret"]) {
+      await send("\r")
+      await send(value)
+    }
+    expect(session.text()).toContain("API key: •••••••••••")
+    expect(session.text()).not.toContain("test-secret")
+    await send("\x1b")
+    await send("hello after setup")
+    expect(session.text()).not.toContain("Custom OpenAI-compatible provider")
+    expect(session.text()).toContain("❯ hello after setup")
+  } finally {
+    session.stop()
+    await session.process.exited
+    server.stop(true)
+    rmSync(cwd, { recursive: true, force: true })
+  }
+}, 15_000)

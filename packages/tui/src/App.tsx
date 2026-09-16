@@ -416,6 +416,7 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
   const rawSupported = rawModeSupported
 
   const pickerOpen =
+    onboardingOpen ||
     themePickerOpen ||
     loginPicker != null ||
     modelPickerOpen ||

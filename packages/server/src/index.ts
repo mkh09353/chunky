@@ -136,6 +136,8 @@ import {
   getServerToken,
   getSidekick,
   getSidekickSeats,
+  isProviderEnabled,
+  setProviderEnabled,
   isEffort,
   isValidSeatName,
   listModes,
@@ -1022,6 +1024,7 @@ const server = Bun.serve(withRequestLog(withCors({
             id: p.id,
             label: p.label,
             billing: p.billing,
+            enabled: isProviderEnabled(p.id),
             ready: providerReady(p, auth),
             active: p.id === active,
             auth,
@@ -1210,12 +1213,24 @@ const server = Bun.serve(withRequestLog(withCors({
       return json({ ready: providerReady(provider, auth), auth } satisfies ProviderAuthStatusResponse)
     }
 
+    const enabledMatch = pathname.match(/^\/api\/providers\/([^/]+)\/enabled$/)
+    if (enabledMatch && req.method === "PUT") {
+      const id = decodeURIComponent(enabledMatch[1]!)
+      if (!getProvider(id)) return json({ error: `unknown provider "${id}"` }, 404)
+      const body = await req.json().catch(() => null) as { enabled?: unknown } | null
+      if (typeof body?.enabled !== "boolean") return json({ error: "enabled must be a boolean" }, 400)
+      setProviderEnabled(id, body.enabled)
+      invalidateAgent()
+      return json({ id, enabled: body.enabled })
+    }
+
     // POST /api/providers/:id/select -> { active } (set active provider for new sessions)
     const selectMatch = pathname.match(/^\/api\/providers\/([^/]+)\/select$/)
     if (selectMatch && req.method === "POST") {
       const id = selectMatch[1]!
       const provider = getProvider(id)
       if (!provider) return json({ error: `unknown provider "${id}"` }, 404)
+      if (!isProviderEnabled(id)) return json({ error: `Provider ${id} is disabled. Enable it in /settings.` }, 400)
       setActiveProviderId(id)
       return json({ active: id })
     }

@@ -2,13 +2,13 @@ import { tool } from "@langchain/core/tools"
 import { z } from "zod"
 import { activeProviderId, getProvider, listProviders } from "../providers/registry.ts"
 import { AuthStore } from "../providers/auth-store.ts"
-import { loadSettings, saveCustomProviders } from "../settings.ts"
+import { loadSettings, saveCustomProviders, isProviderEnabled, setProviderEnabled } from "../settings.ts"
 
 const RESERVED = new Set(["zen", "codex", "grok", "anthropic", "telnyx", "opencode-go"])
 
 export const manageProvidersInputShape = {
-  action: z.enum(["add", "list", "remove", "test"]),
-  id: z.string().optional().describe("Provider id. Required for add, remove, and test."),
+  action: z.enum(["add", "list", "remove", "test", "enable", "disable"]),
+  id: z.string().optional().describe("Provider id. Required except for list."),
   label: z.string().optional().describe("Display label. Required for add."),
   baseURL: z.string().optional().describe("OpenAI-compatible http(s) API base URL. Required for add."),
   defaultModel: z.string().optional().describe("Optional default model id for the provider."),
@@ -26,7 +26,7 @@ function assertCustomId(id: string): void {
 }
 
 export async function manageProviders(
-  action: "add" | "list" | "remove" | "test",
+  action: "add" | "list" | "remove" | "test" | "enable" | "disable",
   input: { id?: string; label?: string; baseURL?: string; defaultModel?: string; billing?: "subscription" | "metered" } = {},
 ): Promise<unknown> {
   if (action === "list") {
@@ -36,12 +36,18 @@ export async function manageProviders(
       id: provider.id,
       label: provider.label,
       ready: provider.ready(),
+      enabled: isProviderEnabled(provider.id),
       active: provider.id === active,
       custom: custom.has(provider.id),
     })) }
   }
 
   const id = required(input.id, "id")
+  if (action === "enable" || action === "disable") {
+    if (!getProvider(id)) throw new Error(`unknown provider "${id}"`)
+    setProviderEnabled(id, action === "enable")
+    return { id, enabled: isProviderEnabled(id) }
+  }
   if (action === "add") {
     assertCustomId(id)
     const label = required(input.label, "label")
@@ -79,7 +85,7 @@ export const manageProvidersTool = tool(
     JSON.stringify(await manageProviders(action, { id, label, baseURL, defaultModel, billing }), null, 2),
   {
     name: "manage_providers",
-    description: "Manage model providers only when the user asks to add or set up a provider. Add stores metadata only; API keys must never pass through this tool. List readiness, remove custom providers, or test configured authentication.",
+    description: "Manage model providers only when the user asks to add, configure, enable, or disable a provider. Add stores metadata only; API keys must never pass through this tool. List readiness, enable/disable any provider without deleting credentials, remove custom providers, or test configured authentication.",
     schema: z.object(manageProvidersInputShape),
   },
 )

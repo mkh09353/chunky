@@ -1,5 +1,5 @@
 import type { ModeSpec } from "./settings.ts"
-import { saveMode, markSeededModes, setActiveMode, setAdvisor, setSidekick, setSolo, resetSidekickSeat, setSidekickSeats, setOnboardedAt, loadSettings } from "./settings.ts"
+import { saveMode, markSeededModes, setActiveMode, setAdvisor, setSidekick, setSolo, resetSidekickSeat, setSidekickSeats, setOnboardedAt, loadSettings, isProviderEnabled } from "./settings.ts"
 import type { OnboardingProviderStatus, OnboardingRecommendation, OnboardingResponse, OnboardingSuggestedMode } from "@chunky/protocol"
 import { getProvider, listModelsFor, listProviders, setActiveProviderId, setSelection, type ModelInfo, type ProviderDef } from "./providers/registry.ts"
 import { detectClaudeCredentials, type ClaudeCredentialDetection } from "./providers/anthropic-sdk.ts"
@@ -45,7 +45,7 @@ export async function onboardingResponse(
   const providers = deps.providers()
   const codex = providers.find((provider) => provider.id === "codex")
   let codexImportFailed = false
-  if (codex && !codex.ready() && deps.hasCodexCliAuth()) {
+  if (codex && isProviderEnabled("codex") && !codex.ready() && deps.hasCodexCliAuth()) {
     try {
       codexImportFailed = !(await deps.importCodexCliAuth())
     } catch {
@@ -55,8 +55,9 @@ export async function onboardingResponse(
     }
   }
 
-  const detected = deps.detectClaude()
+  const detected = isProviderEnabled("anthropic") ? deps.detectClaude() : { state: "missing", detail: "Disabled in /settings." }
   const statuses: OnboardingProviderStatus[] = providers.map((provider) => {
+    if (!isProviderEnabled(provider.id)) return { id: provider.id, label: provider.label, enabled: false, status: "missing", detail: "Disabled in /settings." }
     if (provider.id === "anthropic") {
       // Same predicate as the apply guard (anthropicReady): credentials detected
       // OR the provider's own OAuth check, so a fire shown unlocked never 409s.
@@ -303,7 +304,7 @@ function referencedProviders(spec: ModeSpec): string[] {
 export function applyOnboardingMode(name: string, spec: ModeSpec, deps: { ready?: (id: string) => boolean } = {}): void {
   if (!getProvider(spec.provider)) throw new Error(`unknown provider "${spec.provider}"`)
   const isReady = deps.ready ?? ((id: string) => (getProvider(id)?.ready() ?? false) || (id === "anthropic" && detectClaudeCredentials().state === "ready"))
-  const missing = referencedProviders(spec).filter((id) => !isReady(id))
+  const missing = referencedProviders(spec).filter((id) => !isProviderEnabled(id) || !isReady(id))
   if (missing.length) throw new ModeProvidersNotReadyError(missing)
   saveMode(name, spec); setActiveMode(name); setSolo(false)
   // Onboarding applies a shipped default: record it as a seed with a snapshot so

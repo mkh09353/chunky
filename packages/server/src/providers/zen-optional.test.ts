@@ -21,7 +21,7 @@ async function probe(settings: object, expression: string): Promise<string> {
     env: {
       ...process.env,
       CHUNKY_SETTINGS: settingsPath,
-      CHUNKY_AUTH: join(dir, "auth.json"),
+      CHUNKY_AUTH: settingsPath + ".auth",
       ZEN_API_KEY: "",
       ZEN_BASE_URL: "",
       ZEN_MODEL: "",
@@ -40,13 +40,50 @@ async function probe(settings: object, expression: string): Promise<string> {
 }
 
 describe("Zen optional provider", () => {
+  test("disabled providers keep credentials but cannot be discovered, selected, or executed", async () => {
+    const output = await probe({ provider: "telnyx", disabledProviders: ["telnyx"] }, `
+      const { AuthStore } = await import(${JSON.stringify(join(process.cwd(), "packages/server/src/providers/auth-store.ts"))})
+      AuthStore.set("telnyx", { type: "api", key: "saved" })
+      globalThis.fetch = () => { throw new Error("Disabled provider must not fetch") }
+      const p = registry.getProvider("telnyx")
+      let blocked = false
+      try { registry.resolveModel({ provider: "telnyx", model: "test" }) } catch (e) { blocked = e.message.includes("disabled") }
+      console.log(JSON.stringify({ ready: p.ready(), models: await registry.listModelsFor("telnyx"), blocked, active: registry.activeProviderId(), key: AuthStore.getApiKey("telnyx") }))
+    `)
+    const state = JSON.parse(output)
+    expect(state).toMatchObject({ ready: false, models: [], blocked: true, key: "saved" })
+    expect(state.active).not.toBe("telnyx")
+  })
+
+  test("unconnected curated providers do not expose model catalogs", async () => {
+    const output = await probe({}, `
+      const grok = registry.getProvider("grok")
+      grok.ready = () => false
+      grok.authInfo = () => ({ state: "missing", canLogin: true })
+      grok.listModels = async () => { throw new Error("Must not fetch curated models before connection") }
+      console.log(JSON.stringify(await registry.listModelsFor("grok")))
+    `)
+    expect(JSON.parse(output)).toEqual([])
+  })
+
+  test("a disconnected saved selection yields to a connected provider", async () => {
+    const output = await probe({ provider: "grok" }, `
+      for (const p of registry.listProviders()) { p.ready = () => p.id === "telnyx"; p.authInfo = () => ({ state: p.id === "telnyx" ? "ok" : "missing", canLogin: false }) }
+      console.log(registry.activeProviderId())
+    `)
+    expect(output).toBe("telnyx")
+  })
+
   test("fresh empty settings do not default to Zen", async () => {
     const output = await probe({}, `console.log(registry.activeProviderId())`)
     expect(output).not.toBe("zen")
   })
 
-  test("explicit persisted Zen remains active", async () => {
-    const output = await probe({ provider: "zen" }, `console.log(registry.activeProviderId())`)
+  test("explicit persisted Zen remains active when no provider is connected", async () => {
+    const output = await probe({ provider: "zen" }, `
+      for (const p of registry.listProviders()) { p.ready = () => false; p.authInfo = () => ({ state: "missing", canLogin: false }) }
+      console.log(registry.activeProviderId())
+    `)
     expect(output).toBe("zen")
   })
 

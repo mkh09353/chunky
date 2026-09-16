@@ -1,4 +1,4 @@
-import { loadSettings } from "./settings.ts"
+import { loadSettings, isProviderEnabled } from "./settings.ts"
 import type { ModeSpec } from "./settings.ts"
 
 type Scope = "normal" | "incognito" | "both"
@@ -25,6 +25,7 @@ export function assertSelectionAllowed(
   sessionId: string | null,
   selection: { provider: string; model?: string },
 ): void {
+  if (!isProviderEnabled(selection.provider)) throw new Error(`Provider ${selection.provider} is disabled. Enable it in /settings or choose another provider with /model.`)
   const scope = providerScope(selection.provider)
   if (scope === "incognito" && (!sessionId || !isIncognitoSession(sessionId))) {
     throw new Error(`provider ${selection.provider} is incognito-only`)

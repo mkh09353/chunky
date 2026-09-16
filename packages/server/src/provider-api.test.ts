@@ -63,6 +63,24 @@ describe("provider setup API", () => {
     expect(auth["zen"]).toBeUndefined()
   })
 
+  test("disabling a provider persists without deleting credentials and blocks catalog and selection", async () => {
+    const path = "/api/providers/broken-custom/enabled"
+    const disable = await request(path, { method: "PUT", headers, body: JSON.stringify({ enabled: false }) })
+    expect(disable.status).toBe(200)
+    expect(JSON.parse(readFileSync(settingsPath, "utf8")).disabledProviders).toContain("broken-custom")
+    expect(JSON.parse(readFileSync(authPath, "utf8"))["broken-custom"].key).toBe("bad-key")
+    const rows = await (await request("/api/providers", { method: "GET", headers })).json()
+    expect(rows.providers.find((p: any) => p.id === "broken-custom")).toMatchObject({ enabled: false, ready: false })
+    const models = await (await request("/api/providers/broken-custom/models", { method: "GET", headers })).json()
+    expect(models).toEqual({ models: [] })
+    const selected = await request("/api/model/select", { method: "POST", headers, body: JSON.stringify({ provider: "broken-custom", model: "any" }) })
+    expect(selected.status).toBe(400)
+    expect((await selected.json()).error).toContain("disabled")
+    const enable = await request(path, { method: "PUT", headers, body: JSON.stringify({ enabled: true }) })
+    expect(enable.status).toBe(200)
+    expect(JSON.parse(readFileSync(settingsPath, "utf8")).disabledProviders).not.toContain("broken-custom")
+  })
+
   test("custom-provider auth test reports authenticated models endpoint failure", async () => {
     const response = await request(ROUTES.authTest("broken-custom"), { method: "POST", headers })
     expect(response.status).toBe(200)

@@ -783,6 +783,7 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
       // Slash commands that take arguments arrive here (the menu only fires bare
       // commands via onCommand): `/goal <objective>`, `/cacheguard <tokens|off>`.
       const command = text.trim()
+      if (command === "/settings") { doProvider(); return }
       if (command === "/theme" || command.startsWith("/theme ")) {
         doTheme(command.slice("/theme".length).trim())
         return
@@ -2061,7 +2062,7 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
           break
         case "/help":
           printLine(
-            "Commands: /clear, /resume, /rewind, /fork, /help, /login, /model, /theme, /skills, /provider, /workers, /scoreboard, /usage, /advisor, /soloadvisor, /sidekick, /mode, /incognito, /goal, /shipit, /cacheguard, /quit. `/incognito [name]` applies an incognito mode so NEW sessions run off the record. `/scoreboard` ranks models by rating (add `session` to scope it); `/usage` shows this session's tokens and cost by role. `/rewind` restores files and conversation to an earlier turn; `/fork [--worktree|--no-worktree] [directive]` branches this session, optionally into a Git worktree. `/workers` shows automatic workflow routes; `/workers tag|auto|reset` changes exceptions. Input: enter to send (queues during a running turn), option+enter to steer a running turn, ctrl+v to attach a clipboard image.",
+            "Commands: /clear, /resume, /rewind, /fork, /help, /login, /model, /theme, /skills, /settings, /provider, /workers, /scoreboard, /usage, /advisor, /soloadvisor, /sidekick, /mode, /incognito, /goal, /shipit, /cacheguard, /quit. `/incognito [name]` applies an incognito mode so NEW sessions run off the record. `/scoreboard` ranks models by rating (add `session` to scope it); `/usage` shows this session's tokens and cost by role. `/rewind` restores files and conversation to an earlier turn; `/fork [--worktree|--no-worktree] [directive]` branches this session, optionally into a Git worktree. `/workers` shows automatic workflow routes; `/workers tag|auto|reset` changes exceptions. Input: enter to send (queues during a running turn), option+enter to steer a running turn, ctrl+v to attach a clipboard image.",
           )
           break
         case "/login":
@@ -2079,6 +2080,7 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
         case "/skills":
           void doSkills("")
           break
+        case "/settings":
         case "/provider":
           doProvider()
           break

@@ -108,6 +108,8 @@ export interface Settings {
   fileToolProfile?: "standard" | "hashline"
   /** User/project skill names disabled globally. */
   disabledSkills?: string[]
+  /** Disabled providers retain credentials but cannot be selected or run. */
+  disabledProviders?: string[]
   customProviders?: CustomProvider[]
   onboardedAt?: number
   /** Active provider id. */
@@ -342,6 +344,18 @@ function save(next: Settings): void {
   } catch (err) {
     console.warn(`[@chunky/server] could not persist settings: ${(err as Error).message}`)
   }
+}
+
+export function isProviderEnabled(id: string): boolean {
+  return !(loadSettings().disabledProviders ?? []).includes(id)
+}
+
+export function setProviderEnabled(id: string, enabled: boolean): void {
+  const settings = loadSettings()
+  const disabled = new Set(settings.disabledProviders ?? [])
+  if (enabled) disabled.delete(id)
+  else disabled.add(id)
+  save({ ...settings, disabledProviders: [...disabled] })
 }
 
 /** The active provider id from settings (undefined if never set). */

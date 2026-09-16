@@ -3,7 +3,7 @@ import { useEffect, useMemo, useState } from "react"
 import { TextAttributes } from "@opentui/core"
 import figures from "figures"
 import { ACCENT, BORDER, ERROR } from "../theme.js"
-import { rawModeSupported, useInput } from "../useInput.js"
+import { useInput } from "../useInput.js"
 
 const { BOLD, DIM } = TextAttributes
 
@@ -102,7 +102,6 @@ function fuzzyScore(query: string, target: string): number {
  * LoginPicker (rounded violet box, ❯ pointer).
  */
 export function ModelPicker({ baseUrl, sessionId, onDone, onCancel }: Props) {
-  const rawSupported = rawModeSupported
   const [rows, setRows] = useState<Row[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
@@ -115,20 +114,22 @@ export function ModelPicker({ baseUrl, sessionId, onDone, onCancel }: Props) {
   const [chosen, setChosen] = useState<Row | null>(null)
   const [effort, setEffort] = useState<Effort | undefined>(undefined)
 
-  // Fetch every provider's models on mount and flatten to provider/model rows.
+  // Fetch only connected, enabled providers' models on mount and flatten to provider/model rows.
   useEffect(() => {
     let cancelled = false
     ;(async () => {
       try {
-        const provRes = await fetch(baseUrl + "/api/providers")
+        const provRes = await fetch(baseUrl + "/api/providers" + (sessionId ? `?session=${encodeURIComponent(sessionId)}` : ""))
         const provBody = (await provRes.json()) as {
-          providers?: Array<{ id: string; ready: boolean }>
+          providers?: Array<{ id: string; ready: boolean; enabled?: boolean }>
         }
-        const providers = provBody.providers ?? []
+        if (!provRes.ok) throw new Error("Could not load providers")
+        const providers = (provBody.providers ?? []).filter((p) => p.ready && p.enabled !== false)
         const groups = await Promise.all(
           providers.map(async (p): Promise<Row[]> => {
             try {
-              const r = await fetch(baseUrl + `/api/providers/${p.id}/models`)
+              const r = await fetch(baseUrl + `/api/providers/${encodeURIComponent(p.id)}/models` + (sessionId ? `?session=${encodeURIComponent(sessionId)}` : ""))
+              if (!r.ok) return []
               const b = (await r.json()) as { models?: ModelInfo[] }
               return (b.models ?? []).map((model) => ({ provider: p.id, ready: p.ready, model }))
             } catch {
@@ -151,7 +152,7 @@ export function ModelPicker({ baseUrl, sessionId, onDone, onCancel }: Props) {
     return () => {
       cancelled = true
     }
-  }, [baseUrl])
+  }, [baseUrl, sessionId])
 
   // Filter + rank rows against the current query.
   const filtered = useMemo(() => {
@@ -195,6 +196,7 @@ export function ModelPicker({ baseUrl, sessionId, onDone, onCancel }: Props) {
 
   useInput(
     (input, key) => {
+      if (key.escape && step === "list" && !busy) return onCancel()
       if (busy || loading) return
 
       // ---- effort sub-picker ----
@@ -258,7 +260,7 @@ export function ModelPicker({ baseUrl, sessionId, onDone, onCancel }: Props) {
         setListSel(0)
       }
     },
-    { isActive: rawSupported },
+    { isActive: true },
   )
 
   // ---- render ----
@@ -317,7 +319,7 @@ export function ModelPicker({ baseUrl, sessionId, onDone, onCancel }: Props) {
         <ThemeText attributes={DIM}>{filter ? "" : "type to search…"}</ThemeText>
       </box>
       {filtered.length === 0 ? (
-        <ThemeText attributes={DIM}>no matches</ThemeText>
+        <ThemeText attributes={DIM}>{rows.length ? "No matches" : "No models available. Connect a provider with /onboard or enable one in /settings."}</ThemeText>
       ) : (
         visible.map((row, i) => {
           const idx = start + i

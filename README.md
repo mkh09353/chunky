@@ -22,6 +22,8 @@ Telnyx ships as a built-in API-key provider. Open `/onboard`, select **Telnyx**,
 
 OpenCode Go is a separate built-in subscription provider. Open `/onboard`, select **OpenCode Go**, and paste your Go API key, or set `OPENCODE_GO_API_KEY`. It uses its own saved credentials and the Go endpoint (`https://opencode.ai/zen/go/v1`); Zen credentials are never reused. `/model` fetches the live Go catalog. Go uses Chat Completions, Responses, or Anthropic Messages according to the model, with a stable `x-opencode-session` for the conversation and Chunky’s User-Agent on every request. Model reasoning uses provider defaults. The public catalog cannot validate a key; account access is checked on the first model request. See [OpenCode Go](https://opencode.ai/docs/go/).
 
+Use `/settings` (also `/provider`) to enable or disable providers with Space. This keeps saved credentials and model choices, but stops disabled providers from being used, including automatically inherited Codex and Anthropic connections. The model picker only lists connected, enabled providers; use `/onboard` to connect a provider.
+
 For Anthropic subscription OAuth, authenticate the real Claude CLI once with `claude auth login --claudeai`; Chunky reuses that OAuth session through `@anthropic-ai/claude-agent-sdk`.
 
 ```bash

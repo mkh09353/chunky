@@ -58,3 +58,42 @@ test("provider setup owns keyboard input and returns it to the prompt on close",
     rmSync(cwd, { recursive: true, force: true })
   }
 }, 15_000)
+
+test("provider settings own input, persist disable, and the model picker excludes unconnected providers", async () => {
+  const cwd = mkdtempSync(join(tmpdir(), "chunky-provider-settings-"))
+  const settings = join(cwd, "settings.json")
+  writeFileSync(settings, JSON.stringify({ theme: "dark" }))
+  let enabled = true
+  const catalogs: string[] = []
+  const server = Bun.serve({ port: 0, async fetch(req) {
+    const path = new URL(req.url).pathname
+    if (path === "/api/onboarding") return Response.json({ onboardedAt: 1 })
+    if (path === "/api/providers") return Response.json({ providers: [
+      { id: "codex", label: "Codex", enabled, ready: enabled },
+      { id: "grok", label: "Grok", enabled: true, ready: false },
+    ] })
+    if (path === "/api/providers/codex/enabled") { enabled = (await req.json()).enabled; return Response.json({ enabled }) }
+    if (path.endsWith("/models")) { catalogs.push(path); return Response.json({ models: [{ id: "test", name: "Test", reasoning: false }] }) }
+    if (path === "/api/sessions" && req.method === "POST") return Response.json({ sessionId: "test" })
+    if (path.endsWith("/events")) return new Response(new ReadableStream({ start(c) { c.enqueue(new TextEncoder().encode(": ready\n\n")) } }), { headers: { "content-type": "text/event-stream" } })
+    return Response.json({ workspace: cwd })
+  } })
+  const session = new Session([process.execPath, "run", join(import.meta.dir, "index.tsx"), "--live"], {
+    cwd, cols: 110, rows: 36, env: { CHUNKY_PORT: String(server.port), CHUNKY_SETTINGS: settings, CHUNKY_HOME: cwd },
+  })
+  async function send(text: string) { session.send(new TextEncoder().encode(text)); await Bun.sleep(100) }
+  try {
+    await session.waitForText('Try "fix lint errors"')
+    await send("/settings"); await send("\r")
+    await session.waitForText("Provider settings")
+    await send(" ")
+    await session.waitForText("[disabled]")
+    expect(enabled).toBe(false)
+    expect(session.text()).toContain('Try "fix lint errors"')
+    await send("\x1b")
+    await send("/model"); await send("\r")
+    await session.waitForText("No models available")
+    expect(catalogs).toEqual([])
+    expect(session.text()).not.toContain("[login needed]")
+  } finally { session.stop(); await session.process.exited; server.stop(true); rmSync(cwd, { recursive: true, force: true }) }
+}, 15_000)

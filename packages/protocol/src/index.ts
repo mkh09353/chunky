@@ -700,6 +700,7 @@ export interface SessionAgentConfigResponse {
 /** One provider row in GET ROUTES.onboarding. `inherited` = credentials found
  *  outside Chunky (e.g. the Claude CLI login); it counts as ready. */
 export interface OnboardingProviderStatus {
+  enabled?: boolean
   id: string
   label: string
   status: "ready" | "inherited" | "missing"
@@ -781,6 +782,7 @@ export interface ProviderAuthStatusResponse { ready: boolean; auth: ProviderAuth
 
 /** One row of GET /api/providers. */
 export interface ProviderListRow {
+  enabled?: boolean
   id: string
   label: string
   billing: string

@@ -16,6 +16,7 @@ import { enrichModels, type ModelInfo } from "./models-catalog.ts"
 import { chatOptionsFor } from "./model-options.ts"
 import { assertSelectionAllowed, incognitoAllowlistFor, isIncognitoSession, providerScope } from "../incognito.ts"
 import {
+  isProviderEnabled,
   getAdvisor,
   getSolo,
   getSoloAdvisor,
@@ -122,7 +123,8 @@ export function providerAuthErrorEvent(provider: string, error: unknown): Extrac
 }
 
 /** `ready` for list/status rows: a verified failure overrides credential presence. */
-export function providerReady(provider: Pick<ProviderDef, "ready">, auth: ProviderAuthInfo): boolean {
+export function providerReady(provider: Pick<ProviderDef, "ready"> & { id?: string }, auth: ProviderAuthInfo): boolean {
+  if (provider.id && !isProviderEnabled(provider.id)) return false
   if (auth.state === "ok") return true
   if (auth.state === "expired" || auth.state === "missing") return false
   return provider.ready()
@@ -246,17 +248,26 @@ export function registerProvider(def: ProviderDef): void {
 
 export function listProviders(sessionId: string | null = null): ProviderDef[] {
   ensureCustomProviders()
-  return Object.values(providers).filter((p) => {
+  return Object.values(providers).map(providerAvailability).filter((p) => {
     if (providerScope(p.id) === "incognito" && (!sessionId || !isIncognitoSession(sessionId))) return false
     if (sessionId && isIncognitoSession(sessionId)) return incognitoAllowlistFor(sessionId)?.includes(p.id) ?? false
     return true
   })
 }
 
+/** Keep disabled providers visible in settings without treating their saved auth as availability. */
+function providerAvailability(provider: ProviderDef): ProviderDef {
+  if (isProviderEnabled(provider.id)) return provider
+  return { ...provider, ready: () => false, listModels: async () => [],
+    ensureAuth: async () => { throw new Error(`Provider ${provider.id} is disabled. Enable it in /settings.`) },
+  }
+}
+
 /** Look up a single provider by id (undefined if unregistered). */
 export function getProvider(id: string): ProviderDef | undefined {
   ensureCustomProviders()
-  return providers[id]
+  const provider = providers[id]
+  return provider ? providerAvailability(provider) : undefined
 }
 
 export function mergeModelCatalog(
@@ -276,6 +287,7 @@ export function mergeModelCatalog(
 
 /** List the models a provider can serve (throws if the provider is unknown). */
 export async function listModelsFor(id: string, sessionId: string | null = null): Promise<ModelInfo[]> {
+  if (!isProviderEnabled(id)) return []
   assertSelectionAllowed(sessionId, { provider: id })
   const all = await listAllKnownModelsFor(id)
   const hidden = new Set(modelCatalogFor(id).hidden ?? [])
@@ -287,6 +299,7 @@ export async function listAllKnownModelsFor(id: string): Promise<ModelInfo[]> {
   ensureCustomProviders()
   const p = providers[id]
   if (!p) throw new Error(`unknown provider "${id}"`)
+  if (!providerReady(p, providerAuthInfo(p))) return []
   const advertised = await p.listModels()
   const overlay = modelCatalogFor(id)
   const advertisedIds = new Set(advertised.map((model) => model.id))
@@ -298,31 +311,33 @@ export async function listAllKnownModelsFor(id: string): Promise<ModelInfo[]> {
 // ---- Active provider + per-provider selection (persisted) ----
 
 // Runtime override for the active provider. Falls back to the persisted value,
-// then CHUNKY_PROVIDER, then "zen". Setting it also persists so it survives restart.
+// then CHUNKY_PROVIDER, then an available provider. Setting it also persists.
 let activeOverride: string | undefined
 
 /** The currently selected provider id. */
 export function activeProviderId(): string {
   ensureCustomProviders()
-  if (activeOverride && providers[activeOverride]) return activeOverride
-  // An explicit persisted choice, including Zen, is always preserved.
-  const persisted = persistedProvider()
-  if (persisted && providers[persisted]) return persisted
-  const requested = process.env.CHUNKY_PROVIDER
-  if (requested && providers[requested]) return requested
-  // Prefer a ready subscription provider. With no credentials, Anthropic is
-  // the deterministic supported auth flow rather than raw ZEN_* errors.
+  const choices = [activeOverride, persistedProvider(), process.env.CHUNKY_PROVIDER]
+    .filter((id): id is string => Boolean(id && providers[id] && isProviderEnabled(id)))
+  const connected = (id: string) => providerReady(providers[id]!, providerAuthInfo(providers[id]!))
+  const chosen = choices.find(connected)
+  if (chosen) return chosen
   const readySubscription = Object.values(providers).find(
-    (provider) => provider.id !== "zen" && provider.billing === "subscription" && provider.ready(),
+    (provider) => provider.id !== "zen" && provider.billing === "subscription" && connected(provider.id),
   )
   if (readySubscription) return readySubscription.id
-  return providers.anthropic ? "anthropic" : Object.keys(providers).find((id) => id !== "zen") ?? "anthropic"
+  const ready = Object.keys(providers).find(connected)
+  if (ready) return ready
+  // Preserve an enabled choice when offline; discovery remains empty and the
+  // picker directs the user to setup. Disabled choices never take precedence.
+  return choices[0] ?? Object.keys(providers).find((id) => id !== "zen" && isProviderEnabled(id)) ?? "anthropic"
 }
 
 /** Select the active provider for subsequently-built models (persisted). */
 export function setActiveProviderId(id: string): void {
   ensureCustomProviders()
   if (!providers[id]) throw new Error(`unknown provider "${id}"`)
+  if (!isProviderEnabled(id)) throw new Error(`Provider ${id} is disabled. Enable it in /settings.`)
   activeOverride = id
   setPersistedProvider(id)
 }

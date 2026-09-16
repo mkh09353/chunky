@@ -5,7 +5,7 @@ import { useInput, usePasteText } from "../useInput.js"
 import { ACCENT, WARNING } from "../theme.js"
 import type { ModeSpec } from "@chunky/protocol"
 
-type Provider = { id: string; label: string; status: string; detail?: string }
+type Provider = { id: string; label: string; status: string; enabled?: boolean; detail?: string }
 type Suggestion = { name: string; description: string; spec: ModeSpec; locked?: boolean }
 type Payload = { providers?: Provider[]; suggestedModes?: Suggestion[]; onboardedAt?: number }
 
@@ -86,6 +86,7 @@ export function OnboardingWizard({ baseUrl, onDone, onLogin }: { baseUrl: string
       const rows = payload?.providers ?? []
       if (selected < rows.length) {
         const p = rows[selected]
+        if (p?.enabled === false) { setError("This provider is disabled. Enable it in /settings first."); return }
         if (p?.id === "telnyx" || p?.id === "opencode-go") { setKeyProvider(p.id); setApiKey(""); setError(undefined); setStep("api-key"); return }
         if (p?.status === "missing" && (p.id === "codex" || p.id === "grok") && onLogin && !busy) {
           setBusy(true); setError(undefined)
@@ -116,7 +117,7 @@ export function OnboardingWizard({ baseUrl, onDone, onLogin }: { baseUrl: string
     <ThemeText>{busy ? (keyProvider === "telnyx" ? "Verifying API key…" : "Saving API key…") : "Enter saves · Esc back"}</ThemeText>
   </box>
   if (step === "custom") { const labels = ["id", "label", "baseURL", "API key"]; return <box flexDirection="column"><ThemeText fg={ACCENT}>Custom OpenAI-compatible provider</ThemeText><ThemeText>{labels[field]}: {field === 3 ? "•".repeat(values[field].length) : values[field]}▌</ThemeText><ThemeText>Enter advances · Esc cancels</ThemeText></box> }
-  if (step === "connect") { const rows = payload.providers ?? []; return <box flexDirection="column"><ThemeText attributes={TextAttributes.BOLD} fg={ACCENT}>Welcome to Chunky — connect a provider</ThemeText>{rows.map((p, i) => <ThemeText key={p.id} fg={i === selected ? ACCENT : undefined}>{i === selected ? "❯ " : "  "}{p.status === "missing" ? "✗" : "✓"} {p.label}{p.status === "inherited" ? " (inherited from Claude Code)" : ""}</ThemeText>)}<ThemeText fg={selected === rows.length ? ACCENT : undefined}>{selected === rows.length ? "❯ " : "  "}Continue</ThemeText>{busy && <ThemeText>Waiting for login…</ThemeText>}{error && <ThemeText fg={WARNING}>{error}</ThemeText>}<ThemeText>↑/↓ choose · Enter select · c custom provider · Esc to leave</ThemeText></box> }
+  if (step === "connect") { const rows = payload.providers ?? []; return <box flexDirection="column"><ThemeText attributes={TextAttributes.BOLD} fg={ACCENT}>Welcome to Chunky — connect a provider</ThemeText>{rows.map((p, i) => <ThemeText key={p.id} fg={i === selected ? ACCENT : undefined}>{i === selected ? "❯ " : "  "}{p.enabled === false ? "–" : p.status === "missing" ? "✗" : "✓"} {p.label}{p.enabled === false ? " (disabled in /settings)" : ""}{p.status === "inherited" ? " (inherited from Claude Code)" : ""}</ThemeText>)}<ThemeText fg={selected === rows.length ? ACCENT : undefined}>{selected === rows.length ? "❯ " : "  "}Continue</ThemeText>{busy && <ThemeText>Waiting for login…</ThemeText>}{error && <ThemeText fg={WARNING}>{error}</ThemeText>}<ThemeText>↑/↓ choose · Enter select · c custom provider · Esc to leave</ThemeText></box> }
   if (step === "seats") return <box flexDirection="column"><ThemeText attributes={TextAttributes.BOLD} fg={ACCENT}>Choose a suggested setup</ThemeText>{suggestions.map((s, i) => <ThemeText key={s.name} fg={i === selected ? ACCENT : undefined}>{i === selected ? "❯ " : "  "}{s.name} — {s.description}</ThemeText>)}<ThemeText>Enter to apply · Esc to cancel</ThemeText></box>
   return <box flexDirection="column"><ThemeText attributes={TextAttributes.BOLD} fg={ACCENT}>You're set!</ThemeText><ThemeText>Try /model, /mode, /login, or /onboard. Say hi to test it.</ThemeText><ThemeText>Enter to finish · Esc to leave</ThemeText></box>
 }

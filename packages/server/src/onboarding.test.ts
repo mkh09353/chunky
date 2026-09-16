@@ -14,6 +14,23 @@ afterAll(() => rmSync(dir, { recursive: true, force: true }))
 let settingsSerial = 0
 beforeEach(() => { process.env.CHUNKY_SETTINGS = join(dir, `settings-${settingsSerial++}.json`); AuthStore.remove("codex") })
 describe("onboarding endpoint", () => {
+  test("disabled inherited providers are not imported, detected, or offered as ready", async () => {
+    settings.setProviderEnabled("codex", false)
+    settings.setProviderEnabled("anthropic", false)
+    let imports = 0, detections = 0
+    const response = await onboardingResponse({
+      providers: () => [codexProvider, { ...codexProvider, id: "anthropic", ready: () => true }],
+      hasCodexCliAuth: () => true,
+      importCodexCliAuth: async () => { imports++; return true },
+      detectClaude: () => { detections++; return { state: "ready", detail: "inherited" } },
+      suggestions: async (ready) => { expect(ready.size).toBe(0); return [] },
+    })
+    const body = await response.json()
+    expect(body.providers.every((p: any) => p.enabled === false && p.status === "missing")).toBe(true)
+    expect(imports).toBe(0)
+    expect(detections).toBe(0)
+  })
+
   test("reports plain missing detail when no Codex CLI auth file exists", async () => {
     const cli = mkdtempSync(join(tmpdir(), "chunky-onboarding-codex-cli-missing-"))
     const oldHome = process.env.CODEX_HOME

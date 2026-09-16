@@ -36,6 +36,15 @@ describe("manage_providers", () => {
     }
   })
 
+  test("agents can disable and re-enable built-ins without removing credentials", async () => {
+    AuthStore.set("telnyx", { type: "api", key: "saved-key" })
+    expect(await manageProviders("disable", { id: "telnyx" })).toEqual({ id: "telnyx", enabled: false })
+    const listed = await manageProviders("list") as { providers: Array<{ id: string; enabled: boolean; ready: boolean }> }
+    expect(listed.providers.find((p) => p.id === "telnyx")).toMatchObject({ enabled: false, ready: false })
+    expect(AuthStore.getApiKey("telnyx")).toBe("saved-key")
+    expect(await manageProviders("enable", { id: "telnyx" })).toEqual({ id: "telnyx", enabled: true })
+  })
+
   test("rejects reserved ids and non-http base URLs", async () => {
     expect(manageProviders("add", { id: "codex", label: "No", baseURL: "https://example.test" })).rejects.toThrow("reserved")
     expect(manageProviders("remove", { id: "anthropic" })).rejects.toThrow("reserved")

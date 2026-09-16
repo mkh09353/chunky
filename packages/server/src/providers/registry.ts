@@ -38,6 +38,7 @@ import {
   type SidekickSeat,
 } from "../settings.ts"
 import { AuthStore } from "./auth-store.ts"
+import { telnyxProvider } from "./telnyx.ts"
 import { Store } from "../store.ts"
 
 export type { LoginInitiation } from "@chunky/protocol"
@@ -219,6 +220,7 @@ function keyOrThrow(id: string): string {
 }
 
 const providers: Record<string, ProviderDef> = {
+  telnyx: telnyxProvider,
   zen: {
     id: "zen",
     label: "Zen · OpenAI-compatible (API key)",
@@ -512,7 +514,7 @@ registerProvider(anthropicProvider)
 // Settings are deliberately consulted on first use, not while this module is
 // being evaluated. Tests (and embedders) commonly select CHUNKY_SETTINGS after
 // importing the registry, and settings are user-editable between requests.
-const BUILT_INS = new Set(["zen", "codex", "grok", "anthropic"])
+const BUILT_INS = new Set(["zen", "codex", "grok", "anthropic", "telnyx"])
 let loadedCustomSignature = ""
 function ensureCustomProviders(): void {
   const custom = loadSettings().customProviders ?? []

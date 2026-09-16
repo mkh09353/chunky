@@ -119,6 +119,7 @@ import { isMcpAuthorized, mcpConfig, startMcpAuthorization } from "./mcp-auth.ts
 import { checkForUpdate, currentVersion, installedVersion, persistCheck, readPersistedCheck } from "./update/updater.ts"
 import { checkInstalledVersion, onStaleRuntime } from "./staleRuntime.ts"
 import { applyOnboardingMode, onboardingResponse, suggestedModes, ensureDefaultModes, saveCustomProvider, ModeProvidersNotReadyError } from "./onboarding.ts"
+import { fetchTelnyxModels } from "./providers/telnyx.ts"
 import {
   currentModeSpec,
   deleteMode,
@@ -1000,6 +1001,11 @@ const server = Bun.serve(withRequestLog(withCors({
     if (providerKeyMatch && req.method === "POST") {
       const providerId = decodeURIComponent(providerKeyMatch[1]!)
       const body = await req.json().catch(() => ({})) as ProviderKeyRequest
+      if (providerId === "telnyx" && typeof body.key === "string" && body.key.trim()) {
+        body.key = body.key.trim()
+        try { await fetchTelnyxModels(body.key) }
+        catch { return json({ error: "Could not verify the Telnyx key. Check your API key, account permissions, and connection, then retry." }, 400) }
+      }
       return json(submitProviderKey(providerId, body) satisfies ProviderKeyResponse)
     }
     if (req.method === "POST" && pathname === ROUTES.onboardingComplete) {

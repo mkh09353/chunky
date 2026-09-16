@@ -17,6 +17,8 @@ TUI (Ink) ──SSE──▶ server (Bun) ──▶ LangChain agent ──▶ Ze
 
 ## Run
 Requires Bun. Zen config is in `.env` (gitignored): `ZEN_BASE_URL`, `ZEN_MODEL`, `ZEN_API_KEY`, `CHUNKY_PORT`.
+
+Telnyx ships as a built-in API-key provider. Open `/onboard`, select **Telnyx**, and paste your key from the Telnyx portal; no custom URL is needed. The key is verified and stored in the private auth store. `TELNYX_API_KEY` is also supported. Then use `/model` to choose from your account's current chat models, fetched from `https://api.telnyx.com/v2/ai/openai/models` whenever the catalog is opened. Embedding models are excluded; reasoning uses the model's default. See the [Telnyx model API](https://developers.telnyx.com/api-reference/openai-chat/get-available-models-openai-compatible).
 For Anthropic subscription OAuth, authenticate the real Claude CLI once with `claude auth login --claudeai`; Chunky reuses that OAuth session through `@anthropic-ai/claude-agent-sdk`.
 
 ```bash

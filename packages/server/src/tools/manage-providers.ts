@@ -4,7 +4,7 @@ import { activeProviderId, getProvider, listProviders } from "../providers/regis
 import { AuthStore } from "../providers/auth-store.ts"
 import { loadSettings, saveCustomProviders } from "../settings.ts"
 
-const RESERVED = new Set(["zen", "codex", "grok", "anthropic"])
+const RESERVED = new Set(["zen", "codex", "grok", "anthropic", "telnyx"])
 
 export const manageProvidersInputShape = {
   action: z.enum(["add", "list", "remove", "test"]),

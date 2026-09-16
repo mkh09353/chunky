@@ -1,3 +1,4 @@
+import { ThemeText } from "./ThemeText.js"
 import { TextAttributes } from "@opentui/core"
 import { ChunkyLogo } from "./ChunkyLogo.js"
 import { ACCENT, BORDER, INCOGNITO_LABEL } from "../theme.js"
@@ -39,20 +40,20 @@ export function WelcomeBanner({
       paddingY={1}
       paddingX={1}
     >
-      <text attributes={TextAttributes.BOLD}>Welcome to Chunky</text>
+      <ThemeText attributes={TextAttributes.BOLD}>Welcome to Chunky</ThemeText>
       <box marginY={1}>
         <ChunkyLogo />
       </box>
       {incognito && (
-        <text fg={ACCENT} attributes={TextAttributes.BOLD}>
+        <ThemeText fg={ACCENT} attributes={TextAttributes.BOLD}>
           {INCOGNITO_LABEL} — off the record
-        </text>
+        </ThemeText>
       )}
-      <text attributes={TextAttributes.DIM}>{model}</text>
-      <text attributes={TextAttributes.DIM}>{shortCwd(cwd)}</text>
-      <text attributes={TextAttributes.DIM}>
+      <ThemeText attributes={TextAttributes.DIM}>{model}</ThemeText>
+      <ThemeText attributes={TextAttributes.DIM}>{shortCwd(cwd)}</ThemeText>
+      <ThemeText attributes={TextAttributes.DIM}>
         mode: <span fg={ACCENT}>all yolo, all the time</span>
-      </text>
+      </ThemeText>
     </box>
   )
 }

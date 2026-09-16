@@ -1,3 +1,4 @@
+import { ThemeText } from "./ThemeText.js"
 import { useState } from "react"
 import { TextAttributes } from "@opentui/core"
 import type { RewindPoint } from "@chunky/protocol"
@@ -93,14 +94,14 @@ export function RewindPicker({
   if (confirming) {
     return (
       <box flexDirection="column" border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
-        <text fg={WARNING}>
+        <ThemeText fg={WARNING}>
           {`This will discard files + conversation after turn ${confirming.turn}.`}
-        </text>
-        <text attributes={TextAttributes.DIM}>{`  ${rewindRowLabel(confirming)}`}</text>
-        <text attributes={TextAttributes.DIM}>
+        </ThemeText>
+        <ThemeText attributes={TextAttributes.DIM}>{`  ${rewindRowLabel(confirming)}`}</ThemeText>
+        <ThemeText attributes={TextAttributes.DIM}>
           {busy ? "  rewinding…" : "  Enter to confirm, Esc to cancel"}
-        </text>
-        {error && <text fg={WARNING}>{`  ${error}`}</text>}
+        </ThemeText>
+        {error && <ThemeText fg={WARNING}>{`  ${error}`}</ThemeText>}
       </box>
     )
   }
@@ -110,29 +111,29 @@ export function RewindPicker({
   const older = points.length - start - visible.length
   return (
     <box flexDirection="column" border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
-      <text attributes={TextAttributes.DIM}>Rewind to a turn — ↑/↓ move · enter select · esc cancel</text>
-      {start > 0 && <text attributes={TextAttributes.DIM}>{`  … ${start} newer`}</text>}
+      <ThemeText attributes={TextAttributes.DIM}>Rewind to a turn — ↑/↓ move · enter select · esc cancel</ThemeText>
+      {start > 0 && <ThemeText attributes={TextAttributes.DIM}>{`  … ${start} newer`}</ThemeText>}
       {visible.map((p, i) => {
         const on = start + i === selected
         // Incomplete turns are unselectable: dim them and drop the pointer.
         if (!p.complete) {
           return (
-            <text key={p.turn} attributes={TextAttributes.DIM}>
+            <ThemeText key={p.turn} attributes={TextAttributes.DIM}>
               {`  ${rewindRowLabel(p)}  (incomplete)`}
-            </text>
+            </ThemeText>
           )
         }
         return (
           <box key={p.turn} flexDirection="row">
-            <text fg={on ? ACCENT : undefined}>{on ? "❯ " : "  "}</text>
-            <text fg={on ? ACCENT : undefined} attributes={on ? TextAttributes.BOLD : 0}>
+            <ThemeText fg={on ? ACCENT : undefined}>{on ? "❯ " : "  "}</ThemeText>
+            <ThemeText fg={on ? ACCENT : undefined} attributes={on ? TextAttributes.BOLD : 0}>
               {rewindRowLabel(p)}
-            </text>
+            </ThemeText>
           </box>
         )
       })}
-      {older > 0 && <text attributes={TextAttributes.DIM}>{`  … ${older} older`}</text>}
-      {error && <text fg={WARNING}>{`  ${error}`}</text>}
+      {older > 0 && <ThemeText attributes={TextAttributes.DIM}>{`  … ${older} older`}</ThemeText>}
+      {error && <ThemeText fg={WARNING}>{`  ${error}`}</ThemeText>}
     </box>
   )
 }

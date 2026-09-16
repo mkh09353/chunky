@@ -1,3 +1,4 @@
+import { ThemeText } from "./ThemeText.js"
 import { TextAttributes } from "@opentui/core"
 import { ACCENT, BORDER } from "../theme.js"
 
@@ -15,20 +16,20 @@ export interface ProviderRow {
 export function LoginPicker({ providers, selected }: { providers: ProviderRow[]; selected: number }) {
   return (
     <box flexDirection="column" border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
-      <text attributes={TextAttributes.DIM}>Log in to a provider — ↑/↓ move · enter select · esc cancel</text>
+      <ThemeText attributes={TextAttributes.DIM}>Log in to a provider — ↑/↓ move · enter select · esc cancel</ThemeText>
       {providers.map((p, i) => {
         const on = i === selected
         return (
           <box key={p.id} flexDirection="row">
-            <text fg={on ? ACCENT : undefined}>{on ? "❯ " : "  "}</text>
-            <text fg={on ? ACCENT : undefined} attributes={on ? TextAttributes.BOLD : 0}>
+            <ThemeText fg={on ? ACCENT : undefined}>{on ? "❯ " : "  "}</ThemeText>
+            <ThemeText fg={on ? ACCENT : undefined} attributes={on ? TextAttributes.BOLD : 0}>
               {p.ready ? "●" : "○"} {p.id}
-            </text>
-            <text attributes={TextAttributes.DIM}>
+            </ThemeText>
+            <ThemeText attributes={TextAttributes.DIM}>
               {"  — " + p.label}
               {p.ready ? " [logged in]" : ""}
               {p.active ? " (active)" : ""}
-            </text>
+            </ThemeText>
           </box>
         )
       })}

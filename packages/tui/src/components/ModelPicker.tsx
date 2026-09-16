@@ -1,3 +1,4 @@
+import { ThemeText } from "./ThemeText.js"
 import { useEffect, useMemo, useState } from "react"
 import { TextAttributes } from "@opentui/core"
 import figures from "figures"
@@ -262,14 +263,14 @@ export function ModelPicker({ baseUrl, sessionId, onDone, onCancel }: Props) {
   if (loading) {
     return (
       <box border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
-        <text attributes={DIM}>Loading models…</text>
+        <ThemeText attributes={DIM}>Loading models…</ThemeText>
       </box>
     )
   }
   if (error) {
     return (
       <box border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
-        <text fg={ERROR}>Couldn&apos;t load models: {error}</text>
+        <ThemeText fg={ERROR}>Couldn&apos;t load models: {error}</ThemeText>
       </box>
     )
   }
@@ -282,17 +283,17 @@ export function ModelPicker({ baseUrl, sessionId, onDone, onCancel }: Props) {
         : `Speed for ${chosen?.model.id}`
     return (
       <box flexDirection="column" border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
-        <text attributes={DIM}>
+        <ThemeText attributes={DIM}>
           {title} — ↑/↓ move · enter select · esc back
-        </text>
+        </ThemeText>
         {options.map((opt, i) => {
           const on = i === optSel
           return (
             <box key={opt} flexDirection="row">
-              <text fg={ACCENT}>{on ? figures.pointer : " "} </text>
-              <text fg={on ? ACCENT : undefined} attributes={on ? BOLD : 0}>
+              <ThemeText fg={ACCENT}>{on ? figures.pointer : " "} </ThemeText>
+              <ThemeText fg={on ? ACCENT : undefined} attributes={on ? BOLD : 0}>
                 {opt}
-              </text>
+              </ThemeText>
             </box>
           )
         })}
@@ -305,39 +306,39 @@ export function ModelPicker({ baseUrl, sessionId, onDone, onCancel }: Props) {
   const visible = filtered.slice(start, start + WINDOW)
   return (
     <box flexDirection="column" border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
-      <text attributes={DIM}>
+      <ThemeText attributes={DIM}>
         Pick a model — type to filter · ↑/↓ move · enter select · esc cancel
-      </text>
+      </ThemeText>
       <box flexDirection="row">
-        <text fg={ACCENT}>{figures.pointer} </text>
-        <text>{filter || ""}</text>
-        <text attributes={DIM}>{filter ? "" : "type to search…"}</text>
+        <ThemeText fg={ACCENT}>{figures.pointer} </ThemeText>
+        <ThemeText>{filter || ""}</ThemeText>
+        <ThemeText attributes={DIM}>{filter ? "" : "type to search…"}</ThemeText>
       </box>
       {filtered.length === 0 ? (
-        <text attributes={DIM}>no matches</text>
+        <ThemeText attributes={DIM}>no matches</ThemeText>
       ) : (
         visible.map((row, i) => {
           const idx = start + i
           const on = idx === listSel
           return (
             <box key={`${row.provider}/${row.model.id}`} flexDirection="row">
-              <text fg={on ? ACCENT : undefined}>{on ? "❯ " : "  "}</text>
-              <text fg={on ? ACCENT : undefined} attributes={on ? BOLD : 0}>
+              <ThemeText fg={on ? ACCENT : undefined}>{on ? "❯ " : "  "}</ThemeText>
+              <ThemeText fg={on ? ACCENT : undefined} attributes={on ? BOLD : 0}>
                 {row.provider}/{row.model.id}
-              </text>
-              <text attributes={DIM}>
+              </ThemeText>
+              <ThemeText attributes={DIM}>
                 {row.model.reasoning ? "  ◆ reasoning" : ""}
                 {row.model.custom ? (row.model.verified ? "  [custom]" : "  [custom · unverified]") : ""}
                 {row.ready ? "" : "  [login needed]"}
-              </text>
+              </ThemeText>
             </box>
           )
         })
       )}
-      <text attributes={DIM}>
+      <ThemeText attributes={DIM}>
         {filtered.length > WINDOW ? `${listSel + 1}/${filtered.length}` : `${filtered.length} models`}
         {busy ? "  · saving…" : ""}
-      </text>
+      </ThemeText>
     </box>
   )
 }

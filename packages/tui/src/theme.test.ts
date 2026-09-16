@@ -2,10 +2,37 @@ import { afterEach, expect, test } from "bun:test"
 import { recolor } from "./components/ChunkyLogo.js"
 import { incognitoSegment } from "./components/StatusLine.js"
 import * as theme from "./theme.js"
+import { compileTheme, DEFAULT_THEME } from "./themeCatalog.js"
+import { getSyntaxStyle } from "./syntaxStyle.js"
 
 // The accent swap is process-global, so every test puts it back.
 afterEach(() => {
   theme.setIncognitoTheme(false)
+  theme.setThemeAppearance("dark")
+  theme.setColorTheme(DEFAULT_THEME)
+})
+
+test("custom colors update subscribers, survive incognito, and switch appearance", () => {
+  const custom = compileTheme("custom", { theme: { primary: { dark: "#123456", light: "#654321" }, syntaxKeyword: "#abcdef" } })
+  let updates = 0
+  const unsubscribe = theme.subscribeTheme(() => updates++)
+  theme.setColorTheme(custom)
+  expect(theme.ACCENT).toBe("#123456")
+  expect(theme.SYNTAX.KEYWORD).toBe("#abcdef")
+  theme.setIncognitoTheme(true)
+  expect(theme.ACCENT).toBe("#ff5f56")
+  expect(theme.SYNTAX.KEYWORD).toBe("#abcdef")
+  theme.setThemeAppearance("light")
+  theme.setIncognitoTheme(false)
+  expect(theme.ACCENT).toBe("#654321")
+  expect(updates).toBe(4)
+  unsubscribe()
+})
+
+test("punctuation and operators use independent custom colors in the native syntax style", () => {
+  theme.setColorTheme(compileTheme("custom", { theme: { syntaxOperator: "#123456", syntaxPunctuation: "#abcdef" } }))
+  expect(getSyntaxStyle().getStyle("operator")?.fg?.toInts().slice(0, 3)).toEqual([18, 52, 86])
+  expect(getSyntaxStyle().getStyle("punctuation")?.fg?.toInts().slice(0, 3)).toEqual([171, 205, 239])
 })
 
 test("the default palette is the lavender brand accent", () => {

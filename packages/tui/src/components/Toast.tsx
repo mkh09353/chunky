@@ -1,3 +1,4 @@
+import { ThemeText } from "./ThemeText.js"
 // A small, reusable toast layer — the generalization of the old copy badge.
 // Anything can fire an ephemeral notice via useToast().show(...); toasts auto-
 // dismiss and stack in the top-right, EXCEPT ones given an `at` point (e.g. the
@@ -5,7 +6,7 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react"
 import { TextAttributes } from "@opentui/core"
 import { useRenderer } from "@opentui/react"
-import { ACCENT } from "../theme.js"
+import { ACCENT, SUCCESS, WARNING, ERROR, BACKGROUND, themeAppearance } from "../theme.js"
 
 export type ToastVariant = "info" | "success" | "warning" | "error"
 
@@ -70,20 +71,18 @@ export function useToastController(): { toasts: Toast[]; api: ToastApi } {
 
 const { BOLD } = TextAttributes
 
-const VARIANT: Record<ToastVariant, { bg: string; fg: string; icon: string }> = {
-  success: { bg: "#22c55e", fg: "#04160b", icon: "✓" },
-  info: { bg: ACCENT, fg: "#1a1526", icon: "•" },
-  warning: { bg: "#eab308", fg: "#241f04", icon: "⚠" },
-  error: { bg: "#ef4444", fg: "#2b0707", icon: "✗" },
-}
-
 function Pill({ toast }: { toast: Toast }) {
-  const v = VARIANT[toast.variant]
+  const variants = {
+    success: { bg: SUCCESS, icon: "✓" }, info: { bg: ACCENT, icon: "•" },
+    warning: { bg: WARNING, icon: "⚠" }, error: { bg: ERROR, icon: "✗" },
+  }
+  const v = variants[toast.variant]
+  const foreground = BACKGROUND === "transparent" ? themeAppearance() === "light" ? "#ffffff" : "#0d1117" : BACKGROUND
   return (
     <box backgroundColor={v.bg} paddingLeft={1} paddingRight={1}>
-      <text fg={v.fg} attributes={BOLD}>
+      <ThemeText fg={foreground} attributes={BOLD}>
         {`${v.icon} ${toast.message}`}
-      </text>
+      </ThemeText>
     </box>
   )
 }

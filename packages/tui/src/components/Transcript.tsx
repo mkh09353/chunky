@@ -1,3 +1,4 @@
+import { ThemeText } from "./ThemeText.js"
 import { createContext, Fragment, useCallback, useContext, useEffect, useState } from "react"
 import { TextAttributes } from "@opentui/core"
 import type { Item, ThreadNode, TranscriptState } from "../transcript.js"
@@ -19,6 +20,8 @@ import {
   SPINNER_FRAMES,
   SUCCESS,
   WARNING,
+  TEXT,
+  themeRevision,
 } from "../theme.js"
 
 const { BOLD, DIM } = TextAttributes
@@ -351,31 +354,31 @@ function ThreadBlock({
     <box flexDirection="column" marginTop={1} marginLeft={depth === 0 ? 0 : 2}>
       {/* header */}
       <box flexDirection="row">
-        <text fg={rail}>{"├─ "}</text>
-        {running ? <Spinner color={rail} /> : <text fg={ACCENT}>{DOT}</text>}
-        <text fg={headFg}>{` ${showBody ? "▾" : "▸"} `}</text>
-        <text fg={headFg} attributes={BOLD}>
+        <ThemeText fg={rail}>{"├─ "}</ThemeText>
+        {running ? <Spinner color={rail} /> : <ThemeText fg={ACCENT}>{DOT}</ThemeText>}
+        <ThemeText fg={headFg}>{` ${showBody ? "▾" : "▸"} `}</ThemeText>
+        <ThemeText fg={headFg} attributes={BOLD}>
           thread: {thread.title}
-        </text>
-        {thread.model ? <text attributes={DIM}>{`  · ${thread.model}`}</text> : null}
+        </ThemeText>
+        {thread.model ? <ThemeText attributes={DIM}>{`  · ${thread.model}`}</ThemeText> : null}
         {running ? (
           <>
-            <text attributes={DIM}>{elapsed ? `  (running… ${elapsed}` : "  (running…"}</text>
+            <ThemeText attributes={DIM}>{elapsed ? `  (running… ${elapsed}` : "  (running…"}</ThemeText>
             {showIdle ? (
-              <text fg={idleStuck ? WARNING : undefined} attributes={DIM}>
+              <ThemeText fg={idleStuck ? WARNING : undefined} attributes={DIM}>
                 {` · idle ${formatDuration(idleMs)}`}
-              </text>
+              </ThemeText>
             ) : null}
-            <text attributes={DIM}>{")"}</text>
+            <ThemeText attributes={DIM}>{")"}</ThemeText>
           </>
         ) : (
-          <text attributes={DIM}>{"  (done)"}</text>
+          <ThemeText attributes={DIM}>{"  (done)"}</ThemeText>
         )}
         {collapsed && (thread.items.length > 0 || childCount > 0) && (
-          <text attributes={DIM}>{`  ${countLabel}`}</text>
+          <ThemeText attributes={DIM}>{`  ${countLabel}`}</ThemeText>
         )}
         {isFocused && !collapsed && (
-          <text fg={ACCENT} attributes={DIM}>{isExpanded ? "  ⌃O collapse" : "  ⌃O expand"}</text>
+          <ThemeText fg={ACCENT} attributes={DIM}>{isExpanded ? "  ⌃O collapse" : "  ⌃O expand"}</ThemeText>
         )}
       </box>
 
@@ -383,24 +386,24 @@ function ThreadBlock({
       {showPreview && (
         <box flexDirection="row">
           <box flexDirection="column" marginRight={1}>
-            <text fg={rail}>{"│"}</text>
+            <ThemeText fg={rail}>{"│"}</ThemeText>
           </box>
           <box flexDirection="column" flexGrow={1}>
             {running ? (
               // Live: newest activity + item count, always ONE truncated line.
-              <text attributes={DIM}>
+              <ThemeText attributes={DIM}>
                 {truncate(activity ? `${countLabel} · ${activity}` : countLabel, PREVIEW_MAX) + " …"}
-              </text>
+              </ThemeText>
             ) : preview && preview.text ? (
-              <text attributes={DIM}>
+              <ThemeText attributes={DIM}>
                 {truncate(preview.text, 80)}
                 {preview.more > 0 ? `  (+${preview.more} more lines · ⌃O)` : ""}
-              </text>
+              </ThemeText>
             ) : (
-              <text attributes={DIM}>
+              <ThemeText attributes={DIM}>
                 {countLabel}
                 {running ? " …" : ""}
-              </text>
+              </ThemeText>
             )}
           </box>
         </box>
@@ -410,7 +413,7 @@ function ThreadBlock({
       {showBody && (
         <box flexDirection="row">
           <box flexDirection="column" marginRight={1}>
-            <text fg={rail}>{"│"}</text>
+            <ThemeText fg={rail}>{"│"}</ThemeText>
           </box>
           <box flexDirection="column" flexGrow={1}>
             <ParentBody
@@ -436,7 +439,7 @@ function Spinner({ color }: { color: string }) {
     const t = setInterval(() => setFrame((f) => (f + 1) % SPINNER_FRAMES.length), 90)
     return () => clearInterval(t)
   }, [])
-  return <text fg={color}>{SPINNER_FRAMES[frame]}</text>
+  return <ThemeText fg={color}>{SPINNER_FRAMES[frame]}</ThemeText>
 }
 
 export function ItemView({ item }: { item: DisplayItem }) {
@@ -462,14 +465,14 @@ export function ItemView({ item }: { item: DisplayItem }) {
                   }
             }
           >
-            {item.streaming ? <Spinner color={MARKER} /> : <text fg={MARKER}>{SPARKLE}</text>}
-            <text fg={MARKER} attributes={DIM}>
+            {item.streaming ? <Spinner color={MARKER} /> : <ThemeText fg={MARKER}>{SPARKLE}</ThemeText>}
+            <ThemeText fg={MARKER} attributes={DIM}>
               {item.streaming ? " Thinking…" : ` Thought${open ? "  ▾" : "  ▸"}`}
-            </text>
+            </ThemeText>
           </box>
           {showBody && item.text ? (
             <box marginLeft={2} flexDirection="column">
-              <text attributes={DIM}>{item.text}</text>
+              <ThemeText attributes={DIM}>{item.text}</ThemeText>
             </box>
           ) : null}
         </box>
@@ -484,9 +487,9 @@ export function ItemView({ item }: { item: DisplayItem }) {
       const hint = summarizeInput(item.lastInput, TOOL_SUMMARY_MAX_LENGTH)
       return (
         <box flexDirection="row" marginTop={1}>
-          {item.running ? <Spinner color={BORDER} /> : <text fg={ACCENT}>{DOT}</text>}
-          <text attributes={BOLD}> {item.summary}</text>
-          {hint ? <text attributes={DIM}> · {hint}</text> : null}
+          {item.running ? <Spinner color={BORDER} /> : <ThemeText fg={ACCENT}>{DOT}</ThemeText>}
+          <ThemeText attributes={BOLD}> {item.summary}</ThemeText>
+          {hint ? <ThemeText attributes={DIM}> · {hint}</ThemeText> : null}
         </box>
       )
     }
@@ -497,11 +500,11 @@ export function ItemView({ item }: { item: DisplayItem }) {
           {item.from && (
             // A message injected by another session (send_to_session) — show
             // provenance so it doesn't read as something the user typed.
-            <text fg={MARKER}>{`⇄ from session ${item.from}`}</text>
+            <ThemeText fg={MARKER}>{`⇄ from session ${item.from}`}</ThemeText>
           )}
           <box flexDirection="row">
-            <text fg={ACCENT}>{"> "}</text>
-            <text>{item.text}</text>
+            <ThemeText fg={ACCENT}>{"> "}</ThemeText>
+            <ThemeText>{item.text}</ThemeText>
           </box>
         </box>
       )
@@ -510,7 +513,7 @@ export function ItemView({ item }: { item: DisplayItem }) {
       return (
         <box marginTop={1} flexDirection="column" width="100%">
           <box flexDirection="row" width="100%">
-            <text fg={ACCENT}>{DOT} </text>
+            <ThemeText fg={ACCENT}>{DOT} </ThemeText>
             {/* flexGrow so long lines wrap inside the remaining columns instead of
                 overflowing and reflowing under the sparkle marker. */}
             <box flexDirection="column" flexGrow={1} flexShrink={1}>
@@ -520,6 +523,8 @@ export function ItemView({ item }: { item: DisplayItem }) {
                   `conceal` hides the raw markers (**, #, `) for clean prose;
                   `streaming` keeps the trailing block live until the turn ends. */}
               <markdown
+                key={themeRevision()}
+                fg={TEXT}
                 content={item.text}
                 syntaxStyle={getSyntaxStyle()}
                 streaming={item.streaming}
@@ -527,9 +532,9 @@ export function ItemView({ item }: { item: DisplayItem }) {
               />
             </box>
           </box>
-          {item.endReason === "max_tokens" ? <text fg={WARNING}>⚠ Response stopped at the output limit.</text> : null}
-          {item.endReason === "interrupted" ? <text attributes={DIM}>⏹ Response interrupted.</text> : null}
-          {item.endReason === "error" ? <text fg={ERROR}>✗ Response ended unexpectedly.</text> : null}
+          {item.endReason === "max_tokens" ? <ThemeText fg={WARNING}>⚠ Response stopped at the output limit.</ThemeText> : null}
+          {item.endReason === "interrupted" ? <ThemeText attributes={DIM}>⏹ Response interrupted.</ThemeText> : null}
+          {item.endReason === "error" ? <ThemeText fg={ERROR}>✗ Response ended unexpectedly.</ThemeText> : null}
         </box>
       )
 
@@ -549,13 +554,13 @@ export function ItemView({ item }: { item: DisplayItem }) {
         const diagnosis = typeof input.diagnosis === "string" ? input.diagnosis : ""
         return (
           <box flexDirection="column" marginLeft={2}>
-            <text attributes={DIM}>
+            <ThemeText attributes={DIM}>
               {"⭑ rated "}
               {rating}
               {input.rework ? " (rework)" : ""}
               {reason ? ` · ${truncate(reason, TOOL_SUMMARY_MAX_LENGTH)}` : ""}
-            </text>
-            {diagnosis ? <text attributes={DIM}>{`why: ${truncate(diagnosis, TOOL_SUMMARY_MAX_LENGTH)}`}</text> : null}
+            </ThemeText>
+            {diagnosis ? <ThemeText attributes={DIM}>{`why: ${truncate(diagnosis, TOOL_SUMMARY_MAX_LENGTH)}`}</ThemeText> : null}
           </box>
         )
       }
@@ -572,16 +577,16 @@ export function ItemView({ item }: { item: DisplayItem }) {
       return (
         <box marginTop={1} flexDirection="column">
           <box flexDirection="row">
-            <text fg={ACCENT}>{DOT} </text>
-            <text attributes={BOLD}>{item.name}</text>
-            <text attributes={DIM}>({summarizeInput(item.input)})</text>
+            <ThemeText fg={ACCENT}>{DOT} </ThemeText>
+            <ThemeText attributes={BOLD}>{item.name}</ThemeText>
+            <ThemeText attributes={DIM}>({summarizeInput(item.input)})</ThemeText>
           </box>
           {tail.length > 0 && (
             <box flexDirection="column" marginLeft={4}>
               {tail.map((l, k) => (
-                <text key={k} attributes={DIM}>
+                <ThemeText key={k} attributes={DIM}>
                   {l.length === 0 ? " " : l}
-                </text>
+                </ThemeText>
               ))}
             </box>
           )}
@@ -598,23 +603,23 @@ export function ItemView({ item }: { item: DisplayItem }) {
                   : undefined
               }
             >
-              <text attributes={DIM}>
+              <ThemeText attributes={DIM}>
                 {"  ⎿  "}
                 <span fg={item.ok ? SUCCESS : ERROR}>{item.ok ? "" : "error: "}</span>
                 {open ? `${lines.length} lines` : summarizeOutput(output)}
                 {expandable ? (open ? "  ▾" : "  ▸") : ""}
-              </text>
+              </ThemeText>
             </box>
           )}
           {open && (
             <box flexDirection="column" marginLeft={4}>
               {shown.map((l, k) => (
-                <text key={k} attributes={DIM}>
+                <ThemeText key={k} attributes={DIM}>
                   {l.length === 0 ? " " : l}
-                </text>
+                </ThemeText>
               ))}
               {lines.length > TOOL_OUTPUT_MAX_LINES ? (
-                <text attributes={DIM}>{`  … +${lines.length - TOOL_OUTPUT_MAX_LINES} more lines`}</text>
+                <ThemeText attributes={DIM}>{`  … +${lines.length - TOOL_OUTPUT_MAX_LINES} more lines`}</ThemeText>
               ) : null}
             </box>
           )}
@@ -625,21 +630,21 @@ export function ItemView({ item }: { item: DisplayItem }) {
     case "error":
       return (
         <box flexDirection="row" marginTop={1}>
-          <text fg={ERROR}>✗ {item.text}</text>
+          <ThemeText fg={ERROR}>✗ {item.text}</ThemeText>
         </box>
       )
 
     case "cache-warning":
       return (
         <box flexDirection="row" marginTop={1}>
-          <text fg={WARNING}>⚠ {cacheWarningText(item)}</text>
+          <ThemeText fg={WARNING}>⚠ {cacheWarningText(item)}</ThemeText>
         </box>
       )
 
     case "compaction-notice":
       return (
         <box flexDirection="row" marginTop={1}>
-          <text fg={WARNING}>⚠ {item.message}</text>
+          <ThemeText fg={WARNING}>⚠ {item.message}</ThemeText>
         </box>
       )
 
@@ -655,9 +660,9 @@ export function ItemView({ item }: { item: DisplayItem }) {
               : ACCENT
       return (
         <box flexDirection="row" marginTop={1}>
-          <text fg={color} attributes={BOLD}>
+          <ThemeText fg={color} attributes={BOLD}>
             {item.message}
-          </text>
+          </ThemeText>
         </box>
       )
     }
@@ -665,16 +670,16 @@ export function ItemView({ item }: { item: DisplayItem }) {
     case "workflow-phase":
       return (
         <box flexDirection="row" marginTop={1}>
-          <text fg={ACCENT} attributes={BOLD}>
+          <ThemeText fg={ACCENT} attributes={BOLD}>
             ◆ {item.title}
-          </text>
+          </ThemeText>
         </box>
       )
 
     case "workflow-log":
       return (
         <box flexDirection="row">
-          <text fg={MARKER}>{item.message}</text>
+          <ThemeText fg={MARKER}>{item.message}</ThemeText>
         </box>
       )
   }

@@ -1,3 +1,4 @@
+import { ThemeText } from "./ThemeText.js"
 import { useEffect, useMemo, useState } from "react"
 import { TextAttributes } from "@opentui/core"
 import figures from "figures"
@@ -248,14 +249,14 @@ export function AdvisorPicker({ baseUrl, sessionId, onDone, onCancel, seat = "ad
   if (loading) {
     return (
       <box border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
-        <text attributes={DIM}>Loading models…</text>
+        <ThemeText attributes={DIM}>Loading models…</ThemeText>
       </box>
     )
   }
   if (error) {
     return (
       <box border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
-        <text fg={ERROR}>Couldn&apos;t load models: {error}</text>
+        <ThemeText fg={ERROR}>Couldn&apos;t load models: {error}</ThemeText>
       </box>
     )
   }
@@ -263,15 +264,15 @@ export function AdvisorPicker({ baseUrl, sessionId, onDone, onCancel, seat = "ad
   if (step === "effort") {
     return (
       <box flexDirection="column" border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
-        <text attributes={DIM}>Reasoning effort for {seatLabel} {chosen?.model.id} — ↑/↓ move · enter select · esc back</text>
+        <ThemeText attributes={DIM}>Reasoning effort for {seatLabel} {chosen?.model.id} — ↑/↓ move · enter select · esc back</ThemeText>
         {EFFORTS.map((opt, i) => {
           const on = i === optSel
           return (
             <box key={opt} flexDirection="row">
-              <text fg={ACCENT}>{on ? figures.pointer : " "} </text>
-              <text fg={on ? ACCENT : undefined} attributes={on ? BOLD : 0}>
+              <ThemeText fg={ACCENT}>{on ? figures.pointer : " "} </ThemeText>
+              <ThemeText fg={on ? ACCENT : undefined} attributes={on ? BOLD : 0}>
                 {opt}
-              </text>
+              </ThemeText>
             </box>
           )
         })}
@@ -284,11 +285,11 @@ export function AdvisorPicker({ baseUrl, sessionId, onDone, onCancel, seat = "ad
   const visible = items.slice(start, start + WINDOW)
   return (
     <box flexDirection="column" border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
-      <text attributes={DIM}>Set the {seatLabel} model — type to filter · ↑/↓ move · enter select · esc cancel</text>
+      <ThemeText attributes={DIM}>Set the {seatLabel} model — type to filter · ↑/↓ move · enter select · esc cancel</ThemeText>
       <box flexDirection="row">
-        <text fg={ACCENT}>{figures.pointer} </text>
-        <text>{filter || ""}</text>
-        <text attributes={DIM}>{filter ? "" : "type to search…"}</text>
+        <ThemeText fg={ACCENT}>{figures.pointer} </ThemeText>
+        <ThemeText>{filter || ""}</ThemeText>
+        <ThemeText attributes={DIM}>{filter ? "" : "type to search…"}</ThemeText>
       </box>
       {visible.map((item, i) => {
         const idx = start + i
@@ -296,31 +297,31 @@ export function AdvisorPicker({ baseUrl, sessionId, onDone, onCancel, seat = "ad
         if (item.off) {
           return (
             <box key="__off__" flexDirection="row">
-              <text fg={on ? ACCENT : undefined}>{on ? "❯ " : "  "}</text>
-              <text fg={on ? ACCENT : undefined} attributes={(on ? BOLD : 0) | (on ? 0 : DIM)}>
+              <ThemeText fg={on ? ACCENT : undefined}>{on ? "❯ " : "  "}</ThemeText>
+              <ThemeText fg={on ? ACCENT : undefined} attributes={(on ? BOLD : 0) | (on ? 0 : DIM)}>
                 {seatName ? `Remove seat "${seatName}"` : `Turn ${seat} OFF`}
-              </text>
+              </ThemeText>
             </box>
           )
         }
         const row = item.row
         return (
           <box key={`${row.provider}/${row.model.id}`} flexDirection="row">
-            <text fg={on ? ACCENT : undefined}>{on ? "❯ " : "  "}</text>
-            <text fg={on ? ACCENT : undefined} attributes={on ? BOLD : 0}>
+            <ThemeText fg={on ? ACCENT : undefined}>{on ? "❯ " : "  "}</ThemeText>
+            <ThemeText fg={on ? ACCENT : undefined} attributes={on ? BOLD : 0}>
               {row.provider}/{row.model.id}
-            </text>
-            <text attributes={DIM}>
+            </ThemeText>
+            <ThemeText attributes={DIM}>
               {row.model.reasoning ? "  ◆ reasoning" : ""}
               {row.ready ? "" : "  [login needed]"}
-            </text>
+            </ThemeText>
           </box>
         )
       })}
-      <text attributes={DIM}>
+      <ThemeText attributes={DIM}>
         {items.length - 1 > WINDOW ? `${listSel + 1}/${items.length - 1}` : `${filtered.length} models`}
         {busy ? "  · saving…" : ""}
-      </text>
+      </ThemeText>
     </box>
   )
 }

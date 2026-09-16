@@ -7,7 +7,8 @@ import { App } from "./App.js"
 import { Flag } from "./flags.js"
 import { getServerToken, getTheme } from "../../server/src/settings.ts"
 import { detect } from "./terminalAppearance.js"
-import { setThemeAppearance } from "./theme.js"
+import { setThemeAppearance, setColorTheme } from "./theme.js"
+import { loadThemeCatalog, readThemePreference } from "./themeCatalog.js"
 
 const argv = process.argv.slice(2)
 const wantMock = argv.includes("--mock")
@@ -52,6 +53,11 @@ else mode = (await serverIsUp()) ? "live" : "mock"
 const configuredTheme = getTheme()
 const detectedTheme = configuredTheme === "auto" ? await detect() : configuredTheme
 setThemeAppearance(detectedTheme === "light" ? "light" : "dark")
+const themeCatalog = loadThemeCatalog()
+const preferredTheme = readThemePreference()
+const selectedTheme = themeCatalog.themes.find((theme) => theme.id === preferredTheme)
+if (selectedTheme) setColorTheme(selectedTheme)
+else console.warn(`Theme "${preferredTheme}" is unavailable; using chunky. Open /theme to choose another.`)
 
 const renderer = await createCliRenderer({
   exitOnCtrlC: true,

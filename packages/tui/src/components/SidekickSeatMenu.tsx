@@ -1,3 +1,4 @@
+import { ThemeText } from "./ThemeText.js"
 import { useEffect, useMemo, useState } from "react"
 import { TextAttributes } from "@opentui/core"
 import figures from "figures"
@@ -131,16 +132,16 @@ export function SidekickSeatMenu({ baseUrl, sessionId, onDone, onCancel, current
     }
   }, { isActive: rawModeSupported })
 
-  if (loading) return <box border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}><text attributes={DIM}>Loading sidekick seats…</text></box>
-  if (error) return <box border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}><text fg={ERROR}>Couldn&apos;t load sidekick seats: {error}</text></box>
+  if (loading) return <box border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}><ThemeText attributes={DIM}>Loading sidekick seats…</ThemeText></box>
+  if (error) return <box border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}><ThemeText fg={ERROR}>Couldn&apos;t load sidekick seats: {error}</ThemeText></box>
 
   if (adding) {
     return (
       <box flexDirection="column" border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
-        <text attributes={DIM}>Add a sidekick seat — type a name · enter continue · esc back</text>
-        <box flexDirection="row"><text fg={ACCENT}>{figures.pointer} </text><text>{name}</text><text attributes={DIM}>{name ? "" : "e.g. frontend, backend"}</text></box>
-        {nameError && <text fg={ERROR}>{nameError}</text>}
-        <text attributes={DIM}>Names: lowercase slug, up to 24 characters</text>
+        <ThemeText attributes={DIM}>Add a sidekick seat — type a name · enter continue · esc back</ThemeText>
+        <box flexDirection="row"><ThemeText fg={ACCENT}>{figures.pointer} </ThemeText><ThemeText>{name}</ThemeText><ThemeText attributes={DIM}>{name ? "" : "e.g. frontend, backend"}</ThemeText></box>
+        {nameError && <ThemeText fg={ERROR}>{nameError}</ThemeText>}
+        <ThemeText attributes={DIM}>Names: lowercase slug, up to 24 characters</ThemeText>
       </box>
     )
   }
@@ -148,16 +149,16 @@ export function SidekickSeatMenu({ baseUrl, sessionId, onDone, onCancel, current
   const start = Math.max(0, Math.min(selected - Math.floor(WINDOW / 2), Math.max(0, rows.length - WINDOW)))
   return (
     <box flexDirection="column" border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
-      <text attributes={DIM}>Choose a sidekick seat · ↑/↓ move · enter select · esc cancel</text>
+      <ThemeText attributes={DIM}>Choose a sidekick seat · ↑/↓ move · enter select · esc cancel</ThemeText>
       {rows.slice(start, start + WINDOW).map((row, i) => {
         const index = start + i
         const focused = index === selected
         const prefix = focused ? "❯ " : "  "
-        if (row.kind === "add") return <text key="add" fg={focused ? ACCENT : undefined} attributes={focused ? BOLD : 0}>{prefix}+ Add a seat…</text>
-        if (row.kind === "default") return <box key="default" flexDirection="row"><text fg={focused ? ACCENT : undefined} attributes={focused ? BOLD : 0}>{prefix}Sidekick (default)</text><text attributes={DIM}>  {row.config?.enabled === false ? "off" : modelLabel(row.config?.provider, row.config?.model, row.config?.effort, currentModel)}</text></box>
-        return <box key={row.name} flexDirection="row"><text fg={focused ? ACCENT : undefined} attributes={focused ? BOLD : 0}>{prefix}{row.name}</text><text attributes={DIM}>  {modelLabel(row.spec.provider, row.spec.model, row.spec.effort)}</text></box>
+        if (row.kind === "add") return <ThemeText key="add" fg={focused ? ACCENT : undefined} attributes={focused ? BOLD : 0}>{prefix}+ Add a seat…</ThemeText>
+        if (row.kind === "default") return <box key="default" flexDirection="row"><ThemeText fg={focused ? ACCENT : undefined} attributes={focused ? BOLD : 0}>{prefix}Sidekick (default)</ThemeText><ThemeText attributes={DIM}>  {row.config?.enabled === false ? "off" : modelLabel(row.config?.provider, row.config?.model, row.config?.effort, currentModel)}</ThemeText></box>
+        return <box key={row.name} flexDirection="row"><ThemeText fg={focused ? ACCENT : undefined} attributes={focused ? BOLD : 0}>{prefix}{row.name}</ThemeText><ThemeText attributes={DIM}>  {modelLabel(row.spec.provider, row.spec.model, row.spec.effort)}</ThemeText></box>
       })}
-      <text attributes={DIM}>{rows.length > WINDOW ? `${selected + 1}/${rows.length}` : `${rows.length - 2} named seat${rows.length === 3 ? "" : "s"}`}</text>
+      <ThemeText attributes={DIM}>{rows.length > WINDOW ? `${selected + 1}/${rows.length}` : `${rows.length - 2} named seat${rows.length === 3 ? "" : "s"}`}</ThemeText>
     </box>
   )
 }

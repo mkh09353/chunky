@@ -1,3 +1,4 @@
+import { ThemeText } from "./ThemeText.js"
 import { TextAttributes } from "@opentui/core"
 import { basename, relative } from "node:path"
 import { realpathSync } from "node:fs"
@@ -35,24 +36,24 @@ export function ResumePicker({ sessions, selected }: { sessions: SessionSummary[
   const showWorkspace = sessions.some((s) => s.workspace !== cwd)
   return (
     <box flexDirection="column" border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
-      <text attributes={TextAttributes.DIM}>Resume a thread — ↑/↓ move · enter resume · esc cancel</text>
-      {start > 0 && <text attributes={TextAttributes.DIM}>{`  … ${start} newer`}</text>}
+      <ThemeText attributes={TextAttributes.DIM}>Resume a thread — ↑/↓ move · enter resume · esc cancel</ThemeText>
+      {start > 0 && <ThemeText attributes={TextAttributes.DIM}>{`  … ${start} newer`}</ThemeText>}
       {visible.map((s, i) => {
         const on = start + i === selected
         return (
           <box key={s.sessionId} flexDirection="row">
-            <text fg={on ? ACCENT : undefined}>{on ? "❯ " : "  "}</text>
-            <text fg={on ? ACCENT : undefined} attributes={on ? TextAttributes.BOLD : 0}>
+            <ThemeText fg={on ? ACCENT : undefined}>{on ? "❯ " : "  "}</ThemeText>
+            <ThemeText fg={on ? ACCENT : undefined} attributes={on ? TextAttributes.BOLD : 0}>
               {s.title}
-            </text>
-            {s.incognito === true && <text fg={INCOGNITO_ACCENT}>{"  " + INCOGNITO_LABEL}</text>}
-            <text attributes={TextAttributes.DIM}>{"  — " + ago(s.lastActivity)}</text>
-            {s.attached && <text attributes={TextAttributes.DIM}>{"  · attached"}</text>}
-            {showWorkspace && <text attributes={TextAttributes.DIM}>{s.repositoryScope === "none" || !s.workspace ? "  [no repository]" : `  [${basename(s.workspace) || relative(cwd, s.workspace) || "."}]`}</text>}
+            </ThemeText>
+            {s.incognito === true && <ThemeText fg={INCOGNITO_ACCENT}>{"  " + INCOGNITO_LABEL}</ThemeText>}
+            <ThemeText attributes={TextAttributes.DIM}>{"  — " + ago(s.lastActivity)}</ThemeText>
+            {s.attached && <ThemeText attributes={TextAttributes.DIM}>{"  · attached"}</ThemeText>}
+            {showWorkspace && <ThemeText attributes={TextAttributes.DIM}>{s.repositoryScope === "none" || !s.workspace ? "  [no repository]" : `  [${basename(s.workspace) || relative(cwd, s.workspace) || "."}]`}</ThemeText>}
           </box>
         )
       })}
-      {older > 0 && <text attributes={TextAttributes.DIM}>{`  … ${older} older`}</text>}
+      {older > 0 && <ThemeText attributes={TextAttributes.DIM}>{`  … ${older} older`}</ThemeText>}
     </box>
   )
 }

@@ -1,3 +1,4 @@
+import { ThemeText } from "./ThemeText.js"
 import { useEffect, useState } from "react"
 import { TextAttributes } from "@opentui/core"
 import { ACCENT, INCOGNITO_LABEL, SPINNER_FRAMES, SPINNER_VERBS } from "../theme.js"
@@ -26,11 +27,11 @@ export function StatusLine({ startedAt, reconnecting = false }: { startedAt?: nu
 
   return (
     <box flexDirection="row" marginTop={1}>
-      <text fg={ACCENT}>{SPINNER_FRAMES[frame]} </text>
-      <text fg={ACCENT} attributes={TextAttributes.BOLD}>
+      <ThemeText fg={ACCENT}>{SPINNER_FRAMES[frame]} </ThemeText>
+      <ThemeText fg={ACCENT} attributes={TextAttributes.BOLD}>
         {reconnecting ? "Reconnecting…" : `${verb}…`}
-      </text>
-      {!reconnecting && <text attributes={TextAttributes.DIM}> ({elapsed}s · esc to interrupt)</text>}
+      </ThemeText>
+      {!reconnecting && <ThemeText attributes={TextAttributes.DIM}> ({elapsed}s · esc to interrupt)</ThemeText>}
     </box>
   )
 }
@@ -72,7 +73,7 @@ export function WatchingLine({ tasks, monitors }: { tasks: number; monitors: num
   if (!label) return null
   return (
     <box flexDirection="row" marginTop={1}>
-      <text attributes={TextAttributes.DIM}>{label}</text>
+      <ThemeText attributes={TextAttributes.DIM}>{label}</ThemeText>
     </box>
   )
 }

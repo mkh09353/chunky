@@ -1,3 +1,4 @@
+import { ThemeText } from "./ThemeText.js"
 import { useEffect, useRef, useState } from "react"
 import { TextAttributes } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/react"
@@ -343,9 +344,9 @@ export function PromptInput({
   return (
     <box flexDirection="column" width="100%">
       {attachmentCount > 0 && (
-        <text attributes={DIM}>
+        <ThemeText attributes={DIM}>
           {"  "}📎 {attachmentCount} image{attachmentCount === 1 ? "" : "s"} attached — enter to send
-        </text>
+        </ThemeText>
       )}
       {matches.length > 0 && <SlashMenu commands={matches} selected={clampSel(selected, matches.length)} />}
       {mentionActive && (mentionItems.length > 0 || fileLoading || (mention?.query ?? "").length > 0) && (
@@ -363,7 +364,7 @@ export function PromptInput({
         borderColor={BORDER}
         flexShrink={0}
       >
-        <text fg={ACCENT}>{"❯ "}</text>
+        <ThemeText fg={ACCENT}>{"❯ "}</ThemeText>
         <CursorText value={value} cursor={cursor} showCursor={rawSupported && !disabled} running={running} />
       </box>
       <BottomRule status={status} />
@@ -387,18 +388,18 @@ function HintsLine({
   threadsHint: string
 }) {
   if (running) {
-    return <text attributes={DIM}>{"  ctrl+j / option+enter steer · ctrl+c quit"}</text>
+    return <ThemeText attributes={DIM}>{"  ctrl+j / option+enter steer · ctrl+c quit"}</ThemeText>
   }
   if (value.length === 0) {
     return (
-      <text attributes={DIM}>
+      <ThemeText attributes={DIM}>
         {"  / commands · @ files · ↑ history · ctrl+c quit"}
         {threadsHint}
-      </text>
+      </ThemeText>
     )
   }
   // Typing: keep the row present (stable height) but empty.
-  return <text> </text>
+  return <ThemeText> </ThemeText>
 }
 
 /**
@@ -417,12 +418,12 @@ function BottomRule({ status }: { status?: StatusSegment[] }) {
   // The status is embedded near the right with the rule continuing past it to
   // the edge (grok-code style), a space on each side.
   if (labelLen === 0) {
-    return <text fg={BORDER}>{"─".repeat(Math.max(0, cols - 1))}</text>
+    return <ThemeText fg={BORDER}>{"─".repeat(Math.max(0, cols - 1))}</ThemeText>
   }
   const rightDashes = 3
   const left = Math.max(0, cols - labelLen - rightDashes - 3) // 2 spaces + 1 margin
   return (
-    <text wrapMode="none">
+    <ThemeText wrapMode="none">
       <span fg={BORDER}>{"─".repeat(left)}</span>
       <span>{" "}</span>
       {segments.map((s, i) => (
@@ -432,7 +433,7 @@ function BottomRule({ status }: { status?: StatusSegment[] }) {
       ))}
       <span>{" "}</span>
       <span fg={BORDER}>{"─".repeat(rightDashes)}</span>
-    </text>
+    </ThemeText>
   )
 }
 
@@ -450,9 +451,9 @@ function CursorText({
 }) {
   if (value.length === 0) {
     return (
-      <text attributes={DIM}>
+      <ThemeText attributes={DIM}>
         {running ? "type to queue · ctrl+j to steer" : 'Try "fix lint errors" or @file'}
-      </text>
+      </ThemeText>
     )
   }
   const before = value.slice(0, cursor)
@@ -472,7 +473,7 @@ function CursorText({
   // run's leading spaces on the wrapped row were painted as a multi-cell white
   // block. Colors are re-stated on every run, so they cannot bleed that way.
   return (
-    <text>
+    <ThemeText>
       {before}
       {showCursor ? (
         <span fg={CURSOR_FG} bg={CURSOR_BG}>
@@ -484,6 +485,6 @@ function CursorText({
         at
       )}
       {after}
-    </text>
+    </ThemeText>
   )
 }

@@ -81,6 +81,61 @@ Run `chunky update` to install the latest release, or `chunky update --version v
 
 For the custom installation, use `baa_chunky update`, `baa_chunky update --check`, or `baa_chunky update --rollback`. These target its own `app/` and leave its command, state, and the default installation intact. Updating the default installation still uses `chunky update`.
 
+## CLI themes
+
+Use `/theme` to preview Chunky, Tokyo Night, Catppuccin (Mocha), Nord,
+Gruvbox, or Dracula. Type to filter, use ↑/↓ (or click a row) to preview the
+whole interface, Enter to save, and Escape to restore the previous theme.
+You can also select directly with `/theme nord`. The picker works without a
+server. Each preset follows the existing auto/light/dark appearance setting;
+incognito retains its red accents.
+
+Custom themes are JSON files in either:
+
+- `~/.config/chunky/themes/*.json` (or `$XDG_CONFIG_HOME/chunky/themes/*.json`)
+- `<working-directory>/.chunky/themes/*.json`
+
+The filename is the theme name. Project themes override user themes, and user
+themes override presets of the same name. `chunky` is reserved as the fallback.
+Files are reloaded whenever the picker opens; malformed files are skipped with
+an explanation in the picker. Missing saved themes fall back to Chunky.
+
+For example, save this as `~/.config/chunky/themes/ocean.json`, then run
+`/theme ocean`:
+
+```json
+{
+  "defs": { "blue": "#7aa2f7" },
+  "theme": {
+    "primary": { "dark": "blue", "light": "#2454a6" },
+    "text": { "dark": "#c0caf5", "light": "#24283b" },
+    "background": { "dark": "#1a1b26", "light": "#f4f5fa" },
+    "border": { "dark": "#565f89", "light": "#687399" },
+    "markdownHeading": "primary",
+    "syntaxKeyword": "primary"
+  }
+}
+```
+
+Colors accept `#RGB`, `#RRGGBB`, references to `defs` or other theme colors,
+and `{ "dark": ..., "light": ... }` variants. Use `"none"` for `text` or
+`background` to inherit the terminal defaults. Omitted tokens use Chunky's
+defaults. ANSI numeric colors are not supported. The format follows OpenCode's
+`defs`/`theme` structure; extra tokens are ignored. Supported tokens are:
+
+`primary`, `secondary`, `accent`, `text`, `textMuted`, `background`,
+`backgroundPanel`, `border`, `success`, `error`, `warning`, `markdownHeading`,
+`markdownLink`, `markdownCode`, `markdownListItem`, `syntaxComment`,
+`syntaxKeyword`, `syntaxString`, `syntaxNumber`, `syntaxFunction`, `syntaxType`,
+`syntaxVariable`, `syntaxOperator`, and `syntaxPunctuation`.
+
+The selection is saved in `tui.json` beside `CHUNKY_SETTINGS`, or under
+`CHUNKY_HOME` when no settings path is supplied (default: `~/.chunky/state`).
+Previewing never saves. Fonts and window transparency remain terminal settings.
+The five additional preset palettes come from
+[OpenCode](https://github.com/anomalyco/opencode/tree/dev/packages/tui/src/theme/assets)
+and retain their MIT license in `packages/tui/src/themes/LICENSE`.
+
 ## License
 
 Chunky is free software, licensed under the [GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only). You may use, modify, and redistribute it under those terms; if you run a modified version as a network service, you must make its source available to users. Copyright (C) 2026 Max Headley.

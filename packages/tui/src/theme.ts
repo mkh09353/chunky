@@ -1,5 +1,6 @@
 // Claude-Code-look palette + glyphs, lifted from kimi's design-system.
 // Terminals inherit the user's font — we only ever set ANSI color + box-drawing.
+import { DEFAULT_THEME, type ColorTheme, type ThemeColor } from "./themeCatalog.js"
 
 /** The accent family, in both flavours. Structure is identical so the incognito
  *  swap is a pure hue change: a lightened headline accent (contrast on dark
@@ -42,7 +43,7 @@ const PALETTES: Record<Appearance, Record<"normal" | "incognito", Palette>> = {
 // The accent tokens are `let`, not `const`, so setIncognitoTheme() can retint the
 // whole UI in one place: ESM exports are LIVE bindings, so every `import { ACCENT }`
 // site reads the current value at render time without a single call-site change.
-// Reassign them ONLY through setIncognitoTheme.
+// Reassign them only through applyPalette; subscribers repaint the whole UI.
 
 /** Brand accent (prompt marker, spinner, sparkle, ⏺ dots). Lightened two steps
  *  from Purple 600 so it holds ~9:1 contrast on dark terminals instead of ~3:1
@@ -63,6 +64,20 @@ export let MARKER: string = PALETTES.dark.normal.MARKER
 export let MARKER_BULLET: string = PALETTES.dark.normal.MARKER_BULLET
 
 let incognito = false
+let selectedTheme = DEFAULT_THEME
+let revision = 0
+const listeners = new Set<() => void>()
+export function subscribeTheme(listener: () => void): () => void {
+  listeners.add(listener)
+  return () => { listeners.delete(listener) }
+}
+export function themeRevision(): number { return revision }
+export function currentColorTheme(): ColorTheme { return selectedTheme }
+export function setColorTheme(theme: ColorTheme): void {
+  if (theme === selectedTheme) return
+  selectedTheme = theme
+  applyPalette()
+}
 
 /** Is the attached session off the record? Drives the INCOGNITO badges. */
 export function isIncognitoTheme(): boolean {
@@ -79,26 +94,14 @@ export function isIncognitoTheme(): boolean {
 export function setIncognitoTheme(on: boolean): boolean {
   if (on === incognito) return false
   incognito = on
-  const palette = PALETTES[appearance][on ? "incognito" : "normal"]
-  ACCENT = palette.ACCENT
-  ACCENT_DEEP = palette.ACCENT_DEEP
-  HEADING = palette.HEADING
-  MARKER = palette.MARKER
-  MARKER_BULLET = palette.MARKER_BULLET
-  BORDER = palette.BORDER; SUCCESS = palette.SUCCESS; ERROR = palette.ERROR; WARNING = palette.WARNING
-  CODE = palette.CODE; CODE_MUTED = palette.CODE_MUTED
+  applyPalette()
   return true
 }
 
 export function setThemeAppearance(next: Appearance): boolean {
   if (next === appearance) return false
   appearance = next
-  const palette = PALETTES[appearance][incognito ? "incognito" : "normal"]
-  ACCENT = palette.ACCENT; ACCENT_DEEP = palette.ACCENT_DEEP; HEADING = palette.HEADING
-  MARKER = palette.MARKER; MARKER_BULLET = palette.MARKER_BULLET; BORDER = palette.BORDER
-  SUCCESS = palette.SUCCESS; ERROR = palette.ERROR; WARNING = palette.WARNING
-  CODE = palette.CODE; CODE_MUTED = palette.CODE_MUTED
-  CURSOR_BG = CURSOR[appearance].bg; CURSOR_FG = CURSOR[appearance].fg
+  applyPalette()
   return true
 }
 export function themeAppearance(): Appearance { return appearance }
@@ -134,6 +137,53 @@ export let CURSOR_FG = "#0d1117"
 const CURSOR: Record<Appearance, { bg: string; fg: string }> = {
   dark: { bg: "#e6edf3", fg: "#0d1117" },
   light: { bg: "#1f2328", fg: "#ffffff" },
+}
+
+export let TEXT: string | undefined
+export let BACKGROUND = "transparent"
+export let PANEL = "transparent"
+const SYNTAX_DEFAULTS = {
+  dark: { KEYWORD: "#c4b1f9", STRING: "#98c379", NUMBER: "#d19a66", FUNC: "#7fd0ca", TYPE: "#e5c07b", VARIABLE: "#cdd3de", OPERATOR: "#9aa0ab", PUNCTUATION: "#9aa0ab", BUILTIN: "#e06c75" },
+  light: { KEYWORD: "#6d28d9", STRING: "#116329", NUMBER: "#953800", FUNC: "#0f766e", TYPE: "#8250df", VARIABLE: "#1f2328", OPERATOR: "#57606a", PUNCTUATION: "#57606a", BUILTIN: "#cf222e" },
+}
+export let SYNTAX = SYNTAX_DEFAULTS.dark
+
+function applyPalette(): void {
+  const base = PALETTES[appearance].normal
+  const colors = selectedTheme[appearance]
+  const color = (key: ThemeColor, fallback: string): string => colors[key] && colors[key] !== "none" ? colors[key]! : fallback
+  ACCENT = color("primary", base.ACCENT)
+  ACCENT_DEEP = color("markdownLink", color("secondary", base.ACCENT_DEEP))
+  HEADING = color("markdownHeading", ACCENT)
+  MARKER = color("textMuted", base.MARKER)
+  MARKER_BULLET = color("markdownListItem", base.MARKER_BULLET)
+  BORDER = color("border", base.BORDER)
+  SUCCESS = color("success", base.SUCCESS)
+  ERROR = color("error", base.ERROR)
+  WARNING = color("warning", base.WARNING)
+  CODE = color("markdownCode", base.CODE)
+  CODE_MUTED = color("syntaxComment", base.CODE_MUTED)
+  BACKGROUND = color("background", "transparent")
+  TEXT = colors.text === "none" ? undefined : colors.text ?? (BACKGROUND === "transparent" ? undefined : CURSOR[appearance].bg)
+  PANEL = color("backgroundPanel", BACKGROUND)
+  CURSOR_BG = TEXT ?? CURSOR[appearance].bg
+  CURSOR_FG = BACKGROUND === "transparent" ? CURSOR[appearance].fg : BACKGROUND
+  const syntax = SYNTAX_DEFAULTS[appearance]
+  SYNTAX = {
+    KEYWORD: color("syntaxKeyword", syntax.KEYWORD), STRING: color("syntaxString", syntax.STRING),
+    NUMBER: color("syntaxNumber", syntax.NUMBER), FUNC: color("syntaxFunction", syntax.FUNC),
+    TYPE: color("syntaxType", syntax.TYPE), VARIABLE: color("syntaxVariable", syntax.VARIABLE),
+    OPERATOR: color("syntaxOperator", syntax.OPERATOR), BUILTIN: color("accent", syntax.BUILTIN),
+    PUNCTUATION: color("syntaxPunctuation", syntax.PUNCTUATION),
+  }
+  // Privacy stays conspicuous while the chosen theme's surfaces/code persist.
+  if (incognito) {
+    const privateColors = PALETTES[appearance].incognito
+    ACCENT = privateColors.ACCENT; ACCENT_DEEP = privateColors.ACCENT_DEEP
+    HEADING = privateColors.HEADING; MARKER_BULLET = privateColors.MARKER_BULLET
+  }
+  revision++
+  for (const listener of listeners) listener()
 }
 
 /** The teardrop-asterisk sparkle Claude Code shows in its welcome banner. */

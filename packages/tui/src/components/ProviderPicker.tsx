@@ -1,3 +1,4 @@
+import { ThemeText } from "./ThemeText.js"
 import { useEffect, useState } from "react"
 import { TextAttributes } from "@opentui/core"
 import { ACCENT, BORDER, ERROR } from "../theme.js"
@@ -75,16 +76,16 @@ export function ProviderPicker({ baseUrl, onDone, onCancel }: Props) {
   const rows = provider ? models : providers
   const start = Math.max(0, Math.min(sel - Math.floor(WINDOW / 2), Math.max(0, rows.length - WINDOW)))
   return <box flexDirection="column" border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
-    <text attributes={TextAttributes.DIM}>{provider ? `${provider.id} models — ↑/↓ move · space toggle · enter save · esc back` : "Configure provider models — ↑/↓ move · enter select · esc cancel"}</text>
-    {loading ? <text attributes={TextAttributes.DIM}>Loading…</text> : rows.length === 0 ? <text attributes={TextAttributes.DIM}>No models available.</text> : rows.slice(start, start + WINDOW).map((row, i) => {
+    <ThemeText attributes={TextAttributes.DIM}>{provider ? `${provider.id} models — ↑/↓ move · space toggle · enter save · esc back` : "Configure provider models — ↑/↓ move · enter select · esc cancel"}</ThemeText>
+    {loading ? <ThemeText attributes={TextAttributes.DIM}>Loading…</ThemeText> : rows.length === 0 ? <ThemeText attributes={TextAttributes.DIM}>No models available.</ThemeText> : rows.slice(start, start + WINDOW).map((row, i) => {
       const index = start + i, on = index === sel
-      return <box key={row.id} flexDirection="row"><text fg={on ? ACCENT : undefined}>{on ? "❯ " : "  "}</text>
-        {provider && <text>{selected.has(row.id) ? "[x] " : "[ ] "}</text>}
-        <text fg={on ? ACCENT : undefined} attributes={on ? TextAttributes.BOLD : 0}>{row.id}</text>
-        <text attributes={TextAttributes.DIM}>{provider ? ` — ${(row as Model).name}${(row as Model).custom ? " [custom]" : ""}` : ` — ${(row as Provider).label}${(row as Provider).ready ? " [logged in]" : ""}`}</text>
+      return <box key={row.id} flexDirection="row"><ThemeText fg={on ? ACCENT : undefined}>{on ? "❯ " : "  "}</ThemeText>
+        {provider && <ThemeText>{selected.has(row.id) ? "[x] " : "[ ] "}</ThemeText>}
+        <ThemeText fg={on ? ACCENT : undefined} attributes={on ? TextAttributes.BOLD : 0}>{row.id}</ThemeText>
+        <ThemeText attributes={TextAttributes.DIM}>{provider ? ` — ${(row as Model).name}${(row as Model).custom ? " [custom]" : ""}` : ` — ${(row as Provider).label}${(row as Provider).ready ? " [logged in]" : ""}`}</ThemeText>
       </box>
     })}
-    {error && <text fg={ERROR}>{error}</text>}
-    {busy && <text attributes={TextAttributes.DIM}>Saving…</text>}
+    {error && <ThemeText fg={ERROR}>{error}</ThemeText>}
+    {busy && <ThemeText attributes={TextAttributes.DIM}>Saving…</ThemeText>}
   </box>
 }

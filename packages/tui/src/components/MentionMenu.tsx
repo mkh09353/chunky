@@ -1,3 +1,4 @@
+import { ThemeText } from "./ThemeText.js"
 import { TextAttributes } from "@opentui/core"
 import figures from "figures"
 import type { FileSearchItem } from "@chunky/protocol"
@@ -19,7 +20,7 @@ export function MentionMenu({
   if (items.length === 0) {
     return (
       <box border borderStyle="rounded" borderColor={BORDER} flexDirection="column" paddingX={1}>
-        <text attributes={TextAttributes.DIM}>no files match @{query || "…"}</text>
+        <ThemeText attributes={TextAttributes.DIM}>no files match @{query || "…"}</ThemeText>
       </box>
     )
   }
@@ -30,11 +31,11 @@ export function MentionMenu({
         const kindMark = item.kind === "directory" ? "/" : ""
         return (
           <box key={`${item.kind}:${item.path}`} flexDirection="row">
-            <text fg={ACCENT}>{focused ? figures.pointer : " "} </text>
-            <text fg={focused ? ACCENT : undefined} attributes={focused ? TextAttributes.BOLD : 0}>
+            <ThemeText fg={ACCENT}>{focused ? figures.pointer : " "} </ThemeText>
+            <ThemeText fg={focused ? ACCENT : undefined} attributes={focused ? TextAttributes.BOLD : 0}>
               {item.path}
               {kindMark}
-            </text>
+            </ThemeText>
           </box>
         )
       })}

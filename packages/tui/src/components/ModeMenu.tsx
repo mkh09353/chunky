@@ -1,3 +1,4 @@
+import { ThemeText } from "./ThemeText.js"
 import { useEffect, useMemo, useState } from "react"
 import { TextAttributes } from "@opentui/core"
 import figures from "figures"
@@ -284,14 +285,14 @@ export function ModeMenu({ baseUrl, onApplied, onNotice, onCancel, incognitoOnly
   if (loading) {
     return (
       <box border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
-        <text attributes={DIM}>Loading modes…</text>
+        <ThemeText attributes={DIM}>Loading modes…</ThemeText>
       </box>
     )
   }
   if (error) {
     return (
       <box border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
-        <text fg={ERROR}>Couldn&apos;t load modes: {error}</text>
+        <ThemeText fg={ERROR}>Couldn&apos;t load modes: {error}</ThemeText>
       </box>
     )
   }
@@ -299,14 +300,14 @@ export function ModeMenu({ baseUrl, onApplied, onNotice, onCancel, incognitoOnly
   if (sub === "adding") {
     return (
       <box flexDirection="column" border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
-        <text attributes={DIM}>Save current pairing as — type a name · enter save · esc back</text>
+        <ThemeText attributes={DIM}>Save current pairing as — type a name · enter save · esc back</ThemeText>
         <box flexDirection="row">
-          <text fg={ACCENT}>{figures.pointer} </text>
-          <text>{name}</text>
-          <text attributes={DIM}>{name ? "" : "e.g. review, fast, deep"}</text>
+          <ThemeText fg={ACCENT}>{figures.pointer} </ThemeText>
+          <ThemeText>{name}</ThemeText>
+          <ThemeText attributes={DIM}>{name ? "" : "e.g. review, fast, deep"}</ThemeText>
         </box>
-        {nameError && <text fg={ERROR}>{nameError}</text>}
-        <text attributes={DIM}>{current ? previewSpec(current) : ""}</text>
+        {nameError && <ThemeText fg={ERROR}>{nameError}</ThemeText>}
+        <ThemeText attributes={DIM}>{current ? previewSpec(current) : ""}</ThemeText>
       </box>
     )
   }
@@ -321,55 +322,55 @@ export function ModeMenu({ baseUrl, onApplied, onNotice, onCancel, incognitoOnly
         : "Modes · ↑/↓ move · enter apply · d delete · esc close"
   return (
     <box flexDirection="column" border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
-      <text attributes={DIM}>{help}</text>
+      <ThemeText attributes={DIM}>{help}</ThemeText>
       {visible.map((row, i) => {
         const idx = start + i
         const on = idx === selected
         const prefix = on ? "❯ " : "  "
         if (row.kind === "save") {
           return (
-            <text key="__save__" fg={on ? ACCENT : undefined} attributes={on ? BOLD : 0}>
+            <ThemeText key="__save__" fg={on ? ACCENT : undefined} attributes={on ? BOLD : 0}>
               {prefix}+ Save current as…
-            </text>
+            </ThemeText>
           )
         }
         if (row.kind === "current") {
           return (
             <box key="__current__" flexDirection="row">
-              <text fg={on ? ACCENT : undefined} attributes={on ? BOLD : 0}>
+              <ThemeText fg={on ? ACCENT : undefined} attributes={on ? BOLD : 0}>
                 {prefix}Current (unsaved)
-              </text>
-              <text attributes={DIM}>  {previewSpec(row.spec)}</text>
+              </ThemeText>
+              <ThemeText attributes={DIM}>  {previewSpec(row.spec)}</ThemeText>
             </box>
           )
         }
         if (sub === "confirm" && on) {
           return (
-            <text key={row.info.name} fg={WARNING}>
+            <ThemeText key={row.info.name} fg={WARNING}>
               {prefix}delete &quot;{row.info.name}&quot;? y/n
-            </text>
+            </ThemeText>
           )
         }
         return (
           <box key={row.info.name} flexDirection="row">
-            <text fg={on ? ACCENT : undefined} attributes={on ? BOLD : 0}>
+            <ThemeText fg={on ? ACCENT : undefined} attributes={on ? BOLD : 0}>
               {prefix}{row.info.name}
-            </text>
-            <text attributes={DIM}>  {previewSpec(row.info)}{incognitoOnly ? allowSuffix(row.info as SavedMode) : ""}</text>
+            </ThemeText>
+            <ThemeText attributes={DIM}>  {previewSpec(row.info)}{incognitoOnly ? allowSuffix(row.info as SavedMode) : ""}</ThemeText>
           </box>
         )
       })}
       {modes.length === 0 && !incognitoOnly && (
-        <text attributes={DIM}>No saved modes yet — pick &quot;Save current as…&quot; to snapshot this pairing.</text>
+        <ThemeText attributes={DIM}>No saved modes yet — pick &quot;Save current as…&quot; to snapshot this pairing.</ThemeText>
       )}
-      <text attributes={DIM}>
+      <ThemeText attributes={DIM}>
         {rows.length > WINDOW
           ? `${selected + 1}/${rows.length}`
           : incognitoOnly
             ? `${modes.length} incognito mode${modes.length === 1 ? "" : "s"}`
             : `${modes.length} saved mode${modes.length === 1 ? "" : "s"}`}
         {busy ? "  · saving…" : ""}
-      </text>
+      </ThemeText>
     </box>
   )
 }

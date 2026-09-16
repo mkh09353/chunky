@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from "react"
+import { ThemeText } from "./components/ThemeText.js"
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react"
 import { realpathSync } from "node:fs"
 import { basename } from "node:path"
 import { TextAttributes, type ScrollBoxRenderable } from "@opentui/core"
@@ -33,7 +34,9 @@ import { initialState, popUser, pushUser, reduce, type TranscriptState } from ".
 import { abortableSleep, isIntentionalAbort, reconnectDelay, retryableHttpMessage, shouldReresolve } from "./reconnect.js"
 import { SessionStreamMachine, type CommittedSessionStream } from "./sessionStream.js"
 import { findWorkspaceServer, serverIsRetiring } from "./serverDiscovery.js"
-import { ACCENT, BORDER, setIncognitoTheme, WARNING } from "./theme.js"
+import { ACCENT, BACKGROUND, BORDER, setIncognitoTheme, WARNING, subscribeTheme, themeRevision, setColorTheme } from "./theme.js"
+import { loadThemeCatalog, saveThemePreference, themeDirectories } from "./themeCatalog.js"
+import { ThemePicker } from "./components/ThemePicker.js"
 import { activeExecutorModelLabel, prettyModel } from "./providerMark.js"
 import { WelcomeBanner } from "./components/WelcomeBanner.js"
 import { Transcript, fmtTokens } from "./components/Transcript.js"
@@ -139,6 +142,27 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
     }).catch(() => {})
   }, [mode, baseUrl])
   const renderer = useRenderer()
+  useSyncExternalStore(subscribeTheme, themeRevision)
+  const [themePickerOpen, setThemePickerOpen] = useState(false)
+  const [themePickerError, setThemePickerError] = useState("")
+  const doTheme = useCallback((name: string) => {
+    setThemePickerError("")
+    if (!name) { setThemePickerOpen(true); return }
+    const catalog = loadThemeCatalog(themeDirectories(cwd))
+    const theme = catalog.themes.find((theme) => theme.id.toLowerCase() === name.toLowerCase())
+    if (!theme) {
+      setThemePickerError(`Theme not found: ${name}`)
+      setThemePickerOpen(true)
+      return
+    }
+    try {
+      saveThemePreference(theme.id)
+      setColorTheme(theme)
+    } catch (error) {
+      setThemePickerError(`Could not save: ${(error as Error).message}`)
+      setThemePickerOpen(true)
+    }
+  }, [cwd])
   // Tear down the OpenTUI renderer (restores the terminal) and leave.
   const exit = useCallback(() => {
     resetTerminalTitle()
@@ -392,6 +416,7 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
   const rawSupported = rawModeSupported
 
   const pickerOpen =
+    themePickerOpen ||
     loginPicker != null ||
     modelPickerOpen ||
     skillsPickerOpen ||
@@ -757,6 +782,10 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
       // Slash commands that take arguments arrive here (the menu only fires bare
       // commands via onCommand): `/goal <objective>`, `/cacheguard <tokens|off>`.
       const command = text.trim()
+      if (command === "/theme" || command.startsWith("/theme ")) {
+        doTheme(command.slice("/theme".length).trim())
+        return
+      }
       if (/^\/[^/\s]+$/.test(command)) {
         const modeName = savedModeForCommand(command, slashModes)
         if (modeName) {
@@ -855,7 +884,7 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
       setPendingSkill(null)
       await postMessage(text, shown, images, false, opts?.delivery === "steer", skill)
     },
-    [mode, apply, demo, postMessage, pendingSkill],
+    [mode, apply, demo, postMessage, pendingSkill, doTheme],
   )
 
   // Cache-guard confirm bar: enter/y sends anyway (force), esc/n hands the
@@ -1612,7 +1641,7 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
   // manage the current one. `rest` is everything after "/goal":
   //   ""                     -> show current goal status
   //   pause | resume | clear -> lifecycle action
-  //   [--turns N] <text>     -> set the objective (optional turn budget) and start
+  //   [--turns N] <ThemeText>     -> set the objective (optional turn budget) and start
   const doGoal = useCallback(
     async (rest: string) => {
       if (mode !== "live") {
@@ -2031,7 +2060,7 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
           break
         case "/help":
           printLine(
-            "Commands: /clear, /resume, /rewind, /fork, /help, /login, /model, /skills, /provider, /workers, /scoreboard, /usage, /advisor, /soloadvisor, /sidekick, /mode, /incognito, /goal, /shipit, /cacheguard, /quit. `/incognito [name]` applies an incognito mode so NEW sessions run off the record. `/scoreboard` ranks models by rating (add `session` to scope it); `/usage` shows this session's tokens and cost by role. `/rewind` restores files and conversation to an earlier turn; `/fork [--worktree|--no-worktree] [directive]` branches this session, optionally into a Git worktree. `/workers` shows automatic workflow routes; `/workers tag|auto|reset` changes exceptions. Input: enter to send (queues during a running turn), option+enter to steer a running turn, ctrl+v to attach a clipboard image.",
+            "Commands: /clear, /resume, /rewind, /fork, /help, /login, /model, /theme, /skills, /provider, /workers, /scoreboard, /usage, /advisor, /soloadvisor, /sidekick, /mode, /incognito, /goal, /shipit, /cacheguard, /quit. `/incognito [name]` applies an incognito mode so NEW sessions run off the record. `/scoreboard` ranks models by rating (add `session` to scope it); `/usage` shows this session's tokens and cost by role. `/rewind` restores files and conversation to an earlier turn; `/fork [--worktree|--no-worktree] [directive]` branches this session, optionally into a Git worktree. `/workers` shows automatic workflow routes; `/workers tag|auto|reset` changes exceptions. Input: enter to send (queues during a running turn), option+enter to steer a running turn, ctrl+v to attach a clipboard image.",
           )
           break
         case "/login":
@@ -2042,6 +2071,9 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
           break
         case "/model":
           doModel()
+          break
+        case "/theme":
+          doTheme("")
           break
         case "/skills":
           void doSkills("")
@@ -2093,7 +2125,7 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
         }
       }
     },
-    [printLine, doLogin, doModel, doSkills, doProvider, doWorkers, doScoreboard, doUsage, doAdvisor, doSidekick, doGoal, doShipIt, doCacheGuard, doMode, doIncognito, doResume, exit, mode, baseUrl, slashModes],
+    [printLine, doLogin, doModel, doTheme, doSkills, doProvider, doWorkers, doScoreboard, doUsage, doAdvisor, doSidekick, doGoal, doShipIt, doCacheGuard, doMode, doIncognito, doResume, exit, mode, baseUrl, slashModes],
   )
 
   // Mock demo turn so the transcript streams even without a TTY.
@@ -2206,6 +2238,7 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
       flexDirection="column"
       width="100%"
       height="100%"
+      backgroundColor={BACKGROUND}
       // Finishing a drag anywhere copies the selection (see copySelection).
       // Both events fire the same idempotent handler — it no-ops once the
       // selection is cleared, so a double-fire copies once.
@@ -2240,7 +2273,7 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
         // Renders nothing when both counts are 0.
         <WatchingLine tasks={background.tasks} monitors={background.monitors} />
       )}
-      {updateNotice && <text attributes={TextAttributes.DIM}>{updateNotice}</text>}
+      {updateNotice && <ThemeText attributes={TextAttributes.DIM}>{updateNotice}</ThemeText>}
       <box flexDirection="column" width="100%" marginTop={1} flexShrink={0} onSizeChange={restickBottom}>
         {onboardingOpen && <OnboardingWizard baseUrl={baseUrl} onDone={(stamped) => { setOnboardingOpen(false); if (!stamped) void fetch(baseUrl + "/api/onboarding/complete", { method: "POST" }).catch(() => {}) }} onLogin={async (p) => {
           // `active` is LoginPicker display state; initiateLogin never reads it.
@@ -2268,6 +2301,7 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
           />
         )}
         {skillsPickerOpen && <SkillsPicker baseUrl={baseUrl} sessionId={sessionIdRef.current} onSelect={(name) => { setPendingSkill(name); setSkillsPickerOpen(false) }} onCancel={() => setSkillsPickerOpen(false)} />}
+        {themePickerOpen && <ThemePicker cwd={cwd} initialError={themePickerError} onClose={() => setThemePickerOpen(false)} />}
         {modelPickerOpen && (
           <ModelPicker baseUrl={baseUrl} sessionId={sessionIdRef.current} onDone={onModelDone} onCancel={() => setModelPickerOpen(false)} />
         )}
@@ -2322,7 +2356,7 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
         {pendingSend ? (
           // The cache guard held this send: nothing ran server-side yet.
           <box flexDirection="column">
-            <text fg={WARNING}>
+            <ThemeText fg={WARNING}>
               {"⚠ Cache cold after "}
               {coldReason(pendingSend.warning)}
               {" — sending will re-send ~"}
@@ -2330,27 +2364,27 @@ export function App({ mode, baseUrl: launchedBaseUrl, cwd, autoDemo = true, demo
               {" tokens (guard: "}
               {fmtTokens(pendingSend.guardTokens)}
               {")."}
-            </text>
-            <text attributes={TextAttributes.DIM}>
+            </ThemeText>
+            <ThemeText attributes={TextAttributes.DIM}>
               {"  enter to send anyway · esc to keep the message unsent · /cacheguard to tune"}
-            </text>
+            </ThemeText>
           </box>
         ) : (
           cacheCold &&
           !running && (
             // Early heads-up while idle: the next send would rebuild a cold cache.
-            <text fg={WARNING}>
+            <ThemeText fg={WARNING}>
               {"⚠ Cache cold ("}
               {coldReason(cacheCold)}
               {") — next message re-sends ~"}
               {fmtTokens(cacheCold.approxTokens)}
               {" tokens. Consider a fresh thread."}
-            </text>
+            </ThemeText>
           )
         )}
         {/* Server-authoritative queued prompt count. */}
-        {authoritativeQueueCount > 0 && <text attributes={TextAttributes.DIM}>{`  ⏎ queued: ${authoritativeQueueCount}`}</text>}
-        {pendingSkill && <text fg={ACCENT}>{`  skill: ${pendingSkill} — type your prompt, Esc to clear`}</text>}
+        {authoritativeQueueCount > 0 && <ThemeText attributes={TextAttributes.DIM}>{`  ⏎ queued: ${authoritativeQueueCount}`}</ThemeText>}
+        {pendingSkill && <ThemeText fg={ACCENT}>{`  skill: ${pendingSkill} — type your prompt, Esc to clear`}</ThemeText>}
         <PromptInput
           disabled={pickerOpen || (running && mode !== "live")}
           running={running && mode === "live"}

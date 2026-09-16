@@ -1,3 +1,4 @@
+import { ThemeText } from "./ThemeText.js"
 import { useState } from "react"
 import { TextAttributes } from "@opentui/core"
 import { ACCENT, BORDER, WARNING } from "../theme.js"
@@ -61,21 +62,21 @@ export function ForkPicker({
   )
   return (
     <box flexDirection="column" border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
-      <text attributes={TextAttributes.DIM}>Fork this session — ↑/↓ move · enter fork · esc cancel</text>
-      {directive && <text attributes={TextAttributes.DIM}>{`  directive: ${truncateText(directive)}`}</text>}
+      <ThemeText attributes={TextAttributes.DIM}>Fork this session — ↑/↓ move · enter fork · esc cancel</ThemeText>
+      {directive && <ThemeText attributes={TextAttributes.DIM}>{`  directive: ${truncateText(directive)}`}</ThemeText>}
       {FORK_OPTIONS.map((opt, i) => {
         const on = i === selected
         return (
           <box key={opt.label} flexDirection="row">
-            <text fg={on ? ACCENT : undefined}>{on ? "❯ " : "  "}</text>
-            <text fg={on ? ACCENT : undefined} attributes={on ? TextAttributes.BOLD : 0}>
+            <ThemeText fg={on ? ACCENT : undefined}>{on ? "❯ " : "  "}</ThemeText>
+            <ThemeText fg={on ? ACCENT : undefined} attributes={on ? TextAttributes.BOLD : 0}>
               {opt.label}
-            </text>
+            </ThemeText>
           </box>
         )
       })}
-      {busy && <text attributes={TextAttributes.DIM}>{"  forking…"}</text>}
-      {error && <text fg={WARNING}>{`  ${error}`}</text>}
+      {busy && <ThemeText attributes={TextAttributes.DIM}>{"  forking…"}</ThemeText>}
+      {error && <ThemeText fg={WARNING}>{`  ${error}`}</ThemeText>}
     </box>
   )
 }

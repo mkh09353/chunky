@@ -1,3 +1,4 @@
+import { ThemeText } from "./ThemeText.js"
 import { TextAttributes } from "@opentui/core"
 import figures from "figures"
 import { ACCENT, BORDER } from "../theme.js"
@@ -18,6 +19,7 @@ export const COMMANDS: Command[] = [
   { name: "/login", description: "Log in to an OAuth provider (Grok / Codex)" },
   { name: "/onboard", description: "Open the first-run onboarding guide" },
   { name: "/model", description: "Pick or manage models (/model add|hide|restore|list)" },
+  { name: "/theme", description: "Preview and choose a color theme (/theme [name])" },
   { name: "/skills", description: "Browse & run skills; add/remove/update repos" },
   { name: "/provider", description: "Configure available models for a provider" },
   { name: "/workers", description: "Inspect or tune automatic workflow model routing" },
@@ -63,11 +65,11 @@ export function SlashMenu({ commands, selected }: { commands: Command[]; selecte
         const focused = i === selected
         return (
           <box key={cmd.name} flexDirection="row">
-            <text fg={ACCENT}>{focused ? figures.pointer : " "} </text>
-            <text fg={focused ? ACCENT : undefined} attributes={focused ? TextAttributes.BOLD : 0}>
+            <ThemeText fg={ACCENT}>{focused ? figures.pointer : " "} </ThemeText>
+            <ThemeText fg={focused ? ACCENT : undefined} attributes={focused ? TextAttributes.BOLD : 0}>
               {cmd.name}
-            </text>
-            <text attributes={TextAttributes.DIM}> — {cmd.description}</text>
+            </ThemeText>
+            <ThemeText attributes={TextAttributes.DIM}> — {cmd.description}</ThemeText>
           </box>
         )
       })}

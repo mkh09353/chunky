@@ -1,11 +1,9 @@
-import { SyntaxStyle } from "@opentui/core"
-import { ACCENT_DEEP, BORDER, CODE, CODE_MUTED, HEADING, isIncognitoTheme, MARKER_BULLET, themeAppearance } from "./theme.js"
+import { SyntaxStyle, convertThemeToStyles } from "@opentui/core"
+import { ACCENT_DEEP, BORDER, CODE, CODE_MUTED, HEADING, MARKER_BULLET, SYNTAX, themeRevision } from "./theme.js"
 
 // Syntax palette for fenced code inside assistant markdown. Chunky's chrome
 // palette (theme.ts) is lavender + teal on dark; a code theme needs a few more
 // hues, so these extend it (kanagawa / one-dark-ish) tuned for dark terminals.
-const DARK = { KEYWORD: "#c4b1f9", STRING: "#98c379", NUMBER: "#d19a66", FUNC: "#7fd0ca", TYPE: "#e5c07b", VARIABLE: "#cdd3de", OPERATOR: "#9aa0ab", BUILTIN: "#e06c75" }
-const LIGHT = { KEYWORD: "#6d28d9", STRING: "#116329", NUMBER: "#953800", FUNC: "#0f766e", TYPE: "#8250df", VARIABLE: "#1f2328", OPERATOR: "#57606a", BUILTIN: "#cf222e" }
 
 // Tree-sitter scope → style, adapted from opencode's mapping onto Chunky's
 // palette. Drives BOTH markdown markup (headings/bold/links/inline code) and
@@ -13,11 +11,9 @@ const LIGHT = { KEYWORD: "#6d28d9", STRING: "#116329", NUMBER: "#953800", FUNC: 
 // typescript, javascript, zig). Other languages fall back to plain text — no
 // parser is fetched from the network unless one is registered with a URL, which
 // we never do.
-// Built per call, not once at module load: the markdown markup rules read the
-// accent tokens, and those retint when the attached session is incognito.
+// Rebuilt when the theme changes, including incognito accent changes.
 const rules = () => {
-  const colors = themeAppearance() === "light" ? LIGHT : DARK
-  const { KEYWORD, STRING, NUMBER, FUNC, TYPE, VARIABLE, OPERATOR, BUILTIN } = colors
+  const { KEYWORD, STRING, NUMBER, FUNC, TYPE, VARIABLE, OPERATOR, PUNCTUATION, BUILTIN } = SYNTAX
   return [
   // ── code ──
   { scope: ["comment", "comment.documentation"], style: { foreground: CODE_MUTED, italic: true } },
@@ -53,8 +49,12 @@ const rules = () => {
   },
   { scope: ["type", "type.builtin", "keyword.type", "module", "class"], style: { foreground: TYPE } },
   {
-    scope: ["operator", "punctuation", "punctuation.bracket", "punctuation.delimiter", "punctuation.special"],
+    scope: ["operator"],
     style: { foreground: OPERATOR },
+  },
+  {
+    scope: ["punctuation", "punctuation.bracket", "punctuation.delimiter", "punctuation.special"],
+    style: { foreground: PUNCTUATION },
   },
   {
     scope: ["variable.builtin", "function.builtin", "module.builtin", "variable.super"],
@@ -86,17 +86,18 @@ const rules = () => {
   ]
 }
 
-// One SyntaxStyle per accent palette (lavender / incognito red). Each wraps a
-// native handle, but there are only ever two and they live for the process, so
-// caching them is correct and there's nothing to destroy() before exit. Created
-// lazily so the first call lands after the renderer's native lib is initialized.
-const cached = new Map<string, SyntaxStyle>()
+// Keep the same native style and replace its rules on theme changes. Existing
+// markdown renderables can retain the handle without stale colors or leaks.
+let cached: SyntaxStyle | undefined
+let cachedRevision = -1
 export function getSyntaxStyle(): SyntaxStyle {
-  const key = `${themeAppearance()}-${isIncognitoTheme() ? "incognito" : "normal"}`
-  let style = cached.get(key)
-  if (!style) {
-    style = SyntaxStyle.fromTheme(rules())
-    cached.set(key, style)
+  if (cached && cachedRevision === themeRevision()) return cached
+  const next = rules()
+  if (!cached) cached = SyntaxStyle.fromTheme(next)
+  else {
+    for (const [scope, style] of Object.entries(convertThemeToStyles(next))) cached.registerStyle(scope, style)
+    cached.clearCache()
   }
-  return style
+  cachedRevision = themeRevision()
+  return cached
 }

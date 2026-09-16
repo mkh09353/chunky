@@ -1,3 +1,4 @@
+import { ThemeText } from "./ThemeText.js"
 import { useEffect, useMemo, useState } from "react"
 import { TextAttributes } from "@opentui/core"
 import { ACCENT, BORDER } from "../theme.js"
@@ -52,7 +53,7 @@ export function SkillsPicker({ baseUrl, sessionId, onSelect, onCancel }: { baseU
   }, { isActive: rawModeSupported })
   const start = Math.max(0, Math.min(selected - 6, items.length - WINDOW))
   return <box flexDirection="column" border borderStyle="rounded" borderColor={BORDER} paddingX={1} marginBottom={1}>
-    <text attributes={TextAttributes.DIM}>Skills — ↑/↓ move · enter run/toggle group · space toggle · esc close {query ? `· filter: ${query}` : ""}</text>
-    {items.slice(start, start + WINDOW).map((item, i) => { const on = start + i === selected; if (item.kind === "group") return <text key={item.key} fg={on ? ACCENT : undefined} attributes={on ? TextAttributes.BOLD : 0}>{`${on ? "❯ " : "  "}${item.label} ${collapsed[item.key] && !query ? "▸" : "▾"}`}</text>; const d = item.skill.description.replace(/\s+/g, " "); return <text key={item.key} fg={on ? ACCENT : undefined} attributes={!item.skill.enabled ? TextAttributes.DIM : 0}>{`${on ? "❯ " : "  "}${item.skill.enabled ? "on " : "off"} ${item.skill.name} — ${d.length > 48 ? d.slice(0, 47) + "…" : d}${busy === item.skill.name ? " …" : ""}`}</text> })}
+    <ThemeText attributes={TextAttributes.DIM}>Skills — ↑/↓ move · enter run/toggle group · space toggle · esc close {query ? `· filter: ${query}` : ""}</ThemeText>
+    {items.slice(start, start + WINDOW).map((item, i) => { const on = start + i === selected; if (item.kind === "group") return <ThemeText key={item.key} fg={on ? ACCENT : undefined} attributes={on ? TextAttributes.BOLD : 0}>{`${on ? "❯ " : "  "}${item.label} ${collapsed[item.key] && !query ? "▸" : "▾"}`}</ThemeText>; const d = item.skill.description.replace(/\s+/g, " "); return <ThemeText key={item.key} fg={on ? ACCENT : undefined} attributes={!item.skill.enabled ? TextAttributes.DIM : 0}>{`${on ? "❯ " : "  "}${item.skill.enabled ? "on " : "off"} ${item.skill.name} — ${d.length > 48 ? d.slice(0, 47) + "…" : d}${busy === item.skill.name ? " …" : ""}`}</ThemeText> })}
   </box>
 }

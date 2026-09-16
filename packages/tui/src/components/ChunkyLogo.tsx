@@ -1,3 +1,4 @@
+import { ThemeText } from "./ThemeText.js"
 import { isIncognitoTheme } from "../theme.js"
 import { CHUNKY_LOGO } from "./chunky-logo-art.js"
 
@@ -109,13 +110,13 @@ export function ChunkyLogo() {
   return (
     <box flexDirection="column" alignItems="flex-start">
       {logoRows().map((row, i) => (
-        <text key={i} wrapMode="none">
+        <ThemeText key={i} wrapMode="none">
           {row.map((s, j) => (
             <span key={j} fg={s.fg} bg={s.bg}>
               {s.text}
             </span>
           ))}
-        </text>
+        </ThemeText>
       ))}
     </box>
   )
